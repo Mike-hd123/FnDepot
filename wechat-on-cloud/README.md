@@ -2,7 +2,7 @@
 
 - 版本：1.5.1（面板自报 WOC_VERSION 同步对齐）
 - 打包时间：2026-08-29
-- 上游项目：[Gloridust/WechatOnCloud](https://github.com/Gloridust/WechatOnCloud)（fork 存档：[Mike-hd123/WechatOnCloud](https://github.com/Mike-hd123/WechatOnCloud)）
+- 上游项目：[Gloridust/WechatOnCloud](https://github.com/Gloridust/WechatOnCloud)（fork 存档：[Mike-hd123/WechatOnCloud](https://github.com/Gloridust/WechatOnCloud)）
 - 源码：本目录 `src/`（含全部 NAS 适配改动）
 - 打包方式：fnOS `fnpack build`
 
