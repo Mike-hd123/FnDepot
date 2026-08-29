@@ -1,0 +1,17 @@
+#!/bin/bash
+set -u
+LOG="${TRIM_PKGVAR}/install.log"
+echo "===== install_callback $(date) =====" > "$LOG"
+TARGET_DATA="${TRIM_APPDEST}/data"
+mkdir -p "$TARGET_DATA"
+echo "data dir ready: $TARGET_DATA" >> "$LOG"
+# 迁移已有数据（如果从 docker 版升级）
+DOCKER_DATA="/vol1/@apphome/hermes-studio/data/waliapi"
+if [ -d "$DOCKER_DATA" ] && [ -f "${DOCKER_DATA}/data.db" ]; then
+  echo "Found docker data, migrating..." >> "$LOG"
+  cp -n "${DOCKER_DATA}/data.db" "${TARGET_DATA}/data.db" 2>/dev/null || true
+  cp -n "${DOCKER_DATA}/config.json" "${TARGET_DATA}/config.json" 2>/dev/null || true
+  echo "Data migrated to ${TARGET_DATA}" >> "$LOG"
+fi
+echo "===== done =====" >> "$LOG"
+exit 0

@@ -1,0 +1,52 @@
+#!/bin/bash
+set -u
+
+APP_DIR="${TRIM_APPDEST:-/usr/local/apps/@appcenter/waliapi}"
+VAR_DIR="${TRIM_PKGVAR:-/var/apps/waliapi/var}"
+LOG_FILE="${VAR_DIR}/panel.log"
+PID_FILE="${VAR_DIR}/panel.pid"
+
+mkdir -p "${VAR_DIR}"
+
+is_running() {
+  if [ -f "$PID_FILE" ]; then
+    local pid
+    pid=$(cat "$PID_FILE" 2>/dev/null)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+case "${1:-}" in
+  start)
+    is_running && exit 0
+    export WALIAPI_SERVER_HOST="0.0.0.0"
+    export WALIAPI_SERVER_PORT="8777"
+    export WALIAPI_DATA_DIR="${APP_DIR}/data"
+    export LD_LIBRARY_PATH="${APP_DIR}/lib:${APP_DIR}/lib/webkit2gtk-4.1"
+    export XDG_DATA_HOME="${VAR_DIR}/xdg"
+    export XDG_CACHE_HOME="${VAR_DIR}/xdg-cache"
+    mkdir -p "${APP_DIR}/data" "${VAR_DIR}/xdg" "${VAR_DIR}/xdg-cache"
+    CDPATH= nohup "${APP_DIR}/bin/waliapi-web" start > "$LOG_FILE" 2>&1 &
+    echo $! > "$PID_FILE"
+    sleep 3
+    is_running && echo "WaLiAPI started on port ${WALIAPI_SERVER_PORT}" || echo "WaLiAPI start failed"
+    ;;
+  stop)
+    if is_running; then
+      pid=$(cat "$PID_FILE")
+      kill "$pid" 2>/dev/null
+      sleep 3
+      kill -9 "$pid" 2>/dev/null || true
+      rm -f "$PID_FILE"
+    fi
+    ;;
+  status)
+    is_running && exit 0 || exit 3
+    ;;
+  *)
+    exit 0
+    ;;
+esac
