@@ -1,0 +1,31 @@
+services:
+  waliapi:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: waliapi:latest
+    restart: unless-stopped
+    init: true
+    ports:
+      # Loopback by default: put Caddy/Nginx in front for public HTTPS access.
+      - "18888:8777"
+    environment:
+      WALIAPI_SERVER_HOST: 0.0.0.0
+      WALIAPI_SERVER_PORT: "${WALIAPI_PORT:-8777}"
+      WALIAPI_DATA_DIR: /data
+      WALIAPI_TARGET_HOME: /data/managed-home
+      WALIAPI_PUBLIC_URL: "${WALIAPI_PUBLIC_URL:-}"
+      WALIAPI_ADMIN_TOKEN: "${WALIAPI_ADMIN_TOKEN:?Set WALIAPI_ADMIN_TOKEN to a strong random value}"
+      WALIAPI_MCP_TOKEN: "${WALIAPI_MCP_TOKEN:?Set WALIAPI_MCP_TOKEN to a different strong random value}"
+      WALIAPI_WEB_DIR: /app/dist
+    volumes:
+      - waliapi-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:$${WALIAPI_SERVER_PORT:-8777}/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  waliapi-data:

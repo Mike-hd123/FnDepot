@@ -1,0 +1,279 @@
+//! Native protocol directions for the three matrix diagonal cells.
+
+use super::direction::CodecDirection;
+use super::error::{DecodeError, FeatureKind, PrepareError, UnsupportedFeatures};
+use super::ports::{DecodedResponse, NonStreamDecoder, StreamDecoder};
+use super::report::{ConversionContext, Usage};
+use super::sse;
+use super::types::{CodecId, Protocol};
+use serde_json::Value;
+
+/// A typed identity strategy. Three separate static values are registered so
+/// each strategy always self-reports its concrete protocol pair.
+pub struct IdentityDirection {
+    protocol: Protocol,
+}
+
+impl IdentityDirection {
+    pub const fn new(protocol: Protocol) -> Self {
+        Self { protocol }
+    }
+}
+
+impl CodecDirection for IdentityDirection {
+    fn id(&self) -> CodecId {
+        CodecId::Native
+    }
+
+    fn downstream(&self) -> Protocol {
+        self.protocol
+    }
+
+    fn upstream(&self) -> Protocol {
+        self.protocol
+    }
+
+    fn encode_request(
+        &self,
+        request: &Value,
+        mapped_model: &str,
+    ) -> Result<(Value, ConversionContext), PrepareError> {
+        let mut encoded = request.clone();
+        let object = encoded.as_object_mut().ok_or_else(|| {
+            UnsupportedFeatures::single(
+                FeatureKind::UnsupportedField,
+                "/",
+                "identity codec request must be an object",
+            )
+        })?;
+        object.insert("model".to_owned(), Value::String(mapped_model.to_owned()));
+        // Downstream non-stream requests usually omit `stream` (false is the
+        // API default).  Some upstreams (e.g. anthropic proxies) stream by
+        // default when the field is absent, which desyncs the native non-stream
+        // facade into an "undecodable body" 502.  Pin the contract explicitly
+        // for every protocol: `stream: false` is semantically identical to
+        // omitting it on providers that respect the field, and forces
+        // default-streaming upstreams into non-stream mode.
+        if !object.contains_key("stream") {
+            object.insert("stream".to_owned(), Value::Bool(false));
+        }
+        let request_id = request
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned();
+        let stream = request
+            .get("stream")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        Ok((
+            encoded,
+            ConversionContext::new(request_id, mapped_model, stream),
+        ))
+    }
+
+    fn new_response_decoder(
+        &self,
+        _context: &ConversionContext,
+    ) -> Box<dyn NonStreamDecoder + Send + Sync> {
+        Box::new(IdentityNonStreamDecoder {
+            protocol: self.protocol,
+        })
+    }
+
+    fn new_stream_response_decoder(
+        &self,
+        _context: &ConversionContext,
+    ) -> Box<dyn StreamDecoder + Send + Sync> {
+        Box::new(IdentityStreamDecoder {
+            protocol: self.protocol,
+            pending: Vec::new(),
+            usage: None,
+            saw_input_usage: false,
+            saw_output_usage: false,
+            done: false,
+        })
+    }
+}
+
+struct IdentityNonStreamDecoder {
+    protocol: Protocol,
+}
+
+impl NonStreamDecoder for IdentityNonStreamDecoder {
+    fn decode(&self, body: &Value) -> Result<DecodedResponse, DecodeError> {
+        Ok(DecodedResponse {
+            body: body.clone(),
+            usage: parse_usage(self.protocol, body),
+        })
+    }
+}
+
+struct IdentityStreamDecoder {
+    protocol: Protocol,
+    pending: Vec<u8>,
+    usage: Option<Usage>,
+    saw_input_usage: bool,
+    saw_output_usage: bool,
+    done: bool,
+}
+
+impl IdentityStreamDecoder {
+    fn consume_record(&mut self, record: &[u8]) -> Result<(), DecodeError> {
+        let payload = sse::parse_data_payload(record).map_err(DecodeError::from)?;
+        if payload.is_empty() {
+            return Ok(());
+        }
+        if payload == "[DONE]" {
+            if self.done {
+                return Err(DecodeError::new("/", "duplicate SSE [DONE] record"));
+            }
+            self.done = true;
+            return Ok(());
+        }
+        let event: Value = serde_json::from_str(&payload).map_err(|error| {
+            DecodeError::new("/", format!("upstream SSE JSON was invalid: {error}"))
+        })?;
+        self.merge_event_usage(&event);
+        Ok(())
+    }
+
+    fn merge_event_usage(&mut self, event: &Value) {
+        let usage = match self.protocol {
+            Protocol::Chat => event.get("usage"),
+            Protocol::Messages => event
+                .get("usage")
+                .or_else(|| event.pointer("/message/usage")),
+            Protocol::Responses => event
+                .get("usage")
+                .or_else(|| event.pointer("/response/usage")),
+        };
+        let Some(usage) = usage else { return };
+        let merged = self.usage.get_or_insert_with(|| Usage {
+            usage_unknown: true,
+            ..Usage::default()
+        });
+        let (input_key, output_key) = match self.protocol {
+            Protocol::Chat => ("prompt_tokens", "completion_tokens"),
+            Protocol::Messages | Protocol::Responses => ("input_tokens", "output_tokens"),
+        };
+        if let Some(input) = usage.get(input_key).and_then(Value::as_u64) {
+            merged.input_tokens = input;
+            self.saw_input_usage = true;
+        }
+        if let Some(output) = usage.get(output_key).and_then(Value::as_u64) {
+            merged.output_tokens = output;
+            self.saw_output_usage = true;
+        }
+        if let Some(cache_creation) = usage
+            .get("cache_creation_input_tokens")
+            .and_then(Value::as_u64)
+        {
+            merged.cache_creation_input_tokens = cache_creation;
+        }
+        if let Some(cache_read) = usage.get("cache_read_input_tokens").and_then(Value::as_u64) {
+            merged.cache_read_input_tokens = cache_read;
+        }
+        merged.usage_unknown = !(self.saw_input_usage && self.saw_output_usage);
+    }
+
+    /// Once `[DONE]` has been forwarded, the downstream response is complete.
+    /// Some OpenAI-compatible upstreams nevertheless flush further records.
+    /// They cannot be delivered to the client, but a well-formed usage object
+    /// can still improve the audit log. Parsing failures are deliberately
+    /// ignored here: post-terminal bytes must not reverse a completed stream
+    /// into a gateway failure.
+    fn capture_trailing_usage(&mut self, record: &[u8]) {
+        let Ok(payload) = sse::parse_data_payload(record) else {
+            return;
+        };
+        let Ok(event) = serde_json::from_str::<Value>(&payload) else {
+            return;
+        };
+        self.merge_event_usage(&event);
+    }
+}
+
+impl StreamDecoder for IdentityStreamDecoder {
+    fn feed(&mut self, bytes: &[u8]) -> Result<Vec<String>, DecodeError> {
+        self.pending.extend_from_slice(bytes);
+        let mut output = Vec::new();
+        while let Some(end) = sse::record_end(&self.pending) {
+            let record: Vec<u8> = self.pending.drain(..end).collect();
+            // `[DONE]` is already on its way to the client, so no later record
+            // can be usefully or safely delivered. Discard any non-compliant
+            // trailing upstream event instead of reporting a 502 for a stream
+            // that was successfully completed downstream.
+            if self.done {
+                self.capture_trailing_usage(&record);
+                log::warn!("discarded an upstream SSE record after terminal [DONE]");
+                continue;
+            }
+            self.consume_record(&record)?;
+            output.push(
+                String::from_utf8(record).map_err(|_| {
+                    DecodeError::new("/", "upstream SSE record was not valid UTF-8")
+                })?,
+            );
+        }
+        if self.done && !self.pending.is_empty() {
+            // Do not retain an unterminated trailing fragment indefinitely, or
+            // turn a valid completed stream into `ended mid-record` at EOF.
+            log::warn!(
+                "discarded {} trailing upstream bytes after terminal [DONE]",
+                self.pending.len()
+            );
+            self.pending.clear();
+        }
+        Ok(output)
+    }
+
+    fn finish(&mut self) -> Result<Vec<String>, DecodeError> {
+        if !self.pending.is_empty() {
+            return Err(DecodeError::new("/", "upstream SSE ended mid-record"));
+        }
+        Ok(Vec::new())
+    }
+
+    fn usage(&self) -> Option<Usage> {
+        self.usage
+    }
+}
+
+/// Extract the common usage shapes without performing a second protocol parse.
+pub(crate) fn parse_usage(protocol: Protocol, body: &Value) -> Option<Usage> {
+    let usage = body.get("usage")?;
+    let input = match protocol {
+        Protocol::Chat => usage.get("prompt_tokens").and_then(Value::as_u64),
+        Protocol::Messages | Protocol::Responses => {
+            usage.get("input_tokens").and_then(Value::as_u64)
+        }
+    };
+    let output = match protocol {
+        Protocol::Chat => usage.get("completion_tokens").and_then(Value::as_u64),
+        Protocol::Messages | Protocol::Responses => {
+            usage.get("output_tokens").and_then(Value::as_u64)
+        }
+    };
+    Some(Usage {
+        input_tokens: input.unwrap_or_default(),
+        output_tokens: output.unwrap_or_default(),
+        cache_creation_input_tokens: usage
+            .get("cache_creation_input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or_default(),
+        cache_read_input_tokens: usage
+            .get("cache_read_input_tokens")
+            .and_then(Value::as_u64)
+            .unwrap_or_default(),
+        usage_unknown: input.is_none() || output.is_none(),
+    })
+}
+
+pub static CHAT_IDENTITY: IdentityDirection = IdentityDirection::new(Protocol::Chat);
+pub static MESSAGES_IDENTITY: IdentityDirection = IdentityDirection::new(Protocol::Messages);
+pub static RESPONSES_IDENTITY: IdentityDirection = IdentityDirection::new(Protocol::Responses);
+
+#[cfg(test)]
+#[path = "identity_tests.rs"]
+mod identity_tests;

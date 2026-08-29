@@ -1,0 +1,370 @@
+<mxfile host="app.diagrams.net" agent="WaLiCode" version="24.7.17">
+  <diagram id="waliapi-arch-vertical" name="WaLiAPI 架构图（竖版）">
+    <mxGraphModel dx="800" dy="1600" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="800" pageHeight="1900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- ========== 标题 ========== -->
+        <mxCell id="title" value="WaLiAPI — 本地 LLM API 网关" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=22;fontStyle=1;fontColor=#1a1a2e;" vertex="1" parent="1">
+          <mxGeometry x="80" y="15" width="640" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="subtitle" value="多协议转换 · 知识库 RAG · MCP 工具服务 — 端到端架构" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=13;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="80" y="48" width="640" height="22" as="geometry" />
+        </mxCell>
+
+        <!-- ========================================== -->
+        <!-- 第1层：产研测角色                           -->
+        <!-- ========================================== -->
+        <mxCell id="role-group" value="👥 产 · 研 · 测" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;strokeWidth=2;verticalAlign=top;fontStyle=1;fontSize=14;fontColor=#4c2d85;" vertex="1" parent="1">
+          <mxGeometry x="160" y="85" width="480" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="role-dev" value="👨‍💻 开发" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="180" y="108" width="130" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="role-pm" value="📋 产品" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="335" y="108" width="130" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="role-qa" value="🧪 测试" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="490" y="108" width="130" height="26" as="geometry" />
+        </mxCell>
+
+        <!-- 产研测 → AI 工具 -->
+        <mxCell id="e-role-tool" value="" style="endArrow=classic;html=1;rounded=0;strokeColor=#9673a6;strokeWidth=2;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="400" y="140" as="sourcePoint" />
+            <mxPoint x="400" y="165" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ========================================== -->
+        <!-- 第2层：AI 编程工具                          -->
+        <!-- ========================================== -->
+        <mxCell id="tools-group" value="🛠️ AI 编程工具" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;strokeWidth=2;verticalAlign=top;fontStyle=1;fontSize=14;fontColor=#333333;" vertex="1" parent="1">
+          <mxGeometry x="100" y="165" width="600" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="tool-walicode" value="WaLiCode" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="125" y="200" width="125" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="tool-codex" value="Codex CLI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="265" y="200" width="125" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="tool-claude-code" value="Claude Code" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="405" y="200" width="125" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="tool-gemini-cli" value="Gemini CLI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=12;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="545" y="200" width="125" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="tool-other" value="OpenClaw / Hermes / ChatBox / NextChat / OpenAI SDK" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="125" y="240" width="545" height="26" as="geometry" />
+        </mxCell>
+
+        <!-- AI 工具 → WaLiAPI 网关 -->
+        <mxCell id="e-tool-gw" value="OpenAI / Anthropic / Responses 协议&#xa;Authorization: Bearer sk-waliapi-*" style="endArrow=classic;startArrow=classic;html=1;rounded=0;strokeColor=#6c8ebf;strokeWidth=2.5;fontSize=11;fontColor=#1a4d8f;labelBackgroundColor=#ffffff;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="400" y="275" as="sourcePoint" />
+            <mxPoint x="400" y="305" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ========================================== -->
+        <!-- 第3层：WaLiAPI 网关主体                     -->
+        <!-- ========================================== -->
+        <mxCell id="gateway-group" value="🚪 WaLiAPI 本地网关（127.0.0.1:8777）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;strokeWidth=2.5;verticalAlign=top;fontStyle=1;fontSize=14;fontColor=#1a4d8f;" vertex="1" parent="1">
+          <mxGeometry x="60" y="305" width="680" height="475" as="geometry" />
+        </mxCell>
+
+        <!-- 协议转换层 -->
+        <mxCell id="protocol-layer" value="🔄 协议转换层 — 入口多协议 · 出口统一 OpenAI Chat" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;strokeWidth=1.5;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#0e4d50;" vertex="1" parent="1">
+          <mxGeometry x="85" y="340" width="630" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="proto-openai" value="OpenAI&#xa;v1/chat/completions" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#0e8088;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="100" y="370" width="190" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="proto-responses" value="OpenAI Responses&#xa;v1/responses" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#0e8088;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="305" y="370" width="190" height="28" as="geometry" />
+        </mxCell>
+        <mxCell id="proto-anthropic" value="Anthropic&#xa;v1/messages" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#0e8088;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="510" y="370" width="190" height="28" as="geometry" />
+        </mxCell>
+
+        <!-- 协议 → 调度器/安全审计 -->
+        <mxCell id="e-proto-core" value="" style="endArrow=classic;html=1;rounded=0;strokeColor=#6c8ebf;strokeWidth=1.5;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="400" y="405" as="sourcePoint" />
+            <mxPoint x="400" y="425" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- 渠道调度器 + 安全审计（并排） -->
+        <mxCell id="dispatcher" value="⚖️ 渠道调度器&#xa;优先级 + 权重 · 故障切换&#xa;模型映射 (model mapping)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;strokeWidth=1.5;fontSize=11;fontStyle=1;fontColor=#0e4d50;" vertex="1" parent="1">
+          <mxGeometry x="85" y="425" width="300" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="security" value="🛡️ 安全审计&#xa;风险扫描 · 脱敏/阻断&#xa;25+ 规则引擎" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;strokeWidth=1.5;fontSize=11;fontStyle=1;fontColor=#74000D;" vertex="1" parent="1">
+          <mxGeometry x="415" y="425" width="300" height="65" as="geometry" />
+        </mxCell>
+
+        <!-- 调度器/安全 → 适配器 -->
+        <mxCell id="e-core-adapt" value="" style="endArrow=classic;html=1;rounded=0;strokeColor=#6c8ebf;strokeWidth=1.5;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="400" y="490" as="sourcePoint" />
+            <mxPoint x="400" y="510" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- 适配器层 -->
+        <mxCell id="adaptor" value="🔌 适配器层" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#b0e3e6;strokeColor=#0e8088;strokeWidth=1.5;verticalAlign=top;fontStyle=1;fontSize=12;fontColor=#0e4d50;" vertex="1" parent="1">
+          <mxGeometry x="85" y="510" width="630" height="65" as="geometry" />
+        </mxCell>
+        <mxCell id="adapt-1" value="OpenAI" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#0e8088;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="95" y="540" width="90" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="adapt-2" value="Claude" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#0e8088;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="195" y="540" width="90" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="adapt-3" value="DeepSeek" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#0e8088;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="295" y="540" width="90" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="adapt-4" value="Gemini" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#0e8088;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="395" y="540" width="90" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="adapt-5" value="智谱 · 通义" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#0e8088;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="495" y="540" width="100" height="26" as="geometry" />
+        </mxCell>
+        <mxCell id="adapt-6" value="Moonshot · Ollama · Custom" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#0e8088;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="605" y="540" width="100" height="26" as="geometry" />
+        </mxCell>
+
+        <!-- 审计日志记录 -->
+        <mxCell id="logging-section" value="📝 审计日志记录" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;strokeWidth=2;verticalAlign=top;fontStyle=1;fontSize=13;fontColor=#7F5F00;" vertex="1" parent="1">
+          <mxGeometry x="85" y="595" width="630" height="165" as="geometry" />
+        </mxCell>
+        <mxCell id="log-duration" value="⏱️ 耗时统计" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="100" y="630" width="145" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="log-count" value="🔢 调用次数" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="255" y="630" width="145" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="log-token" value="🎯 Token 消耗" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="410" y="630" width="145" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="log-success" value="✅ 成功率" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="565" y="630" width="145" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="log-trace" value="🔍 Trace ID 追踪" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="100" y="672" width="195" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="log-req-resp" value="📦 请求/响应体存档" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="305" y="672" width="195" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="log-search" value="🔎 全维度搜索" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="510" y="672" width="200" height="32" as="geometry" />
+        </mxCell>
+        <mxCell id="log-dashboard" value="📊 仪表盘 — 6 项核心指标 · 健康度徽章 · 动态运维建议" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="100" y="715" width="610" height="32" as="geometry" />
+        </mxCell>
+
+        <!-- 安全审计 → 日志（虚线） -->
+        <mxCell id="e-sec-log" value="" style="endArrow=classic;html=1;rounded=0;strokeColor=#d79b00;strokeWidth=1.5;dashed=1;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="565" y="490" as="sourcePoint" />
+            <mxPoint x="565" y="595" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-disp-log" value="" style="endArrow=classic;html=1;rounded=0;strokeColor=#d79b00;strokeWidth=1.5;dashed=1;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="235" y="490" as="sourcePoint" />
+            <mxPoint x="235" y="595" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- 网关 → LLM 渠道 -->
+        <mxCell id="e-gw-llm" value="HTTPS 转发" style="endArrow=classic;startArrow=classic;html=1;rounded=0;strokeColor=#d6b656;strokeWidth=2.5;fontSize=11;fontColor=#7F6000;labelBackgroundColor=#ffffff;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="400" y="780" as="sourcePoint" />
+            <mxPoint x="400" y="810" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ========================================== -->
+        <!-- 第4层：LLM 模型渠道（动态负载均衡）         -->
+        <!-- ========================================== -->
+        <mxCell id="llm-group" value="🤖 LLM 模型渠道 — 动态负载均衡（优先级 + 权重 + 故障切换）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;strokeWidth=2;verticalAlign=top;fontStyle=1;fontSize=14;fontColor=#7F6000;" vertex="1" parent="1">
+          <mxGeometry x="60" y="810" width="680" height="210" as="geometry" />
+        </mxCell>
+
+        <mxCell id="llm-openai" value="OpenAI&#xa;gpt-4o / o3" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="85" y="850" width="145" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="llm-claude" value="Claude&#xa;sonnet-4 / opus-4" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="245" y="850" width="145" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="llm-deepseek" value="DeepSeek&#xa;V3 / R1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="405" y="850" width="145" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="llm-gemini" value="Gemini&#xa;2.5 Pro / Flash" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="565" y="850" width="155" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="llm-qwen" value="通义千问&#xa;Qwen-Max" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="85" y="915" width="145" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="llm-zhipu" value="智谱 GLM&#xa;GLM-4" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="245" y="915" width="145" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="llm-moonshot" value="Moonshot&#xa;月之暗面" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="405" y="915" width="145" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="llm-ollama" value="Ollama&#xa;本地模型" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="565" y="915" width="155" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="llm-note" value="⚖️ 调度策略：优先级排序 → 权重分配 → 健康检查 → 故障自动切换 → 模型名映射" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=11;fontStyle=1;fontColor=#7F6000;" vertex="1" parent="1">
+          <mxGeometry x="85" y="980" width="635" height="28" as="geometry" />
+        </mxCell>
+
+        <!-- 网关 → 知识库（虚线连接） -->
+        <mxCell id="e-gw-kb" value="内置知识库服务" style="endArrow=classic;startArrow=classic;html=1;rounded=1;strokeColor=#82b366;strokeWidth=2;dashed=1;fontSize=11;fontColor=#2d6a2d;labelBackgroundColor=#ffffff;curved=1;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="400" y="1020" as="sourcePoint" />
+            <mxPoint x="400" y="1055" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ========================================== -->
+        <!-- 第5层：知识库 + MCP 端到端链路              -->
+        <!-- ========================================== -->
+        <mxCell id="kb-group" value="📚 知识库引擎 + MCP Server — 端到端私有知识能力" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;strokeWidth=2;verticalAlign=top;fontStyle=1;fontSize=14;fontColor=#2d6a2d;" vertex="1" parent="1">
+          <mxGeometry x="60" y="1055" width="680" height="310" as="geometry" />
+        </mxCell>
+
+        <!-- Skills + MCP Server（并排） -->
+        <mxCell id="kb-skills" value="🧩 Skills&#xa;(AI 技能包)&#xa;Codex / Claude Code&#xa;/ WaLiCode 内置" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;strokeWidth=1.5;fontSize=11;fontStyle=1;fontColor=#2d6a2d;" vertex="1" parent="1">
+          <mxGeometry x="85" y="1095" width="200" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="kb-mcp" value="🔗 MCP Server&#xa;Streamable HTTP + SSE&#xa;POST /mcp · 13 个工具" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;strokeWidth=1.5;fontSize=11;fontStyle=1;fontColor=#2d6a2d;" vertex="1" parent="1">
+          <mxGeometry x="515" y="1095" width="200" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="e-skills-mcp" value="MCP 协议" style="endArrow=classic;startArrow=classic;html=1;rounded=0;strokeColor=#82b366;strokeWidth=2;fontSize=10;fontColor=#2d6a2d;labelBackgroundColor=#ffffff;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="285" y="1130" as="sourcePoint" />
+            <mxPoint x="515" y="1130" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- 知识库处理流水线 -->
+        <mxCell id="kb-pipeline-label" value="🔧 知识库处理流水线" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=11;fontStyle=1;fontColor=#2d6a2d;" vertex="1" parent="1">
+          <mxGeometry x="85" y="1180" width="120" height="20" as="geometry" />
+        </mxCell>
+
+        <mxCell id="kb-parse" value="📄 文档解析&#xa;MD/Code/PDF" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8f5e9;strokeColor=#82b366;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="85" y="1205" width="120" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="kb-chunk" value="✂️ 智能分块&#xa;符号感知" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8f5e9;strokeColor=#82b366;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="225" y="1205" width="120" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="kb-embed" value="🔢 向量化&#xa;复用渠道 Embedding" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8f5e9;strokeColor=#82b366;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="365" y="1205" width="130" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="kb-index" value="🗂️ HNSW 索引&#xa;+ FTS5 混合检索" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e8f5e9;strokeColor=#82b366;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="515" y="1205" width="130" height="48" as="geometry" />
+        </mxCell>
+
+        <!-- 流水线箭头 -->
+        <mxCell id="e-parse-chunk" value="" style="endArrow=classic;html=1;rounded=0;strokeColor=#82b366;strokeWidth=1.5;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="205" y="1229" as="sourcePoint" />
+            <mxPoint x="225" y="1229" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-chunk-embed" value="" style="endArrow=classic;html=1;rounded=0;strokeColor=#82b366;strokeWidth=1.5;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="345" y="1229" as="sourcePoint" />
+            <mxPoint x="365" y="1229" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-embed-index" value="" style="endArrow=classic;html=1;rounded=0;strokeColor=#82b366;strokeWidth=1.5;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="495" y="1229" as="sourcePoint" />
+            <mxPoint x="515" y="1229" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- RAG 引擎 + 存储层 -->
+        <mxCell id="kb-rag" value="🤖 RAG 引擎&#xa;检索 → 重排 → 生成回答 + 来源引用" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#c8e6c9;strokeColor=#2d6a2d;strokeWidth=2;fontSize=11;fontStyle=1;fontColor=#2d6a2d;" vertex="1" parent="1">
+          <mxGeometry x="85" y="1270" width="300" height="48" as="geometry" />
+        </mxCell>
+        <mxCell id="kb-storage" value="💾 存储&#xa;SQLite + HNSW 向量索引" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=15;fillColor=#e8f5e9;strokeColor=#2d6a2d;strokeWidth=2;fontSize=10;fontStyle=1;fontColor=#2d6a2d;" vertex="1" parent="1">
+          <mxGeometry x="415" y="1268" width="230" height="52" as="geometry" />
+        </mxCell>
+        <mxCell id="e-index-rag" value="" style="endArrow=classic;html=1;rounded=0;strokeColor=#82b366;strokeWidth=1.5;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="580" y="1253" as="sourcePoint" />
+            <mxPoint x="580" y="1268" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-rag-storage" value="" style="endArrow=classic;startArrow=classic;html=1;rounded=0;strokeColor=#2d6a2d;strokeWidth=1.5;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="385" y="1294" as="sourcePoint" />
+            <mxPoint x="415" y="1294" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- 产研测维护知识库标注 -->
+        <mxCell id="kb-maintain" value="👥 产 · 研 · 测 共同维护知识库&#xa;Git 仓库导入 · URL 批量导入 · 本地目录扫描 · 文档上传" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;strokeWidth=1.5;fontSize=11;fontStyle=1;fontColor=#7F6000;" vertex="1" parent="1">
+          <mxGeometry x="85" y="1335" width="560" height="48" as="geometry" />
+        </mxCell>
+
+        <!-- MCP → 流水线（动态维护） -->
+        <mxCell id="e-mcp-pipeline" value="动态维护" style="endArrow=classic;startArrow=classic;html=1;rounded=0;strokeColor=#82b366;strokeWidth=1.5;dashed=1;fontSize=10;fontColor=#2d6a2d;labelBackgroundColor=#ffffff;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="615" y="1165" as="sourcePoint" />
+            <mxPoint x="580" y="1205" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- RAG → 网关（RAG 查询转发至 LLM） -->
+        <mxCell id="e-rag-gateway" value="RAG 查询通过网关转发至 LLM" style="endArrow=classic;startArrow=classic;html=1;rounded=1;strokeColor=#82b366;strokeWidth=2;dashed=1;fontSize=10;fontColor=#2d6a2d;labelBackgroundColor=#ffffff;curved=1;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry">
+            <mxPoint x="235" y="1270" as="sourcePoint" />
+            <mxPoint x="235" y="780" as="targetPoint" />
+          </mxGeometry>
+        </mxCell>
+
+        <!-- ========== 图例 ========== -->
+        <mxCell id="legend-box" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f9f9f9;strokeColor=#cccccc;strokeWidth=1;" vertex="1" parent="1">
+          <mxGeometry x="60" y="1385" width="680" height="70" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-title" value="📌 图例" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=11;fontStyle=1;" vertex="1" parent="1">
+          <mxGeometry x="75" y="1393" width="50" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="legend1" value="🟦 WaLiAPI 网关" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="130" y="1393" width="100" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="legend2" value="🟨 LLM 渠道" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="240" y="1393" width="80" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="legend3" value="🟩 知识库/MCP" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="330" y="1393" width="90" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="legend4" value="🟧 审计日志" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="430" y="1393" width="80" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="legend5" value="🟪 产研测角色" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="520" y="1393" width="80" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="legend6" value="━ 实线 = 请求转发" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="75" y="1420" width="120" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="legend7" value="┄ 虚线 = 日志/知识库反馈" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="200" y="1420" width="160" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="legend8" value="⇄ 双向 = 双向通信" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="370" y="1420" width="120" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="legend-note" value="从上到下：产研测 → AI 工具 → WaLiAPI 网关 → LLM 渠道 → 知识库（端到端）" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontSize=10;fontStyle=2;fontColor=#666666;" vertex="1" parent="1">
+          <mxGeometry x="75" y="1443" width="430" height="16" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

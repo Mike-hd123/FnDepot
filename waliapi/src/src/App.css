@@ -1,0 +1,287 @@
+@import "tailwindcss";
+
+@theme {
+  --color-background: #f5f7fa;
+  --color-foreground: #16202b;
+  --color-card: #ffffff;
+  --color-card-foreground: #16202b;
+  --color-border: rgba(15, 23, 42, 0.08);
+  --color-muted: #eef2f6;
+  --color-muted-foreground: #66758a;
+  --color-sidebar: #eef3f8;
+  --color-primary: #2f6fed;
+  --color-primary-foreground: #ffffff;
+  --color-accent: #dbe7ff;
+  --color-accent-foreground: #1b2a41;
+  --color-destructive: #dc4c64;
+  --color-destructive-foreground: #ffffff;
+  --color-success: #1f8f5f;
+  --color-warning: #c48a21;
+}
+
+:root {
+  color-scheme: light;
+}
+
+* {
+  box-sizing: border-box;
+  border-color: var(--color-border);
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: linear-gradient(180deg, #f7f9fc 0%, #eef3f8 100%);
+  color: var(--color-foreground);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Helvetica Neue", sans-serif;
+  overflow: hidden;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease, transform 0.16s ease, box-shadow 0.16s ease;
+  cursor: pointer;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+input,
+select,
+textarea {
+  outline: none;
+  color: #16202b;
+  background-color: #ffffff;
+  transition: border-color 0.16s ease, box-shadow 0.16s ease, background-color 0.16s ease;
+}
+
+select option {
+  color: #16202b;
+  background-color: #ffffff;
+}
+
+code {
+  color: inherit;
+}
+
+pre {
+  color: inherit;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #8a98ab;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: rgba(47, 111, 237, 0.55);
+  box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.12);
+}
+
+::selection {
+  background: rgba(47, 111, 237, 0.18);
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.12);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(15, 23, 42, 0.18);
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* T14：同步上游模型「应用」后新增 chip 的绿色高亮动画（对齐已验收原型）。 */
+@keyframes model-pop {
+  0% {
+    background: rgba(31, 143, 95, 0.55);
+    color: #fff;
+  }
+  60% {
+    background: rgba(31, 143, 95, 0.3);
+    color: var(--color-success);
+  }
+  100% {
+    background: rgba(31, 143, 95, 0.16);
+    color: var(--color-success);
+  }
+}
+
+.page-shell {
+  padding: 28px;
+  animation: fadeInUp 0.2s ease;
+}
+
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.page-title {
+  font-size: 28px;
+  line-height: 1.1;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.page-subtitle {
+  margin-top: 6px;
+  color: var(--color-muted-foreground);
+  font-size: 14px;
+}
+
+.surface {
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 12px 30px rgba(31, 41, 55, 0.08);
+}
+
+.surface-soft {
+  border: 1px solid rgba(15, 23, 42, 0.06);
+  background: #f6f9fc;
+}
+
+.action-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(47, 111, 237, 0.16);
+  background: linear-gradient(180deg, #3478f6 0%, #2f6fed 100%);
+  color: white;
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: 0 10px 20px rgba(47, 111, 237, 0.18);
+}
+
+.action-primary:hover {
+  background: linear-gradient(180deg, #2f6fed 0%, #285fd0 100%);
+  transform: translateY(-1px);
+}
+
+.action-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  background: rgba(255, 255, 255, 0.8);
+  color: var(--color-foreground);
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.action-secondary:hover {
+  background: #ffffff;
+  box-shadow: 0 6px 14px rgba(15, 23, 42, 0.06);
+}
+
+.data-card {
+  border-radius: 18px;
+  padding: 20px;
+}
+
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 280px;
+  border-radius: 24px;
+  text-align: center;
+}
+
+@media (max-width: 1024px) {
+  .page-shell {
+    padding: 20px;
+  }
+}
+
+/* ─── Wiki Markdown ─── */
+.wiki-markdown {
+  font-size: 14px;
+  line-height: 1.7;
+  color: #334155;
+  word-break: break-word;
+}
+.wiki-markdown pre {
+  margin: 12px 0;
+  border-radius: 12px;
+  overflow: hidden;
+}
+.wiki-markdown pre code {
+  display: block;
+  padding: 16px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.wiki-markdown code:not(pre code) {
+  font-size: 0.85em;
+}
+.wiki-markdown img {
+  max-width: 100%;
+  border-radius: 12px;
+  margin: 12px 0;
+}
+.wiki-markdown ul, .wiki-markdown ol {
+  margin: 8px 0;
+  padding-left: 24px;
+}
+.wiki-markdown ul { list-style: disc; }
+.wiki-markdown ol { list-style: decimal; }
+.wiki-markdown li { margin: 4px 0; }
+.wiki-markdown blockquote {
+  margin: 12px 0;
+  padding: 8px 16px;
+  border-left: 3px solid #93c5fd;
+  background: rgba(219, 234, 254, 0.3);
+  color: #475569;
+}
+.wiki-markdown h1 { font-size: 20px; font-weight: 700; color: #0f172a; margin: 16px 0 8px; }
+.wiki-markdown h2 { font-size: 18px; font-weight: 700; color: #0f172a; margin: 14px 0 6px; }
+.wiki-markdown h3 { font-size: 16px; font-weight: 600; color: #1e293b; margin: 12px 0 4px; }
+.wiki-markdown p { margin: 8px 0; }
+.wiki-markdown a { color: #2563eb; text-decoration: underline; text-underline-offset: 2px; }
+.wiki-markdown hr { border: none; border-top: 1px solid #f1f5f9; margin: 16px 0; }
+.wiki-markdown table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
+.wiki-markdown th { border-bottom: 1px solid #e2e8f0; background: #f8fafc; padding: 8px 12px; text-align: left; font-weight: 600; }
+.wiki-markdown td { border-bottom: 1px solid #f8fafc; padding: 8px 12px; }

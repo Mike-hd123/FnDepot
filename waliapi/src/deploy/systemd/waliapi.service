@@ -1,0 +1,23 @@
+[Unit]
+Description=WaLiAPI web server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=waliapi
+Group=waliapi
+WorkingDirectory=/opt/waliapi
+EnvironmentFile=/etc/waliapi/waliapi.env
+StateDirectory=waliapi
+StateDirectoryMode=0750
+ExecStart=/opt/waliapi/waliapi-server
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

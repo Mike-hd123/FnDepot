@@ -1,0 +1,70 @@
+# Build the web UI and the Linux server in one reproducible image build.
+# TP-server variant: same stages as ./Dockerfile, but every base image and
+# package registry is swapped for a China-reachable mirror, because the tp
+# build host cannot reach docker.io / deb.debian.org / crates.io.
+# NOTE: deliberately NO `# syntax=` directive — resolving it would hit
+# auth.docker.io, which is unreachable from the tp build network.
+# Keep in sync with ./Dockerfile when upstream stages change. Differences:
+#   1. FROM images prefixed with docker.m.daocloud.io/library/
+#   2. apt sources rewritten to mirrors.ustc.edu.cn (server-builder + runtime)
+#   3. cargo wired to the rsproxy.cn sparse registry
+
+FROM docker.m.daocloud.io/library/node:22-bookworm-slim AS web-builder
+WORKDIR /workspace
+RUN corepack enable && corepack prepare pnpm@11.18.0 --activate
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+RUN pnpm install --frozen-lockfile
+# updater-config.json is imported by src/lib/updater-sources.ts at build time.
+COPY index.html vite.config.ts tsconfig.json tsconfig.node.json src-tauri/updater-config.json ./
+COPY public ./public
+COPY src ./src
+# The JSON import path crosses the src-tauri boundary, so place it at
+# <root>/src-tauri/updater-config.json rather than alongside tsconfig.
+RUN mkdir -p src-tauri && mv updater-config.json src-tauri/
+RUN pnpm build
+
+FROM docker.m.daocloud.io/library/rust:1.96-bookworm AS server-builder
+WORKDIR /workspace
+# Tauri remains a dependency of the shared library, so keep its Linux build
+# dependencies until the server binary is split from the desktop entry point.
+RUN sed -i "s|http://deb.debian.org|http://mirrors.ustc.edu.cn|g" /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list 2>/dev/null || true
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential pkg-config libssl-dev libsqlite3-dev \
+    libgtk-3-dev libwebkit2gtk-4.1-dev \
+    libayatana-appindicator3-dev librsvg2-dev libxdo-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY src-tauri ./src-tauri
+# crates.io is unreachable from the build network; use the rsproxy mirror.
+COPY --from=web-builder /workspace/dist ./dist
+RUN mkdir -p /usr/local/cargo && \
+  echo '[source.crates-io]' > /usr/local/cargo/config.toml && \
+  echo 'replace-with = "rsproxy-sparse"' >> /usr/local/cargo/config.toml && \
+  echo '[source.rsproxy-sparse]' >> /usr/local/cargo/config.toml && \
+  echo 'registry = "sparse+https://rsproxy.cn/index/"' >> /usr/local/cargo/config.toml
+RUN cargo build --release --manifest-path src-tauri/Cargo.toml --bin waliapi-web --no-default-features --features embed-web
+
+FROM docker.m.daocloud.io/library/debian:bookworm-slim AS runtime
+RUN sed -i "s|http://deb.debian.org|http://mirrors.ustc.edu.cn|g" /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list 2>/dev/null || true
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl libssl3 libsqlite3-0 \
+    libgtk-3-0 libwebkit2gtk-4.1-0 \
+    libayatana-appindicator3-1 librsvg2-2 libxdo3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --create-home --home-dir /nonexistent \
+       --shell /usr/sbin/nologin waliapi
+WORKDIR /app
+COPY --from=server-builder /workspace/src-tauri/target/release/waliapi-server /app/waliapi-server
+COPY --from=web-builder /workspace/dist /app/dist
+RUN mkdir -p /data && chown -R waliapi:waliapi /app /data
+ENV WALIAPI_HOST=0.0.0.0 \
+    WALIAPI_PORT=8777 \
+    WALIAPI_DATA_DIR=/data \
+    WALIAPI_TARGET_HOME=/data/managed-home \
+    WALIAPI_WEB_DIR=/app/dist
+USER waliapi
+EXPOSE 8777
+VOLUME ["/data"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD curl --fail --silent http://127.0.0.1:${WALIAPI_PORT}/health || exit 1
+ENTRYPOINT ["/usr/local/bin/waliapi-web"]

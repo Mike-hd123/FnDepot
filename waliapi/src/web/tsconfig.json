@@ -1,0 +1,37 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "useDefineForClassFields": true,
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+
+    /* Bundler mode */
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+
+    /* Linting（复用源码含少量未用变量，宽松处理） */
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true,
+
+    "baseUrl": ".",
+    "paths": {
+      "@app/*": ["../src/*"],
+      "@tauri-apps/api/core": ["./src/lib/tauri-shim.ts"],
+      "@tauri-apps/api/event": ["./src/lib/tauri-event-shim.ts"],
+      "@tauri-apps/api/app": ["./src/lib/tauri-app-shim.ts"],
+      "@tauri-apps/plugin-opener": ["./src/lib/plugin-opener-shim.ts"],
+      "@tauri-apps/plugin-dialog": ["./src/lib/plugin-dialog-shim.ts"],
+      "@tauri-apps/plugin-updater": ["./src/lib/plugin-updater-shim.ts"],
+      "@tauri-apps/plugin-process": ["./src/lib/plugin-process-shim.ts"]
+    },
+    "types": ["vite/client"]
+  },
+  "include": ["src", "vite.config.ts"]
+}

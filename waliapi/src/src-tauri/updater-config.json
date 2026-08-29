@@ -1,0 +1,16 @@
+{
+  "_comment": "更新源配置 - 修改后需要重新构建生效。",
+  "probeTimeoutMs": 3000,
+  "sources": [
+    {
+      "id": "github",
+      "label": "GitHub",
+      "latestJsonUrl": "https://github.com/fuzhengwei/WaLiAPI/releases/latest/download/latest.json"
+    },
+    {
+      "id": "gitcode",
+      "label": "GitCode",
+      "latestJsonUrl": "https://gitcode.com/fuzhengwei/WaLiAPI/releases/latest/download/latest.json"
+    }
+  ]
+}

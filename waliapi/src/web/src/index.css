@@ -1,0 +1,6 @@
+/* 复用桌面端全部样式（含 @import "tailwindcss" 与 @theme 设计令牌） */
+@import "../../src/App.css";
+
+/* Tailwind v4 自动内容探测只覆盖 vite root（web/），这里显式注册共享源码目录 */
+@source "../../src/**/*.{ts,tsx}";
+@source "../src/**/*.{ts,tsx}";

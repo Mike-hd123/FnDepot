@@ -1,0 +1,163 @@
+name: Release Linux Web
+
+on:
+  push:
+    tags:
+      - "web-v*"
+  workflow_dispatch:
+    inputs:
+      publish_image:
+        description: "Push the Docker image to GHCR"
+        required: false
+        type: boolean
+        default: false
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  linux-binary:
+    name: Linux x86_64 binary package
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config libssl-dev libsqlite3-dev \
+            libgtk-3-dev libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11.18.0
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-gnu
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build web UI
+        run: pnpm build
+
+      - name: Build headless server
+        run: cargo build --release --locked --manifest-path src-tauri/Cargo.toml --bin waliapi-web --no-default-features --features embed-web
+
+      - name: Package Linux Web distribution
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(sed -n 's/^version = "\([^"]*\)"/\1/p' src-tauri/Cargo.toml | head -1)"
+          PACKAGE="waliapi-web-${VERSION}-linux-x86_64"
+          STAGING="release/${PACKAGE}"
+          install -Dm755 src-tauri/target/release/waliapi-server "${STAGING}/waliapi-server"
+          cp -a dist "${STAGING}/dist"
+          install -Dm644 deploy/systemd/waliapi.service "${STAGING}/deploy/systemd/waliapi.service"
+          install -Dm600 deploy/systemd/waliapi.env.example "${STAGING}/deploy/systemd/waliapi.env.example"
+          install -Dm644 deploy/caddy/Caddyfile.example "${STAGING}/deploy/caddy/Caddyfile.example"
+          install -Dm644 README.md "${STAGING}/README.md"
+          tar -C release -czf "release/${PACKAGE}.tar.gz" "${PACKAGE}"
+          sha256sum "release/${PACKAGE}.tar.gz" > "release/${PACKAGE}.tar.gz.sha256"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "archive=${PACKAGE}.tar.gz" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: waliapi-web-linux-x86_64
+          path: |
+            release/${{ steps.package.outputs.archive }}
+            release/${{ steps.package.outputs.archive }}.sha256
+          if-no-files-found: error
+
+      - name: Upload package to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/web-v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
+            gh release create "$GITHUB_REF_NAME" \
+              --title "WaLiAPI Web v${{ steps.package.outputs.version }}" \
+              --generate-notes
+          gh release upload "$GITHUB_REF_NAME" --clobber \
+            "release/${{ steps.package.outputs.archive }}" \
+            "release/${{ steps.package.outputs.archive }}.sha256"
+
+  docker-image:
+    name: Docker image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Normalize GHCR image name
+        id: image
+        shell: bash
+        run: echo "name=${REGISTRY}/${IMAGE_NAME,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        if: startsWith(github.ref, 'refs/tags/web-v') || inputs.publish_image
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=match,pattern=web-v(.*),group=1
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/web-v') }}
+            type=sha
+
+      - name: Build and optionally push image
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: ${{ startsWith(github.ref, 'refs/tags/web-v') || inputs.publish_image }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
+
+      - name: Attest published image
+        if: startsWith(github.ref, 'refs/tags/web-v') || inputs.publish_image
+        uses: actions/attest-build-provenance@v3
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true

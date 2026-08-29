@@ -1,0 +1,582 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>同步上游模型 · 交互原型</title>
+<style>
+  /* ── 复刻 WaLiAPI 主题 token ── */
+  :root {
+    --background: #f5f7fa;
+    --foreground: #16202b;
+    --card: #ffffff;
+    --border: rgba(15, 23, 42, 0.08);
+    --muted: #eef2f6;
+    --muted-foreground: #66758a;
+    --sidebar: #eef3f8;
+    --primary: #2f6fed;
+    --accent: #dbe7ff;
+    --accent-foreground: #1b2a41;
+    --destructive: #dc4c64;
+    --success: #1f8f5f;
+    --warning: #c48a21;
+    color-scheme: light;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--background);
+    color: var(--foreground);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── 布局 ── */
+  .page { max-width: 860px; margin: 0 auto; padding: 32px 24px 64px; }
+
+  .proto-banner {
+    border: 1px dashed rgba(196, 138, 33, 0.5);
+    background: #fdf8ee;
+    border-radius: 14px;
+    padding: 12px 16px;
+    font-size: 13px;
+    color: #8a6116;
+    margin-bottom: 20px;
+    line-height: 1.6;
+  }
+  .proto-banner b { color: #6b4a0d; }
+
+  .page-title { font-size: 20px; font-weight: 700; margin: 0 0 4px; }
+  .page-subtitle { font-size: 13px; color: var(--muted-foreground); margin: 0 0 24px; }
+
+  /* ── 渠道卡片 ── */
+  .channel-card {
+    background: rgba(255, 255, 255, 0.92);
+    border: 1px solid rgba(15, 23, 42, 0.06);
+    border-radius: 20px;
+    padding: 20px 22px;
+    margin-bottom: 16px;
+    box-shadow: 0 8px 20px rgba(31, 41, 55, 0.05);
+  }
+  .channel-head { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; }
+  .channel-icon {
+    width: 38px; height: 38px; border-radius: 11px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px; flex-shrink: 0;
+  }
+  .ci-blue { background: #e6efff; }
+  .ci-green { background: #e6f7f0; }
+  .ci-amber { background: #fdf3e2; }
+  .channel-name { font-weight: 600; font-size: 15px; }
+  .channel-meta { font-size: 12px; color: var(--muted-foreground); margin-top: 2px; }
+
+  .proto-badge {
+    margin-left: auto;
+    font-size: 11px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--muted);
+    color: var(--muted-foreground);
+    font-weight: 500;
+    flex-shrink: 0;
+  }
+  .proto-badge.ok { background: #e6f7f0; color: var(--success); }
+  .proto-badge.warn { background: #fdf3e2; color: var(--warning); }
+
+  .channel-models {
+    display: flex; flex-wrap: wrap; gap: 8px;
+    margin-top: 4px;
+  }
+  .model-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: rgba(47, 111, 237, 0.12);
+    color: var(--primary);
+    font-size: 12px;
+    border-radius: 999px;
+    padding: 4px 11px;
+  }
+  .model-chip .x {
+    cursor: pointer; color: rgba(47, 111, 237, 0.6); font-weight: 700;
+  }
+  .model-chip .x:hover { color: var(--destructive); }
+  .model-chip.just-added { animation: pop 1.6s ease; background: rgba(31, 143, 95, 0.16); color: var(--success); }
+  @keyframes pop {
+    0% { background: rgba(31, 143, 95, 0.55); color: #fff; }
+    60% { background: rgba(31, 143, 95, 0.3); color: var(--success); }
+    100% { background: rgba(31, 143, 95, 0.16); color: var(--success); }
+  }
+  .channel-empty {
+    font-size: 12px; color: var(--muted-foreground);
+    padding: 10px 0;
+  }
+
+  /* ── 按钮 ── */
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 9px 16px;
+    border-radius: 12px;
+    border: 1px solid rgba(15, 23, 42, 0.08);
+    background: #fff;
+    color: var(--foreground);
+    font-size: 13px; font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+    font-family: inherit;
+  }
+  .btn:hover { background: #fff; box-shadow: 0 6px 14px rgba(15, 23, 42, 0.06); }
+  .btn:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
+
+  .btn-primary {
+    background: linear-gradient(180deg, #3478f6 0%, #2f6fed 100%);
+    border-color: rgba(47, 111, 237, 0.16);
+    color: #fff;
+    font-weight: 600;
+    box-shadow: 0 10px 20px rgba(47, 111, 237, 0.18);
+  }
+  .btn-primary:hover { background: linear-gradient(180deg, #2f6fed 0%, #285fd0 100%); transform: translateY(-1px); }
+  .btn-danger {
+    background: linear-gradient(180deg, #e5566d 0%, #dc4c64 100%);
+    border-color: rgba(220, 76, 100, 0.2);
+    color: #fff; font-weight: 600;
+  }
+  .btn-danger:hover { background: linear-gradient(180deg, #dc4c64 0%, #c63b52 100%); transform: translateY(-1px); }
+
+  .sync-btn .spin { display: none; }
+  .sync-btn.loading .spin { display: inline-block; }
+  .sync-btn.loading { opacity: 0.6; }
+
+  /* ── Modal ── */
+  .overlay {
+    position: fixed; inset: 0; z-index: 60;
+    display: none;
+    align-items: center; justify-content: center;
+    background: rgba(0, 0, 0, 0.6);
+    backdrop-filter: blur(3px);
+    padding: 16px;
+  }
+  .overlay.show { display: flex; }
+  .modal {
+    width: 100%; max-width: 460px;
+    max-height: 82vh;
+    background: #fff;
+    border: 1px solid rgba(15, 23, 42, 0.06);
+    border-radius: 20px;
+    box-shadow: 0 20px 50px rgba(31, 41, 55, 0.25);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .modal-head {
+    padding: 18px 20px 0;
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+  }
+  .modal-title { font-size: 15px; font-weight: 700; margin: 0; }
+  .modal-sub { font-size: 12px; color: var(--muted-foreground); margin-top: 4px; line-height: 1.5; }
+  .modal-close {
+    border: none; background: none; cursor: pointer;
+    color: var(--muted-foreground); font-size: 18px; line-height: 1; padding: 4px;
+  }
+  .modal-close:hover { color: var(--foreground); }
+
+  .modal-toolbar {
+    padding: 14px 20px 10px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .search {
+    flex: 1;
+    border: 1px solid var(--border);
+    background: var(--background);
+    border-radius: 11px;
+    padding: 8px 12px;
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+  }
+  .search:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(47, 111, 237, 0.12); }
+
+  .select-all { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted-foreground); cursor: pointer; white-space: nowrap; user-select: none; }
+
+  .modal-count { font-size: 12px; color: var(--muted-foreground); padding: 0 20px 8px; }
+
+  .model-list {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 20px 8px;
+    min-height: 120px;
+    max-height: 44vh;
+  }
+  .model-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    cursor: pointer;
+  }
+  .model-row:hover { background: var(--muted); }
+  .model-row input[type="checkbox"] {
+    width: 16px; height: 16px;
+    accent-color: var(--primary);
+    flex-shrink: 0; cursor: pointer;
+    margin: 0;
+  }
+  .model-name { font-size: 13px; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; word-break: break-all; }
+  .model-tag {
+    margin-left: auto;
+    flex-shrink: 0;
+    font-size: 11px;
+    border-radius: 999px;
+    padding: 2px 8px;
+  }
+  .tag-has { background: var(--muted); color: var(--muted-foreground); }
+  .tag-new { background: #e6f7f0; color: var(--success); }
+  .model-empty {
+    text-align: center; color: var(--muted-foreground); font-size: 13px;
+    padding: 32px 0;
+  }
+
+  .modal-foot {
+    display: flex; justify-content: flex-end; gap: 10px;
+    padding: 14px 20px 18px;
+    border-top: 1px solid rgba(15, 23, 42, 0.06);
+  }
+
+  /* ── Toast ── */
+  .toast {
+    position: fixed; left: 50%; bottom: 28px; transform: translate(-50%, 20px);
+    z-index: 80;
+    background: #16202b; color: #fff;
+    padding: 11px 18px;
+    border-radius: 12px;
+    font-size: 13px;
+    box-shadow: 0 12px 30px rgba(15, 23, 42, 0.3);
+    opacity: 0; pointer-events: none;
+    transition: all 0.25s ease;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+  /* spinner */
+  .spin {
+    width: 13px; height: 13px;
+    border: 2px solid rgba(255, 255, 255, 0.4);
+    border-top-color: #fff;
+    border-radius: 50%;
+    animation: rot 0.8s linear infinite;
+  }
+  .spin.dark { border-color: rgba(15, 23, 42, 0.2); border-top-color: var(--primary); }
+  @keyframes rot { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="page">
+  <div class="proto-banner">
+    <b>原型说明</b> —— 仅演示「同步上游模型」交互流程，使用模拟数据，不调用任何真实接口。
+    点任意渠道的「同步上游模型」→ 拉取模型列表 → 弹窗勾选 → 「应用到渠道」合并进模型列表。
+    确认交互满意后再落真实前后端。
+  </div>
+
+  <h1 class="page-title">渠道管理</h1>
+  <p class="page-subtitle">同步上游模型 · 交互原型（点击渠道卡片上的按钮体验）</p>
+
+  <!-- 渠道 1：9router-tp（Anthropic 协议，37 个模型，可同步） -->
+  <div class="channel-card" data-channel="tp">
+    <div class="channel-head">
+      <div class="channel-icon ci-blue">🟦</div>
+      <div>
+        <div class="channel-name">9router-tp</div>
+        <div class="channel-meta">Anthropic 协议 · base: http://tp:20128/v1 · 37 个模型可同步</div>
+      </div>
+      <span class="proto-badge">anthropic</span>
+    </div>
+    <div class="channel-models" id="ch-tp-models">
+      <!-- 由 JS 填充 -->
+    </div>
+    <div style="margin-top:14px; display:flex; justify-content:flex-end;">
+      <button class="btn sync-btn" data-target="tp">
+        <span class="spin dark"></span>
+        <span>⟳ 同步上游模型</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- 渠道 2：OpenCode-GO（OpenAI 协议，25 个模型，部分已有） -->
+  <div class="channel-card" data-channel="go">
+    <div class="channel-head">
+      <div class="channel-icon ci-green">🟩</div>
+      <div>
+        <div class="channel-name">OpenCode-GO</div>
+        <div class="channel-meta">OpenAI 协议 · base: https://opencode.ai/zen/go/v1 · 25 个模型可同步</div>
+      </div>
+      <span class="proto-badge">openai</span>
+    </div>
+    <div class="channel-models" id="ch-go-models">
+      <!-- 由 JS 填充 -->
+    </div>
+    <div style="margin-top:14px; display:flex; justify-content:flex-end;">
+      <button class="btn sync-btn" data-target="go">
+        <span class="spin dark"></span>
+        <span>⟳ 同步上游模型</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- 渠道 3：本地 Ollama（3 个模型，可同步） -->
+  <div class="channel-card" data-channel="ollama">
+    <div class="channel-head">
+      <div class="channel-icon ci-amber">🟨</div>
+      <div>
+        <div class="channel-name">本地 Ollama</div>
+        <div class="channel-meta">Ollama 协议 · base: http://localhost:11434 · 3 个模型可同步</div>
+      </div>
+      <span class="proto-badge">ollama</span>
+    </div>
+    <div class="channel-models" id="ch-ollama-models">
+      <!-- 由 JS 填充 -->
+    </div>
+    <div style="margin-top:14px; display:flex; justify-content:flex-end;">
+      <button class="btn sync-btn" data-target="ollama">
+        <span class="spin dark"></span>
+        <span>⟳ 同步上游模型</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- 同步 Modal -->
+<div class="overlay" id="overlay">
+  <div class="modal" id="modal">
+    <div class="modal-head">
+      <div>
+        <h2 class="modal-title" id="m-title">同步上游模型</h2>
+        <p class="modal-sub" id="m-sub"></p>
+      </div>
+      <button class="modal-close" id="m-close" aria-label="关闭">✕</button>
+    </div>
+    <div class="modal-toolbar">
+      <input class="search" id="m-search" type="text" placeholder="搜索模型…" autocomplete="off" />
+      <label class="select-all">
+        <input type="checkbox" id="m-select-all" /> 全选
+      </label>
+    </div>
+    <div class="modal-count" id="m-count"></div>
+    <div class="model-list" id="m-list"></div>
+    <div class="modal-foot">
+      <button class="btn" id="m-cancel">取消</button>
+      <button class="btn btn-primary" id="m-apply">应用到渠道 <span id="m-apply-count"></span></button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  // ── 模拟上游数据（真实实现里由后端 GET /models 拉取）──────────────────
+  const UPSTREAM = {
+    tp: { name: "9router-tp", protocol: "anthropic", models: genModels("oc/", [
+      "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-r1", "deepseek-v3", "deepseek-v3.1",
+      "gpt-5", "gpt-5-mini", "gpt-4.1", "gpt-4.1-mini", "o3", "o4-mini",
+      "claude-opus-5", "claude-sonnet-5", "claude-haiku-4.5", "claude-3-7-sonnet",
+      "gemini-3-pro", "gemini-3-flash", "gemini-2.5-pro", "gemini-2.5-flash",
+      "qwen3-max", "qwen3-coder", "qwen3-flash",
+      "glm-5", "glm-4.6", "kimi-k2", "kimi-k2.5", "moonshot-v1",
+      "doubao-1.5-pro", "doubao-seed-1.6",
+      "llama-4-maverick", "qwen3-coder", "grok-4", "mistral-large", "gpt-oss-120b",
+      "deepseek-v4-flash-free", "claude-sonnet-5", "gpt-5-free"
+    ]) },
+    go: { name: "OpenCode-GO", protocol: "openai", models: genModels("oc/", [
+      "deepseek-v4-flash", "deepseek-v4-pro", "deepseek-r1",
+      "gpt-5", "gpt-5-mini", "gpt-4.1", "o3",
+      "claude-opus-5", "claude-sonnet-5", "claude-haiku-4.5",
+      "gemini-3-pro", "gemini-3-flash", "gemini-2.5-flash",
+      "qwen3-max", "qwen3-coder", "qwen3-flash",
+      "kimi-k2", "glm-5", "doubao-1.5-pro", "doubao-seed-1.6",
+      "llama-4-maverick", "grok-4", "gpt-oss-120b", "mistral-large", "qwen3-coder"
+    ]) },
+    ollama: { name: "本地 Ollama", protocol: "ollama", models: genModels("", [
+      "qwen3:32b", "llama3.3:70b", "deepseek-r1:14b"
+    ]) },
+  };
+
+  // 每个渠道初始已有的模型（模拟 channels.models）
+  const INITIAL = {
+    tp: ["oc/gpt-5", "oc/deepseek-v4-flash"],
+    go: ["oc/deepseek-v4-flash", "oc/gpt-5"],
+    ollama: ["qwen3:32b"],
+  };
+
+  function genModels(prefix, names) {
+    return names.map(n => prefix + n);
+  }
+
+  // ── 渲染渠道模型列表 ───────────────────────────────────────────────────
+  function renderChannel(key) {
+    const box = document.getElementById(`ch-${key}-models`);
+    const models = INITIAL[key];
+    if (models.length === 0) {
+      box.innerHTML = `<div class="channel-empty">空模型列表表示「接受所有模型」（通配）</div>`;
+      return;
+    }
+    box.innerHTML = models.map(m =>
+      `<span class="model-chip" data-model="${esc(m)}">${esc(m)}<span class="x" data-key="${key}" data-model="${esc(m)}">×</span></span>`
+    ).join("");
+  }
+
+  // × 删除单个模型
+  document.querySelector(".page").addEventListener("click", e => {
+    const x = e.target.closest(".x");
+    if (!x) return;
+    const key = x.dataset.key, m = x.dataset.model;
+    INITIAL[key] = INITIAL[key].filter(v => v !== m);
+    renderChannel(key);
+  });
+
+  // ── 同步流程 ───────────────────────────────────────────────────────────
+  let active = null;      // 当前同步的渠道 key
+  let fetchedModels = []; // 本次拉取到的全部模型
+  let existingSet = new Set();
+  let selected = new Set();
+
+  document.querySelector(".page").addEventListener("click", async e => {
+    const btn = e.target.closest(".sync-btn");
+    if (!btn || btn.disabled) return;
+
+    const key = btn.dataset.target;
+    const src = UPSTREAM[key];
+    btn.disabled = true;
+    btn.classList.add("loading");
+    btn.querySelector("span:last-child").textContent = "正在拉取…";
+
+    // 模拟网络延迟
+    await new Promise(r => setTimeout(r, 650 + Math.random() * 500));
+
+    // 真实实现：调后端 sync_upstream_models → 返回 model id 数组
+    fetchedModels = [...src.models];
+    existingSet = new Set(INITIAL[key]);
+    selected = new Set(fetchedModels.filter(m => existingSet.has(m))); // 已有的默认勾上
+    active = key;
+
+    openModal(src, key);
+
+    btn.disabled = false;
+    btn.classList.remove("loading");
+    btn.querySelector("span:last-child").textContent = "⟳ 同步上游模型";
+  });
+
+  // ── Modal 渲染 ────────────────────────────────────────────────────────
+  const overlay = document.getElementById("overlay");
+  const listEl = document.getElementById("m-list");
+  const searchEl = document.getElementById("m-search");
+  const countEl = document.getElementById("m-count");
+  const applyBtn = document.getElementById("m-apply");
+  const applyCount = document.getElementById("m-apply-count");
+  const selectAllEl = document.getElementById("m-select-all");
+
+  function openModal(src, key) {
+    document.getElementById("m-title").textContent = `同步上游模型 · ${src.name}`;
+    document.getElementById("m-sub").textContent =
+      `${src.protocol} 协议 · 已从上游获取 ${fetchedModels.length} 个模型 · 已有的默认勾选`;
+    searchEl.value = "";
+    selectAllEl.checked = selected.size === fetchedModels.length && fetchedModels.length > 0;
+    renderList();
+    overlay.classList.add("show");
+  }
+
+  function renderList() {
+    const kw = searchEl.value.trim().toLowerCase();
+    const rows = fetchedModels.filter(m => !kw || m.toLowerCase().includes(kw));
+    if (rows.length === 0) {
+      listEl.innerHTML = `<div class="model-empty">没有匹配的模型</div>`;
+    } else {
+      listEl.innerHTML = rows.map(m => {
+        const has = existingSet.has(m);
+        const checked = selected.has(m);
+        return `<label class="model-row">
+          <input type="checkbox" ${checked ? "checked" : ""} data-model="${esc(m)}" />
+          <span class="model-name">${esc(m)}</span>
+          <span class="model-tag ${has ? "tag-has" : "tag-new"}">${has ? "已有" : "新增"}</span>
+        </label>`;
+      }).join("");
+    }
+    updateCount();
+  }
+
+  function updateCount() {
+    // 选中的、且渠道还没有的 = 将新增数量
+    const toAdd = [...selected].filter(m => !existingSet.has(m));
+    countEl.textContent = `已选 ${selected.size} / ${fetchedModels.length}，新增 ${toAdd.length} 个`;
+    applyCount.textContent = toAdd.length > 0 ? `+${toAdd.length}` : "";
+    applyBtn.disabled = toAdd.length === 0;
+    selectAllEl.checked = selected.size === fetchedModels.length && fetchedModels.length > 0;
+  }
+
+  // 搜索过滤
+  searchEl.addEventListener("input", renderList);
+
+  // 点击行切换勾选
+  listEl.addEventListener("change", e => {
+    if (e.target.matches("input[type=checkbox]")) {
+      const m = e.target.dataset.model;
+      if (e.target.checked) selected.add(m); else selected.delete(m);
+      updateCount();
+    }
+  });
+
+  // 全选/取消全选
+  selectAllEl.addEventListener("change", () => {
+    if (selectAllEl.checked) selected = new Set(fetchedModels);
+    else selected = new Set();
+    // 重新勾选所有可见行的 checkbox
+    listEl.querySelectorAll("input[type=checkbox]").forEach(cb => { cb.checked = selectAllEl.checked; });
+    updateCount();
+  });
+
+  function closeModal() { overlay.classList.remove("show"); active = null; }
+
+  document.getElementById("m-close").addEventListener("click", closeModal);
+  document.getElementById("m-cancel").addEventListener("click", closeModal);
+  overlay.addEventListener("click", e => { if (e.target === overlay) closeModal(); });
+  document.addEventListener("keydown", e => {
+    if (e.key === "Escape" && overlay.classList.contains("show")) closeModal();
+  });
+
+  // 应用到渠道：合并去重，新增的高亮
+  applyBtn.addEventListener("click", () => {
+    const key = active;
+    if (!key) return;
+    const before = new Set(INITIAL[key]);
+    const toAdd = [...selected].filter(m => !before.has(m));
+    INITIAL[key] = [...new Set([...INITIAL[key], ...selected])]; // 已有的保序 + 新选上的
+    const addedSet = new Set(toAdd);
+    renderChannel(key);
+
+    // 给新增的 chip 加高亮动画
+    document.querySelectorAll(`#ch-${key}-models .model-chip`).forEach(chip => {
+      if (addedSet.has(chip.dataset.model)) chip.classList.add("just-added");
+    });
+
+    showToast(`已添加 ${toAdd.length} 个模型到「${UPSTREAM[key].name}」`);
+    closeModal();
+  });
+
+  // ── Toast ──
+  let toastTimer = null;
+  function showToast(msg) {
+    const t = document.getElementById("toast");
+    t.textContent = msg;
+    t.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove("show"), 2600);
+  }
+
+  // ── 工具 ──
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, c =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
+  // 初始化
+  for (const key of Object.keys(INITIAL)) renderChannel(key);
+</script>
+</body>
+</html>

@@ -1,0 +1,832 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>WaLiAPI · 渠道管理（API / Auth 原型）</title>
+<style>
+  :root {
+    --bg: #f8fafc;
+    --surface: #ffffff;
+    --border: rgba(15, 23, 42, 0.08);
+    --text: #0f172a;
+    --muted: #64748b;
+    --faint: #94a3b8;
+    --primary: #2f6fed;
+    --emerald: #1f8f5f;
+    --amber: #c48a21;
+    --red: #dc4c64;
+    --violet: #8b5cf6;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+  .app { display: flex; min-height: 100vh; }
+
+  /* ── Sidebar ─────────────────────────────── */
+  .sidebar {
+    width: 232px; flex-shrink: 0;
+    border-right: 1px solid var(--border);
+    background: #fff;
+    padding: 16px 12px;
+    display: flex; flex-direction: column; gap: 4px;
+    position: sticky; top: 0; height: 100vh;
+  }
+  .logo { display: flex; align-items: center; gap: 8px; padding: 6px 10px 18px; }
+  .logo-mark { width: 28px; height: 28px; border-radius: 8px; background: linear-gradient(135deg,#3b82f6,#8b5cf6); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700; font-size:14px; }
+  .logo-name { font-weight: 700; font-size: 15px; letter-spacing: -0.01em; }
+  .nav-item { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 12px; font-size: 13px; color: #475569; cursor: pointer; transition: all .15s; }
+  .nav-item:hover { background: #f1f5f9; color: var(--text); }
+  .nav-item.active { background: #fff; color: var(--text); box-shadow: 0 1px 2px rgba(15,23,42,.05), 0 4px 12px rgba(15,23,42,.04); border:1px solid #eef2f7; font-weight: 600; }
+  .nav-item .ic { width: 26px; height: 26px; border-radius: 8px; display:flex; align-items:center; justify-content:center; font-size: 13px; }
+  .nav-item.active .ic { background: var(--primary); color: #fff; }
+  .nav-item .sub { font-size: 10px; color: var(--faint); }
+
+  /* ── Main ────────────────────────────────── */
+  .main { flex: 1; min-width: 0; }
+  .page-shell { padding: 28px 28px 60px; }
+
+  /* ── Page header + tabs ──────────────────── */
+  .page-header { display: flex; align-items: center; justify-content: space-between; }
+  .page-title { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
+  .page-subtitle { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
+  .head-actions { display: flex; align-items: center; gap: 8px; }
+  .tab-bar { display: flex; align-items: center; gap: 2px; margin: 18px 0 20px; border-bottom: 1px solid var(--border); }
+  .tab { padding: 10px 16px; font-size: 13px; font-weight: 600; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; display:flex; align-items:center; gap:6px; transition: color .15s; }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--primary); border-color: var(--primary); }
+  .tab .count { font-size: 10px; background: #eef2ff; color: #6366f1; border-radius: 999px; padding: 1px 7px; font-weight: 700; }
+
+  /* ── Buttons ─────────────────────────────── */
+  .btn { display: inline-flex; align-items: center; gap: 6px; border-radius: 10px; border: 1px solid var(--border); background: #fff; padding: 8px 14px; font-size: 12.5px; font-weight: 600; color: var(--text); cursor: pointer; transition: all .15s; }
+  .btn:hover { background: #f8fafc; }
+  .btn-primary { background: var(--primary); color: #fff; border-color: var(--primary); }
+  .btn-primary:hover { background: #2563eb; }
+  .btn-sm { padding: 6px 10px; font-size: 11.5px; border-radius: 8px; }
+  .btn-ghost { border-color: transparent; background: transparent; color: var(--muted); }
+  .btn-ghost:hover { background: #f1f5f9; color: var(--text); }
+  .btn-danger-ghost { border-color: transparent; background: transparent; color: var(--red); }
+  .btn-danger-ghost:hover { background: #fef2f2; }
+
+  /* ── API: channel cards ──────────────────── */
+  .space-y { display: flex; flex-direction: column; gap: 12px; }
+  .surface { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; }
+  .channel-card { padding: 14px 16px; transition: box-shadow .15s, border-color .15s; }
+  .channel-card:hover { border-color: #cbd5e1; box-shadow: 0 2px 8px rgba(15,23,42,.04); }
+  .row { display: flex; align-items: center; gap: 12px; }
+  .grip { color: #cbd5e1; cursor: grab; }
+  .idx { width: 22px; height: 22px; border-radius: 8px; background: #f1f5f9; color: #64748b; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+  .dot { width: 8px; height: 8px; border-radius: 999px; flex-shrink: 0; }
+  .dot.on { background: var(--emerald); box-shadow: 0 0 8px rgba(16,185,129,.6); }
+  .dot.off { background: #a1a1aa; }
+  .dot.warn { background: var(--amber); box-shadow: 0 0 8px rgba(245,158,11,.6); }
+  .main-info { flex: 1; min-width: 0; }
+  .name-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .name { font-size: 13px; font-weight: 600; }
+  .badge { border-radius: 999px; padding: 2px 8px; font-size: 10px; font-weight: 600; }
+  .badge-blue { background: #eff6ff; color: #2563eb; border: 1px solid #bfdbfe; }
+  .badge-violet { background: #f5f3ff; color: #7c3aed; border: 1px solid #ddd6fe; }
+  .badge-green { background: #ecfdf5; color: #059669; border: 1px solid #a7f3d0; }
+  .badge-amber { background: #fffbeb; color: #b45309; border: 1px solid #fde68a; }
+  .base-url { font-size: 11px; color: var(--muted); margin-top: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .chip { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; color: var(--muted); background: #f8fafc; border: 1px solid #eef2f7; border-radius: 8px; padding: 3px 7px; }
+  .card-actions { display: flex; gap: 4px; }
+  .icon-btn { width: 30px; height: 30px; border-radius: 8px; border: 1px solid var(--border); background: #fff; display: flex; align-items: center; justify-content: center; cursor: pointer; color: var(--muted); font-size: 13px; transition: all .15s; }
+  .icon-btn:hover { background: #f1f5f9; color: var(--text); }
+  .icon-btn.green:hover { color: var(--emerald); border-color: #a7f3d0; background: #ecfdf5; }
+  .icon-btn.amber:hover { color: var(--amber); border-color: #fde68a; background: #fffbeb; }
+  .icon-btn.red:hover { color: var(--red); border-color: #fecaca; background: #fef2f2; }
+  .stat-chips { display: flex; gap: 6px; margin-left: auto; }
+
+  /* expanded detail */
+  .detail { margin-top: 12px; padding-top: 12px; border-top: 1px dashed #eef2f7; display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .detail-label { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--faint); margin-bottom: 8px; display: flex; align-items: center; gap: 4px; }
+  .model-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+  .model-tag { font-size: 11px; padding: 3px 9px; border-radius: 999px; background: #eff6ff; color: #1d4ed8; border: 1px solid #dbeafe; }
+
+  /* ── Auth: provider row ──────────────────── */
+  .provider-row { display: flex; align-items: center; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
+  .provider-pill { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; padding: 7px 14px; font-size: 12.5px; font-weight: 600; cursor: pointer; transition: all .15s; border: none; white-space: nowrap; }
+  .provider-pill .pill-dot { width: 8px; height: 8px; border-radius: 999px; }
+  .provider-pill.codex { background: #ecfdf5; color: #047857; }
+  .provider-pill.codex.active { background: var(--emerald); color: #fff; }
+  .provider-pill.claude { background: #f5f3ff; color: #6d28d9; }
+  .provider-pill.claude.active { background: var(--violet); color: #fff; }
+  .provider-pill.soon { background: #f1f5f9; color: #94a3b8; cursor: default; }
+  .prov-sep { width: 1px; height: 16px; background: #cbd5e1; flex-shrink: 0; }
+  .soon-tag { font-size: 9px; background: #fff; border: 1px solid #e2e8f0; border-radius: 4px; padding: 1px 4px; color: #cbd5e1; }
+
+  /* ── Auth: account cards ─────────────────── */
+  .auth-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .auth-card { padding: 18px; border-radius: 20px; transition: border-color .15s, box-shadow .15s; }
+  .auth-card:hover { border-color: #cbd5e1; box-shadow: 0 3px 10px rgba(15,23,42,.05); }
+  .auth-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .auth-ident { display: flex; gap: 12px; min-width: 0; }
+  .avatar { width: 40px; height: 40px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-size: 18px; background: linear-gradient(135deg,#10b981,#34d399); color: #fff; flex-shrink: 0; }
+  .auth-name-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .auth-name { font-size: 14px; font-weight: 700; }
+  .rename-btn { border: none; background: transparent; color: #cbd5e1; cursor: pointer; font-size: 12px; padding: 2px; border-radius: 4px; line-height: 1; }
+  .rename-btn:hover { color: var(--primary); background: #eff6ff; }
+  .rename-input { font-size: 13px; font-weight: 700; border: 1px solid var(--primary); border-radius: 6px; padding: 2px 6px; outline: none; width: 150px; }
+  .auth-email { font-size: 11.5px; color: var(--muted); margin-top: 2px; }
+  .plan-tag { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 999px; background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
+  .auth-right-actions { display: flex; flex-direction: row; align-items: center; gap: 4px; }
+
+  /* quota bars */
+  .quota-block { margin-top: 14px; border: 1px solid #eef2f7; border-radius: 14px; padding: 12px 14px; background: linear-gradient(160deg,#f8fafc, #fff); }
+  .quota-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .quota-title { font-size: 11px; font-weight: 700; color: var(--muted); display: flex; align-items: center; gap: 5px; }
+  .quota-val { font-size: 11px; color: var(--muted); font-weight: 600; }
+  .quota-val em { font-style: normal; color: var(--text); font-weight: 700; }
+  .bar { height: 6px; background: #eef2f7; border-radius: 999px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 999px; }
+  .bar-ok { background: linear-gradient(90deg,#10b981,#34d399); }
+  .bar-warn { background: linear-gradient(90deg,#f59e0b,#fbbf24); }
+  .bar-full { background: linear-gradient(90deg,#ef4444,#f87171); }
+  .quota-sub { display: flex; justify-content: space-between; margin-top: 6px; font-size: 10px; color: var(--faint); }
+
+  /* models */
+  .models-block { margin-top: 12px; }
+  .model-line { display: flex; align-items: center; gap: 6px; font-size: 11px; padding: 4px 0; color: var(--muted); }
+  .model-line .m { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #1e293b; }
+  .model-line .m-avail { color: #059669; }
+  .status-tag { font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 999px; }
+  .status-ok { background: #ecfdf5; color: #047857; }
+  .status-off { background: #f1f5f9; color: #64748b; }
+  .status-exp { background: #fef2f2; color: #b91c1c; }
+  .status-quota { background: #fffbeb; color: #b45309; }
+  .auth-meta { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+  .refresh-line { margin-top: 12px; border-top: 1px dashed #eef2f7; padding-top: 12px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .refresh-line .btn { flex: 1; justify-content: center; white-space: nowrap; }
+
+  /* 风险提示 */
+  .risk-banner { display: flex; align-items: flex-start; gap: 10px; border: 1px solid #fecaca; background: linear-gradient(160deg,#fef2f2,#fff7f7); border-radius: 12px; padding: 11px 14px; margin-bottom: 16px; font-size: 12px; color: #7f1d1d; line-height: 1.6; }
+  .risk-banner .risk-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+  .risk-banner b { color: #b91c1c; }
+
+  .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 56px 24px; text-align: center; color: var(--muted); gap: 8px; }
+  .empty-state .big { font-size: 32px; }
+  .empty-state .t { font-size: 14px; font-weight: 600; color: var(--text); }
+  .empty-state .d { font-size: 12.5px; }
+
+  /* prototype hint */
+  .proto-banner { position: fixed; bottom: 14px; left: 50%; transform: translateX(-50%); background: #0f172a; color: #e2e8f0; font-size: 11px; padding: 7px 16px; border-radius: 999px; z-index: 99; box-shadow: 0 6px 20px rgba(15,23,42,.3); display: flex; gap: 12px; align-items: center; }
+  .proto-banner button { background: #334155; color: #fff; border: none; border-radius: 999px; padding: 3px 10px; font-size: 10.5px; cursor: pointer; }
+
+  /* misc */
+  .flex { display: flex; } .gap-2 { gap: 8px; } .gap-3 { gap: 12px; } .ml-auto { margin-left: auto; } .mt-2 { margin-top: 8px; }
+
+  /* ── 编辑弹窗 ─────────────────────────── */
+  .modal-mask { display: none; position: fixed; inset: 0; background: rgba(15,23,42,.4); backdrop-filter: blur(2px); z-index: 100; align-items: center; justify-content: center; }
+  .modal { width: 400px; max-width: 92vw; background: #fff; border-radius: 18px; border: 1px solid var(--border); box-shadow: 0 20px 50px rgba(15,23,42,.18); padding: 22px; }
+  .modal-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+  .modal-title { font-size: 15px; font-weight: 700; }
+  .modal-x { border: none; background: transparent; color: var(--faint); font-size: 16px; cursor: pointer; padding: 4px; }
+  .modal-x:hover { color: var(--text); }
+  .field { margin-bottom: 14px; }
+  .field-label { font-size: 11px; font-weight: 600; color: var(--muted); margin-bottom: 6px; display: block; }
+  .field-input { width: 100%; border: 1px solid var(--border); border-radius: 9px; padding: 8px 11px; font-size: 13px; outline: none; transition: border-color .15s; background: #fff; }
+  .field-input:focus { border-color: var(--primary); box-shadow: 0 0 0 3px rgba(59,130,246,.12); }
+  .field-row { display: flex; gap: 12px; }
+  .field-row .field { flex: 1; }
+  .edit-ident { display: flex; align-items: center; gap: 10px; padding: 10px 12px; background: #f8fafc; border: 1px solid #eef2f7; border-radius: 12px; margin-bottom: 16px; }
+  .edit-ident .avatar { width: 32px; height: 32px; font-size: 14px; border-radius: 9px; }
+  .edit-ident-meta { font-size: 12px; }
+  .edit-ident-meta .em { font-size: 11px; color: var(--muted); }
+  .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+
+  /* 模型同步弹窗 */
+  .model-item { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 1px solid #eef2f7; border-radius: 10px; margin-bottom: 8px; background: #fafbfc; }
+  .model-item .m-name { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; font-weight: 600; color: #1e293b; flex: 1; }
+  .model-item .m-sub { font-size: 10.5px; color: var(--faint); }
+  .model-item .m-check { color: #059669; font-size: 14px; }
+  .model-item.new { border-color: #6ee7b7; background: #ecfdf5; }
+  .model-item.new .m-tag-new { background: #059669; color: #fff; font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 999px; }
+  .toast { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); background: #0f172a; color: #e2e8f0; padding: 9px 18px; border-radius: 999px; font-size: 12px; z-index: 200; box-shadow: 0 8px 24px rgba(15,23,42,.25); opacity: 0; transition: opacity .2s; pointer-events: none; }
+  /* 登录步骤条 */
+  .step { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border-radius: 12px; margin-bottom: 8px; border: 1px solid #eef2f7; background: #fafbfc; }
+  .step .n { width: 20px; height: 20px; border-radius: 999px; background: #e2e8f0; color: #64748b; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .step.doing .n { background: var(--primary); color: #fff; }
+  .step.done .n { background: #059669; color: #fff; }
+  .step .st { font-size: 12.5px; font-weight: 600; color: var(--text); }
+  .step .sd { font-size: 11px; color: var(--muted); margin-top: 1px; }
+  .step .spin-inline { display:inline-flex; align-items:center; gap:6px; }
+  .toast.show { opacity: 1; }
+  .spinner { display: inline-block; width: 12px; height: 12px; border: 2px solid #cbd5e1; border-top-color: var(--primary); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -1px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- ══════════ Sidebar ══════════ -->
+  <aside class="sidebar">
+    <div class="logo">
+      <div class="logo-mark">W</div>
+      <div class="logo-name">WaLiAPI</div>
+    </div>
+    <div class="nav-item"><span class="ic">▤</span> 仪表盘</div>
+    <div class="nav-item"><span class="ic">◫</span> 使用 <span class="sub">API、Codex…</span></div>
+    <div class="nav-item active"><span class="ic">◎</span> 渠道</div>
+    <div class="nav-item"><span class="ic">🗝</span> 密钥</div>
+    <div class="nav-item"><span class="ic">▦</span> 服务 <span class="sub">RAG、Wiki…</span></div>
+    <div class="nav-item"><span class="ic">≡</span> 日志</div>
+    <div class="nav-item"><span class="ic">⚙</span> 设置</div>
+  </aside>
+
+  <main class="main">
+    <div class="page-shell">
+
+      <!-- ══════════ 页面标题 ══════════ -->
+      <div class="page-header">
+        <div>
+          <div class="page-title">渠道管理</div>
+          <div class="page-subtitle" id="page-subtitle">配置上游 API 供应商与调度优先级</div>
+        </div>
+        <div class="head-actions" id="head-actions">
+          <button class="btn">⇩ 导出</button>
+          <button class="btn">⇧ 导入 ▾</button>
+          <button class="btn btn-primary">＋ 新建渠道</button>
+        </div>
+      </div>
+
+      <!-- ══════════ API | Auth Tabs ══════════ -->
+      <div class="tab-bar">
+        <div class="tab active" data-tab="api" onclick="switchTab('api')">◎ API 渠道<span class="count">3</span></div>
+        <div class="tab" data-tab="auth" onclick="switchTab('auth')">🔑 Auth 账号<span class="count">1</span></div>
+      </div>
+
+      <!-- ══════════ ── API TAB ── ══════════ -->
+      <div id="view-api" class="space-y">
+
+        <!-- 渠道卡片 1：正常 -->
+        <div class="surface channel-card">
+          <div class="row">
+            <span class="grip">⠿</span>
+            <span class="idx">1</span>
+            <span class="dot on"></span>
+            <div class="main-info">
+              <div class="name-row">
+                <span class="name">DeepSeek 官方</span>
+                <span class="badge badge-blue">[openai]</span>
+                <span class="badge badge-green">deepseek</span>
+              </div>
+              <div class="base-url">https://api.deepseek.com</div>
+            </div>
+            <div class="stat-chips">
+              <span class="chip">调用 12.4k</span>
+              <span class="chip">成功率 99.2%</span>
+              <span class="chip">延迟 812ms</span>
+              <span class="chip">P0 · W1</span>
+            </div>
+            <div class="card-actions">
+              <button class="icon-btn" title="测试">⚡</button>
+              <button class="icon-btn green" title="编辑">✎</button>
+              <button class="icon-btn amber" title="启用/停用">⏻</button>
+              <button class="icon-btn red" title="删除">🗑</button>
+              <button class="icon-btn" title="展开">⌄</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 渠道卡片 2：停用 -->
+        <div class="surface channel-card">
+          <div class="row">
+            <span class="grip">⠿</span>
+            <span class="idx">2</span>
+            <span class="dot off"></span>
+            <div class="main-info">
+              <div class="name-row">
+                <span class="name">Anthropic 中转</span>
+                <span class="badge badge-violet">[anthropic]</span>
+                <span class="badge badge-blue">oneapi</span>
+              </div>
+              <div class="base-url">https://oneapi.example.com</div>
+            </div>
+            <div class="stat-chips">
+              <span class="chip">调用 3.1k</span>
+              <span class="chip">成功率 98.0%</span>
+              <span class="chip">延迟 1.4s</span>
+              <span class="chip">P0 · W1</span>
+            </div>
+            <div class="card-actions">
+              <button class="icon-btn" title="测试">⚡</button>
+              <button class="icon-btn green" title="编辑">✎</button>
+              <button class="icon-btn amber" title="启用/停用">⏻</button>
+              <button class="icon-btn red" title="删除">🗑</button>
+              <button class="icon-btn" title="展开">⌄</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 渠道卡片 3：展开详情 -->
+        <div class="surface channel-card">
+          <div class="row">
+            <span class="grip">⠿</span>
+            <span class="idx">3</span>
+            <span class="dot on"></span>
+            <div class="main-info">
+              <div class="name-row">
+                <span class="name">Claude 官方</span>
+                <span class="badge badge-violet">[anthropic]</span>
+                <span class="badge badge-green">anthropic</span>
+              </div>
+              <div class="base-url">https://api.anthropic.com</div>
+            </div>
+            <div class="stat-chips">
+              <span class="chip">调用 5.6k</span>
+              <span class="chip">成功率 99.6%</span>
+              <span class="chip">延迟 980ms</span>
+              <span class="chip">P0 · W1</span>
+            </div>
+            <div class="card-actions">
+              <button class="icon-btn" title="测试">⚡</button>
+              <button class="icon-btn green" title="编辑">✎</button>
+              <button class="icon-btn amber" title="启用/停用">⏻</button>
+              <button class="icon-btn red" title="删除">🗑</button>
+              <button class="icon-btn" title="展开" style="transform:rotate(180deg)">⌄</button>
+            </div>
+          </div>
+          <!-- 展开详情 -->
+          <div class="detail">
+            <div>
+              <div class="detail-label">◎ 可用模型</div>
+              <div class="model-tags">
+                <span class="model-tag">claude-sonnet-4-5</span>
+                <span class="model-tag">claude-opus-4-1</span>
+                <span class="model-tag">claude-haiku-4-5</span>
+              </div>
+            </div>
+            <div>
+              <div class="detail-label">⤳ 模型映射</div>
+              <div class="model-tags">
+                <span class="model-tag" style="background:#f8fafc;color:#64748b">gpt-5.5 → claude-sonnet-4-5</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ══════════ ── AUTH TAB ── ══════════ -->
+      <div id="view-auth" style="display:none">
+
+        <!-- Provider 一排（参考 LLM 使用页） -->
+        <div class="provider-row">
+          <button class="provider-pill codex active"><span class="pill-dot" style="background:#10b981"></span> codex</button>
+          <div class="prov-sep"></div>
+          <button class="provider-pill claude"><span class="pill-dot" style="background:#8b5cf6"></span> claude</button>
+          <button class="provider-pill claude"><span class="pill-dot" style="background:#ef4444"></span> kiro</button>
+          <button class="provider-pill claude"><span class="pill-dot" style="background:#f59e0b"></span> kimi</button>
+          <span class="soon-tag">规划中</span>
+        </div>
+        <div style="margin:14px 0 16px;font-size:12px;color:#94a3b8">登录账号后，WaLiAPI 用该账号访问厂商后端（消耗订阅额度），作为路由候选与 API 渠道同池调度。当前仅支持 codex。</div>
+
+        <!-- 风险提示 -->
+        <div class="risk-banner">
+          <span class="risk-icon">⚠️</span>
+          <div>
+            <b>风险提示</b>：此提供商使用的订阅 / OAuth 会话未获官方授权用于代理 / 路由器使用。账户可能被限制或封禁。使用风险自负。
+          </div>
+        </div>
+
+        <!-- 账号卡片网格 -->
+        <div class="auth-grid">
+
+          <!-- 账号卡片：正常启用 -->
+          <div class="surface auth-card">
+            <div class="auth-card-top">
+              <div class="auth-ident">
+                <div class="avatar">⌘</div>
+                <div>
+                  <div class="auth-name-row">
+                    <span class="dot on" style="width:7px;height:7px"></span>
+                    <span class="auth-name" id="name-1">Codex · ChatGPT</span>
+                    <span class="plan-tag">Plus</span>
+                  </div>
+                  <div class="auth-email">z***@gmail.com</div>
+                </div>
+              </div>
+              <div class="auth-right-actions">
+                <button class="icon-btn" title="编辑" onclick="openEdit(1)">✎</button>
+                <button class="icon-btn" title="启停用">⏻</button>
+                <button class="icon-btn red" title="删除">🗑</button>
+              </div>
+            </div>
+
+            <!-- 限额 -->
+            <div class="quota-block">
+              <div class="quota-head">
+                <span class="quota-title">◔ 限额 · 5小时窗口</span>
+                <span class="quota-val"><em>62%</em> 已用</span>
+              </div>
+              <div class="bar"><div class="bar-fill bar-warn" style="width:62%"></div></div>
+              <div class="quota-sub"><span>重置 <b>2h 后</b></span><span>used 310 / 500</span></div>
+            </div>
+            <div class="quota-block" style="margin-top:8px">
+              <div class="quota-head">
+                <span class="quota-title">◔ 限额 · 周窗口</span>
+                <span class="quota-val"><em>38%</em> 已用</span>
+              </div>
+              <div class="bar"><div class="bar-fill bar-ok" style="width:38%"></div></div>
+              <div class="quota-sub"><span>重置 <b>3 天后</b></span><span>used 950 / 2500</span></div>
+            </div>
+
+            <!-- 模型 -->
+            <div class="models-block">
+              <div class="detail-label">◎ 可用模型 <span style="text-transform:none;font-weight:400;color:#94a3b8">· 登录/12h 自动同步 · 全量支持</span></div>
+              <div class="model-tags">
+                <span class="model-tag">gpt-5.5</span>
+                <span class="model-tag">gpt-5.6-sol</span>
+                <span class="model-tag">gpt-5.6-terra</span>
+                <span class="model-tag">+3</span>
+              </div>
+            </div>
+
+            <div class="auth-meta">
+              <span class="chip">P0 · W1</span>
+              <span class="chip">同步于 今天 07:57</span>
+              <span class="chip">刷新 07:57</span>
+            </div>
+
+            <div class="refresh-line">
+              <button class="btn btn-sm" onclick="refreshAccount(1)">↻ 刷新令牌</button>
+              <button class="btn btn-sm" onclick="openModels(1)">⇅ 同步模型</button>
+              <button class="btn btn-sm" onclick="writeBack(1)">⬇ 写回 CLI</button>
+            </div>
+          </div>
+
+          <!-- 账号卡片：限额已耗尽（踢出路由） -->
+          <div class="surface auth-card">
+            <div class="auth-card-top">
+              <div class="auth-ident">
+                <div class="avatar" style="background:linear-gradient(135deg,#9ca3af,#d1d5db)">⌘</div>
+                <div>
+                  <div class="auth-name-row">
+                    <span class="dot warn"></span>
+                    <span class="auth-name" id="name-2">Codex · 工作账号</span>
+                    <span class="plan-tag">Pro</span>
+                  </div>
+                  <div class="auth-email">work***@gmail.com</div>
+                </div>
+              </div>
+              <div class="auth-right-actions">
+                <button class="icon-btn" title="编辑" onclick="openEdit(2)">✎</button>
+                <button class="icon-btn" title="启停用">⏻</button>
+                <button class="icon-btn red" title="删除">🗑</button>
+              </div>
+            </div>
+
+            <!-- 限额已耗尽 -->
+            <div class="quota-block" style="border-color:#fde68a;background:linear-gradient(160deg,#fffbeb,#fff)">
+              <div class="quota-head">
+                <span class="quota-title" style="color:#b45309">◔ 限额 · 5小时窗口</span>
+                <span class="quota-val" style="color:#dc2626"><em>100%</em> 已用</span>
+              </div>
+              <div class="bar"><div class="bar-fill bar-full" style="width:100%"></div></div>
+              <div class="quota-sub"><span style="color:#dc2626">已踢出路由 · 重置 <b>1h 后</b></span><span>used 500 / 500</span></div>
+            </div>
+            <div class="quota-block" style="margin-top:8px">
+              <div class="quota-head">
+                <span class="quota-title">◔ 限额 · 周窗口</span>
+                <span class="quota-val"><em>71%</em> 已用</span>
+              </div>
+              <div class="bar"><div class="bar-fill bar-warn" style="width:71%"></div></div>
+              <div class="quota-sub"><span>重置 <b>2 天后</b></span><span>used 1780 / 2500</span></div>
+            </div>
+
+            <div class="models-block">
+              <div class="detail-label">◎ 可用模型</div>
+              <div class="model-tags">
+                <span class="model-tag">gpt-5.5</span>
+                <span class="model-tag">gpt-5.6-sol</span>
+              </div>
+            </div>
+
+            <div class="auth-meta">
+              <span class="chip">P0 · W1</span>
+              <span class="chip">同步于 昨天 20:11</span>
+            </div>
+
+            <div class="refresh-line">
+              <button class="btn btn-sm" onclick="refreshAccount(2)">↻ 刷新令牌</button>
+              <button class="btn btn-sm" onclick="openModels(2)">⇅ 同步模型</button>
+              <button class="btn btn-sm" onclick="writeBack(2)">⬇ 写回 CLI</button>
+            </div>
+          </div>
+
+          <!-- 账号卡片：失效需重登 -->
+          <div class="surface auth-card">
+            <div class="auth-card-top">
+              <div class="auth-ident">
+                <div class="avatar" style="background:linear-gradient(135deg,#ef4444,#f87171)">⌘</div>
+                <div>
+                  <div class="auth-name-row">
+                    <span class="dot off"></span>
+                    <span class="auth-name" id="name-3">Codex · 备用账号</span>
+                    <span class="status-tag status-exp">已失效</span>
+                  </div>
+                  <div class="auth-email">alt***@gmail.com</div>
+                </div>
+              </div>
+              <div class="auth-right-actions">
+                <button class="icon-btn" title="编辑" onclick="openEdit(3)">✎</button>
+                <button class="icon-btn" title="启停用">⏻</button>
+                <button class="icon-btn red" title="删除">🗑</button>
+              </div>
+            </div>
+
+            <div class="quota-block" style="border-color:#fee2e2;background:linear-gradient(160deg,#fef2f2,#fff)">
+              <div class="quota-head">
+                <span class="quota-title" style="color:#b91c1c">⚠ 令牌已失效</span>
+                <span class="status-tag status-exp">需重新登录</span>
+              </div>
+              <div style="font-size:11.5px;color:#64748b;margin-top:4px">自动刷新失败（refresh_token 过期），已跳过路由。后台会继续尝试，或手动重新登录。</div>
+            </div>
+
+            <div class="models-block">
+              <div class="detail-label">◎ 可用模型</div>
+              <div class="model-tags">
+                <span class="model-tag">gpt-5.5</span>
+              </div>
+            </div>
+
+            <div class="refresh-line">
+              <button class="btn btn-sm btn-primary" style="flex:2" onclick="reLogin(3)">🔑 重新登录</button>
+              <button class="btn btn-sm" onclick="refreshAccount(3)">↻ 刷新</button>
+              <button class="btn btn-sm" onclick="writeBack(3)">⬇ 写回 CLI</button>
+            </div>
+          </div>
+
+          <!-- 空槽：添加账号 -->
+          <div class="surface auth-card" style="border-style:dashed;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;color:#94a3b8;min-height:220px;background:transparent">
+            <div style="font-size:28px">＋</div>
+            <div style="font-size:13px;font-weight:600;color:#64748b">登录 Codex 账号</div>
+            <div style="font-size:11.5px;text-align:center">浏览器 OAuth 登录（PKCE）<br>或从本机 <code style="background:#f1f5f9;padding:1px 5px;border-radius:4px">~/.codex/auth.json</code> 导入</div>
+            <div class="flex gap-2 mt-2">
+              <button class="btn btn-primary btn-sm" onclick="startLogin()">🔑 登录</button>
+              <button class="btn btn-sm" onclick="startImport()">⇧ 导入</button>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+    </div>
+  </main>
+</div>
+
+<!-- 编辑账号弹窗 -->
+<div class="modal-mask" id="edit-modal" onclick="if(event.target===this)closeEdit()">
+  <div class="modal">
+    <input type="hidden" id="edit-id" />
+    <div class="modal-head">
+      <div class="modal-title">编辑账号</div>
+      <button class="modal-x" onclick="closeEdit()">✕</button>
+    </div>
+    <div class="edit-ident">
+      <div class="avatar">⌘</div>
+      <div class="edit-ident-meta">
+        <div id="edit-email">—</div>
+        <div class="em">plan: <b id="edit-plan">—</b> · 账号级限额</div>
+      </div>
+    </div>
+    <div class="field">
+      <label class="field-label">账号名称</label>
+      <input class="field-input" id="edit-name" placeholder="如：Codex · 工作账号" />
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label class="field-label">优先级 priority</label>
+        <input class="field-input" id="edit-p" type="number" min="0" />
+      </div>
+      <div class="field">
+        <label class="field-label">权重 weight</label>
+        <input class="field-input" id="edit-w" type="number" min="1" />
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeEdit()">取消</button>
+      <button class="btn btn-primary" onclick="saveEdit()">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 模型列表弹窗 -->
+<div class="modal-mask" id="models-modal" onclick="if(event.target===this)closeModels()">
+  <div class="modal" style="width:460px">
+    <div class="modal-head">
+      <div class="modal-title">同步模型 · <span id="models-account">—</span></div>
+      <button class="modal-x" onclick="closeModels()">✕</button>
+    </div>
+    <div style="font-size:11.5px;color:var(--muted);margin-bottom:12px">来自上游 <code style="background:#f1f5f9;padding:1px 5px;border-radius:4px">/models</code> 实时返回 · 登录/12h 自动同步 · 全量支持（只读）</div>
+    <div id="models-list" style="max-height:320px;overflow:auto;padding-right:4px"></div>
+    <div class="modal-actions">
+      <button class="btn" onclick="closeModels()">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 登录流程弹窗（OAuth PKCE） -->
+<div class="modal-mask" id="login-modal" onclick="if(event.target===this)cancelLogin()">
+  <div class="modal" style="width:440px">
+    <div class="modal-head">
+      <div class="modal-title">登录 Codex 账号</div>
+      <button class="modal-x" onclick="cancelLogin()">✕</button>
+    </div>
+    <div class="edit-ident" style="margin-bottom:14px">
+      <div class="avatar">⌘</div>
+      <div class="edit-ident-meta">
+        <div>Codex · OpenAI ChatGPT</div>
+        <div class="em">浏览器 OAuth 授权 · PKCE · 消耗订阅额度</div>
+      </div>
+    </div>
+    <div id="login-steps" style="margin-bottom:14px"></div>
+    <div style="font-size:11px;color:var(--faint);line-height:1.6" id="login-hint"></div>
+    <div class="modal-actions" id="login-actions"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<div class="proto-banner">
+  <span>静态原型 · API / Auth 双 Tab · Provider 一排仅 codex 可用</span>
+  <button onclick="resetProto()">重置</button>
+</div>
+
+<script>
+  function switchTab(name) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+    document.getElementById('view-api').style.display = name === 'api' ? '' : 'none';
+    document.getElementById('view-auth').style.display = name === 'auth' ? '' : 'none';
+    document.getElementById('page-subtitle').textContent =
+      name === 'api' ? '配置上游 API 供应商与调度优先级' : '登录各厂商订阅账号，作为上游路由候选';
+    const actions = document.getElementById('head-actions');
+    if (name === 'auth') {
+      actions.innerHTML = '<button class="btn btn-primary" onclick="startLogin()">🔑 登录账号</button><button class="btn" onclick="startImport()">⇧ 从 auth.json 导入</button>';
+    } else {
+      actions.innerHTML = '<button class="btn">⇩ 导出</button><button class="btn">⇧ 导入 ▾</button><button class="btn btn-primary">＋ 新建渠道</button>';
+    }
+  }
+  function resetProto() { switchTab('api'); }
+
+  // ── 账号编辑弹窗 ─────────────────────────
+  const ACCOUNTS = {
+    1: { name: 'Codex · ChatGPT', email: 'z***@gmail.com', p: 0, w: 1, plan: 'Plus' },
+    2: { name: 'Codex · 工作账号', email: 'work***@gmail.com', p: 0, w: 1, plan: 'Pro' },
+    3: { name: 'Codex · 备用账号', email: 'alt***@gmail.com', p: 0, w: 1, plan: 'Pro' },
+  };
+  function openEdit(id) {
+    const a = ACCOUNTS[id];
+    if (!a) return;
+    document.getElementById('edit-id').value = id;
+    document.getElementById('edit-name').value = a.name;
+    document.getElementById('edit-p').value = a.p;
+    document.getElementById('edit-w').value = a.w;
+    document.getElementById('edit-email').textContent = a.email;
+    document.getElementById('edit-plan').textContent = a.plan;
+    document.getElementById('edit-modal').style.display = 'flex';
+    document.getElementById('edit-name').focus();
+    document.getElementById('edit-name').select();
+  }
+  function closeEdit() { document.getElementById('edit-modal').style.display = 'none'; }
+  function saveEdit() {
+    const id = document.getElementById('edit-id').value;
+    const name = document.getElementById('edit-name').value.trim() || '未命名';
+    const p = parseInt(document.getElementById('edit-p').value, 10) || 0;
+    const w = parseInt(document.getElementById('edit-w').value, 10) || 1;
+    const span = document.getElementById('name-' + id);
+    if (span) span.textContent = name;
+    if (ACCOUNTS[id]) { ACCOUNTS[id].name = name; ACCOUNTS[id].p = p; ACCOUNTS[id].w = w; }
+    // 更新权重 chip（模拟）
+    const cards = document.querySelectorAll('.auth-card');
+    const chip = cards[id - 1].querySelector('.chip');
+    if (chip) chip.textContent = 'P' + p + ' · W' + w;
+    closeEdit();
+  }
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && document.getElementById('edit-modal').style.display === 'flex') closeEdit();
+    if (e.key === 'Escape' && document.getElementById('models-modal').style.display === 'flex') closeModels();
+    if (e.key === 'Escape' && document.getElementById('login-modal').style.display === 'flex') cancelLogin();
+  });
+
+  // ── 刷新令牌：同时刷新限额 + 模型 ─────────
+  const MODELS = {
+    1: [ 'gpt-5.5', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna' ],
+    2: [ 'gpt-5.5', 'gpt-5.6-sol' ],
+    3: [ 'gpt-5.5' ],
+  };
+  function toast(msg) {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.classList.add('show');
+    clearTimeout(toast._timer);
+    toast._timer = setTimeout(() => t.classList.remove('show'), 1800);
+  }
+  function setBtnLoading(btn, loading) {
+    if (loading) { btn._old = btn.innerHTML; btn.innerHTML = '<span class="spinner"></span>'; btn.disabled = true; }
+    else { btn.innerHTML = btn._old || btn.innerHTML; btn.disabled = false; }
+  }
+  function refreshAccount(id) {
+    const btn = event.currentTarget;
+    setBtnLoading(btn, true);
+    setTimeout(() => {
+      setBtnLoading(btn, false);
+      toast('令牌已刷新 · 限额与模型已同步更新（模拟）');
+    }, 800);
+  }
+  // ── 同步模型：弹窗展示模型列表 ────────────
+  function openModels(id) {
+    document.getElementById('models-account').textContent = ACCOUNTS[id].name;
+    const list = document.getElementById('models-list');
+    list.innerHTML = '<div style="padding:14px;text-align:center;color:var(--faint)"><span class="spinner"></span> 同步中…</div>';
+    document.getElementById('models-modal').style.display = 'flex';
+    setTimeout(() => {
+      const models = MODELS[id] || [];
+      list.innerHTML = models.map(m => `
+        <div class="model-item">
+          <span class="m-check">✓</span>
+          <span class="m-name">${m}</span>
+          <span class="m-sub">可用</span>
+        </div>`).join('') || '<div style="padding:14px;text-align:center;color:var(--faint)">未获取到模型</div>';
+    }, 500);
+  }
+  function closeModels() { document.getElementById('models-modal').style.display = 'none'; }
+  // ── 写回 CLI ──────────────────────────────
+  function writeBack(id) {
+    toast('已写入 ~/.codex/auth.json（模拟）');
+  }
+  function reLogin(id) {
+    toast('将打开浏览器进行 OAuth 登录（模拟）');
+  }
+
+  // ── 登录流程（OAuth PKCE，模拟分步）────────
+  const LOGIN_STEPS = [
+    { t: '启动本地回调服务器', d: '随机端口，生成 PKCE code_verifier / code_challenge / state' },
+    { t: '打开浏览器授权', d: '访问 OpenAI 登录页（client_id · redirect_uri=localhost · code_challenge）' },
+    { t: '用户在浏览器完成登录', d: '授权成功后回跳 localhost，带回授权 code' },
+    { t: '换令牌 · 入库', d: 'code + code_verifier 换 token → 按 account_id 覆盖入库' },
+    { t: '同步模型列表', d: 'GET /models → 更新账号模型快照' },
+  ];
+  function stepHtml(i, extra) {
+    return `<div class="step ${extra ? extra : ''}">
+      <span class="n">${extra === 'done' ? '✓' : i + 1}</span>
+      <div><div class="st">${LOGIN_STEPS[i].t}</div><div class="sd">${LOGIN_STEPS[i].d}</div></div>
+    </div>`;
+  }
+  function startLogin() {
+    const modal = document.getElementById('login-modal');
+    modal.style.display = 'flex';
+    const steps = document.getElementById('login-steps');
+    const hint = document.getElementById('login-hint');
+    const actions = document.getElementById('login-actions');
+    let i = 0;
+    const stepTimer = setInterval(() => {
+      // 渲染已完成/进行中/待定
+      let html = '';
+      for (let j = 0; j < LOGIN_STEPS.length; j++) {
+        if (j < i) html += stepHtml(j, 'done');
+        else if (j === i) html += stepHtml(j, 'doing');
+        else html += stepHtml(j, '');
+      }
+      steps.innerHTML = html;
+      if (i >= LOGIN_STEPS.length) {
+        clearInterval(stepTimer);
+        hint.innerHTML = '✅ 登录成功！已导入账号 <b>Codex · ChatGPT</b>（account_id 已存在则覆盖刷新）。';
+        actions.innerHTML = '<button class="btn btn-primary" onclick="finishLogin()">完成</button>';
+        return;
+      }
+      if (i === 1) {
+        hint.innerHTML = '<span class="spin-inline"><span class="spinner"></span> 已在浏览器打开授权页…请在浏览器完成登录</span>';
+        actions.innerHTML = '';
+      } else if (i < LOGIN_STEPS.length) {
+        hint.innerHTML = '';
+        actions.innerHTML = i === 0 ? '<button class="btn" onclick="cancelLogin()">取消</button>' : '';
+      }
+      i++;
+    }, 1000);
+    modal._timer = stepTimer;
+  }
+  function cancelLogin() {
+    const modal = document.getElementById('login-modal');
+    if (modal._timer) clearInterval(modal._timer);
+    modal.style.display = 'none';
+  }
+  function finishLogin() {
+    const modal = document.getElementById('login-modal');
+    if (modal._timer) clearInterval(modal._timer);
+    modal.style.display = 'none';
+    // 模拟：空槽变为新账号卡片（简化：提示）
+    toast('登录完成 · 账号已添加（模拟）');
+  }
+  // ── 从 auth.json 导入 ─────────────────────
+  function startImport() {
+    toast('正在读取 ~/.codex/auth.json …（模拟）');
+  }
+  // provider pills: only codex is clickable/active; others are "规划中"
+  document.querySelectorAll('.provider-pill.soon').forEach(p => p.remove());
+</script>
+</body>
+</html>
