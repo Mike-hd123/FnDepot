@@ -1,0 +1,67 @@
+# WechatOnCloud —— 面板为唯一服务；微信实例由面板按需动态创建（docker run）。
+# 面板挂载 docker.sock 来创建/启动/删除微信实例容器，并反向代理到它们的 KasmVNC。
+# 镜像默认从 Docker Hub 拉取（GHCR 备用），无需本地构建。要改配置：复制 .env.example 为 .env 后修改。
+services:
+  panel:
+    # 镜像源前缀默认 Docker Hub（飞牛等 NAS 有加速）；拉不动时改 .env 的 WOC_IMAGE_PREFIX 切到 GHCR/国内反代（见 .env.example）。
+    image: ${WOC_IMAGE_PREFIX:-docker.io/gloridust}/woc-panel:${WOC_VERSION:-latest}
+    container_name: woc-panel
+    # pull_policy 用默认（missing）：本地已有同名镜像就直接用，没有才去镜像源拉。
+    # 这样「发布前本地自构建」与「线上拉取」都能用同一份 compose。
+    # 想强制更新到最新版：docker compose pull && docker compose up -d
+
+    environment:
+      - PORT=8080
+      # 新建微信实例时使用的镜像（多架构，amd64/arm64 自动匹配）；前缀同样跟随 WOC_IMAGE_PREFIX。
+      - WOC_WECHAT_IMAGE=${WOC_IMAGE_PREFIX:-docker.io/gloridust}/wechat-on-cloud:${WOC_VERSION:-latest}
+      # 透传给每个微信实例容器（KasmVNC 基础镜像用它们降权运行）
+      - PUID=${WOC_PUID:-1000}
+      - PGID=${WOC_PGID:-1000}
+      - TZ=${WOC_TZ:-Asia/Shanghai}
+      # 摄像头直通：逗号分隔的宿主视频设备（如 /dev/video0）。留空则自动探测（见下方 /host-dev 挂载）或禁用摄像头。
+      # 启用前需在宿主加载 v4l2loopback 内核模块。详见 .env.example。
+      - WOC_VIDEO_DEVICES=${WOC_VIDEO_DEVICES:-}
+      # 实例资源相关（见 .env.example）：GPU 硬件编码默认关闭（避免 WSL2/虚拟 GPU 下 Xvnc 内存暴涨）；
+      # 可选给每个实例设内存上限（GiB），0=不限制；watchdog 双阈值（soft 柔和自愈 / hard 强制重启）+ 巡检间隔。
+      - WOC_ENABLE_GPU=${WOC_ENABLE_GPU:-}
+      - WOC_INSTANCE_MEM_GB=${WOC_INSTANCE_MEM_GB:-}
+      - WOC_INSTANCE_MEM_SOFT_MB=${WOC_INSTANCE_MEM_SOFT_MB:-1500}
+      - WOC_INSTANCE_MEM_HARD_MB=${WOC_INSTANCE_MEM_HARD_MB:-2500}
+      - WOC_WATCHDOG_INTERVAL_SEC=${WOC_WATCHDOG_INTERVAL_SEC:-300}
+      # 设备伪装：os-release 伪装成 deepin（默认开，=0 关恢复 Debian）。详见 .env.example / doc/设备伪装.md。
+      - WOC_SPOOF_OS=${WOC_SPOOF_OS:-1}
+      # 登录会话时长（天，默认 30）。会话已落盘持久化：面板重启/自更新不再踢人。调小更安全、调大更省事。
+      - WOC_SESSION_DAYS=${WOC_SESSION_DAYS:-30}
+      # 拉取实例镜像的"无进度"超时（分钟，默认 5）。NAS 直连 docker.io 卡死时据此快速失败而非无限转圈。
+      - WOC_PULL_STALL_MIN=${WOC_PULL_STALL_MIN:-5}
+      # 实例桌面深色：由面板顶栏的主题开关统一控制（管理员），持久化在 accounts.json，无需在此配 env。
+      # 面板首个管理员账号（仅首次启动、无账号文件时写入；务必改掉默认密码）
+      - PANEL_ADMIN_USER=${WOC_USER:-admin}
+      - PANEL_ADMIN_PASSWORD=${WOC_PASSWORD:-wechat}
+      - PANEL_DATA=/data/accounts.json
+      # DNS-rebinding 防护：套 HTTPS 反代部署时把对外域名加进 .env（详见 .env.example）。
+      # 默认仅放行 loopback + RFC1918 私网，直连 NAS / 局域网无需改动。
+      - PANEL_ALLOWED_HOSTS=${PANEL_ALLOWED_HOSTS:-}
+
+    volumes:
+      # 面板账号数据（用户、实例元信息、密码哈希）
+      - ./data-panel:/data
+      # 面板经 docker 引擎创建/启动/删除微信实例容器、exec 触发下载、读取进度。
+      # 注意：docker.sock 等同宿主 root 权限，故实例增删仅限管理员，docker API 绝不暴露给前端。
+      - /var/run/docker.sock:/var/run/docker.sock
+      # 摄像头自动探测（可选）：把宿主 /dev 只读挂进来，面板据此发现 /dev/videoN 并映射给实例。
+      # 不想自动探测就删掉此行，改用上面的 WOC_VIDEO_DEVICES 显式指定。
+      - /dev:/host-dev:ro
+
+    ports:
+      - "${WOC_HTTP_PORT:-36080}:8080"   # 面板 = 唯一对外入口
+
+    # 日志硬上限：docker 默认 json-file 不限大小，长期运行/异常刷错会无限吃磁盘。
+    # （实例容器的同类上限由面板创建时注入，无需在此配置。）
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "2"
+
+    restart: unless-stopped

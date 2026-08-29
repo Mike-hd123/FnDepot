@@ -1,0 +1,134 @@
+name: template-check
+
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+    types: [opened]
+
+permissions: {}
+
+jobs:
+  issue:
+    name: Check issue template
+    if: github.event_name == 'issues'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Close issue not following a template
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const issue = context.payload.issue;
+            const body = issue.body ?? '';
+            const labels = issue.labels.map((label) => label.name);
+            const lines = new Set(body.split(/\r?\n/).map((line) => line.trim().replace(/^- \[X\]/, '- [x]')));
+            const headings = [...body.matchAll(/^### (.+)\r?$/gm)];
+            const sections = new Map(headings.map((heading, index) => [
+              heading[1].trim(),
+              body.slice(heading.index + heading[0].length, headings[index + 1]?.index ?? body.length).trim(),
+            ]));
+
+            let template; // 当前 Issue 标签对应的模板约束
+            if (labels.includes('bug') && !labels.includes('enhancement')) {
+              template = {
+                titlePrefix: '[Bug] ',
+                checks: [
+                  '我已搜索过现有 Issue，确认没有重复问题',
+                  '如果是前端问题，我已在无痕模式（禁用所有扩展）下复现，问题仍然存在',
+                  '此Issue仅包含一个Bug反馈，而不是多个Bug反馈',
+                ],
+                sections: [
+                  '提交前确认',
+                  '上游接口类型',
+                  '客户端接口类型',
+                  '客户端版本号',
+                  '客户端配置',
+                  '浏览器版本号',
+                  '问题描述',
+                  '复现步骤',
+                  'WEB日志',
+                  '后端日志',
+                ],
+                requiredSections: [
+                  '上游接口类型',
+                  '客户端接口类型',
+                  '客户端版本号',
+                  '客户端配置',
+                  '问题描述',
+                  '复现步骤',
+                  'WEB日志',
+                  '后端日志',
+                ],
+              };
+            } else if (labels.includes('enhancement') && !labels.includes('bug')) {
+              template = {
+                titlePrefix: '[Feature] ',
+                checks: [
+                  '我已经阅读了 README.md，确认了该功能没有实现',
+                  '我已在 Issue 中寻找过我要提出的功能请求，并且没有找到',
+                  '此Issue仅包含一个功能请求，而不是多个功能请求',
+                ],
+                sections: ['验证步骤', '描述'],
+                requiredSections: ['描述'],
+              };
+            }
+
+            const valid = template // Issue 是否完整保留模板并填写全部必填项
+              && issue.title.startsWith(template.titlePrefix)
+              && template.checks.every((check) => lines.has(`- [x] ${check}`))
+              && template.sections.every((section) => sections.has(section))
+              && template.requiredSections.every((section) => {
+                const response = sections.get(section)
+                  .replace(/^```[^\r\n]*\r?\n?/, '')
+                  .replace(/\r?\n?```$/, '')
+                  .trim();
+                return response && response !== '_No response_';
+              });
+
+            if (!valid) {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: issue.number,
+                body: '此 Issue 未按模板要求完整填写，现已自动关闭。请按照模板要求重新创建 Issue。\n\nThis issue does not fully comply with the required template and has been closed automatically. Please create a new issue using the required template.',
+              });
+              await github.rest.issues.update({
+                ...context.repo,
+                issue_number: issue.number,
+                state: 'closed',
+              });
+            }
+
+  pull-request:
+    name: Check pull request template
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Close pull request not following the template
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const pullRequest = context.payload.pull_request;
+            const lines = new Set((pullRequest.body ?? '').split(/\r?\n/).map((line) => line.trim().replace(/^- \[X\]/, '- [x]')));
+            const requiredLines = [
+              '## 提交前检查 | Pre-submission Checklist',
+              '- [x] 本次 PR 仅包含一个变更主题 | This PR contains only one change topic',
+              '- [x] 本次 PR 不包含测试文件 | This PR contains no test files',
+              '- [x] AI 参与的内容已完成人工审查 | AI-assisted content has been manually reviewed',
+            ];
+
+            if (!requiredLines.every((line) => lines.has(line))) {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: pullRequest.number,
+                body: '此 PR 未按模板要求完整填写，现已自动关闭。请按照模板要求重新创建 PR。\n\nThis pull request does not fully comply with the required template and has been closed automatically. Please create a new pull request using the required template.',
+              });
+              await github.rest.pulls.update({
+                ...context.repo,
+                pull_number: pullRequest.number,
+                state: 'closed',
+              });
+            }

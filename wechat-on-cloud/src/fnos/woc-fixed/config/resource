@@ -1,0 +1,20 @@
+{
+  "docker-project": {
+    "projects": [
+      {
+        "name": "wechat-on-cloud",
+        "path": "docker"
+      }
+    ]
+  },
+  "data-share": {
+    "shares": [
+      {
+        "name": "wechat-on-cloud",
+        "permission": {
+          "rw": ["wechat-on-cloud"]
+        }
+      }
+    ]
+  }
+}

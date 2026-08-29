@@ -1,0 +1,10 @@
+{
+  "data-share": {
+    "shares": [
+      {
+        "name": "wechat-on-cloud",
+        "permission": "rw"
+      }
+    ]
+  }
+}

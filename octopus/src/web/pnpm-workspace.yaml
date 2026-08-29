@@ -1,0 +1,2 @@
+minimumReleaseAgeExclude:
+  - '@zumer/snapdom@2.24.10'

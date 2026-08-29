@@ -1,0 +1,55 @@
+name: telegram-notify
+
+# 新版本发布 / 新 issue 时，把内容（GitHub Markdown → Telegram HTML 渲染）推送到 Telegram 群组。
+# 跑在 GitHub Actions 上，无需服务器；未配置 TELEGRAM_CHAT_ID 则自动跳过。
+#
+# 一次性配置（仓库 Settings → Secrets and variables → Actions）：
+#   · Variables → TELEGRAM_CHAT_ID  = 群组 chat id（形如 -1001234567890；取法见 doc/发布到GHCR.md）
+#   · Secrets   → TELEGRAM_BOT_TOKEN = @BotFather 的 token
+#   并把机器人拉进群组。
+#
+# 手动测试渲染效果：Actions → telegram-notify → Run workflow（会把「最新 release」渲染后发到群）。
+
+on:
+  release:
+    types: [published]
+  issues:
+    types: [opened]
+  issue_comment:
+    types: [created]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    if: ${{ vars.TELEGRAM_CHAT_ID != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Render & send to Telegram
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT: ${{ vars.TELEGRAM_CHAT_ID }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          # 经 env 传任意文本，避免命令注入
+          R_TAG: ${{ github.event.release.tag_name }}
+          R_NAME: ${{ github.event.release.name }}
+          R_URL: ${{ github.event.release.html_url }}
+          R_BODY: ${{ github.event.release.body }}
+          I_NUM: ${{ github.event.issue.number }}
+          I_TITLE: ${{ github.event.issue.title }}
+          I_URL: ${{ github.event.issue.html_url }}
+          I_USER: ${{ github.event.issue.user.login }}
+          I_BODY: ${{ github.event.issue.body }}
+          # issue_comment 事件：issue 下的新回复（PR 评论也走此事件，脚本里据 C_PR 跳过）
+          C_NUM: ${{ github.event.issue.number }}
+          C_TITLE: ${{ github.event.issue.title }}
+          C_URL: ${{ github.event.comment.html_url }}
+          C_USER: ${{ github.event.comment.user.login }}
+          C_BODY: ${{ github.event.comment.body }}
+          C_PR: ${{ github.event.issue.pull_request.html_url }}
+        run: node .github/scripts/tg-notify.mjs

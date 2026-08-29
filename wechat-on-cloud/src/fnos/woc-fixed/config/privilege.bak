@@ -1,0 +1,7 @@
+{
+  "defaults": {
+    "run-as": "package"
+  },
+  "username": "wechat-on-cloud",
+  "groupname": "wechat-on-cloud"
+}

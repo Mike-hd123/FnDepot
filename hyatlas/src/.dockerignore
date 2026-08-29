@@ -1,0 +1,56 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+build/
+dist/
+
+.git/
+.github/
+.hermes/
+.worktrees/
+.pytest_cache/
+.ruff_cache/
+
+# Runtime / host data — never bake into the image
+logs/
+*.log
+storage/
+snapshots/
+qdrant_data/
+qdrant_storage/
+.qdrant-initialized
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+hy_memory.json
+**/.hyatlas/
+**/.hy_memory/
+
+# Docs/assets not required at runtime (README kept for packaging)
+*.md
+!README.md
+!LICENSE
+docs/
+assets/
+examples/
+scripts/
+tests/
+handoff.md
+NOW.md
+TUNA_AGENT_OS_TASK_BRIEF.md
+ROADMAP_v2_public.md
+*.jpeg
+*.jpg
+*.png
+!src/**/*.png
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

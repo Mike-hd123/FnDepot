@@ -1,0 +1,37 @@
+[
+  {
+    "stepTitle": "管理员账号",
+    "items": [
+      {
+        "type": "string",
+        "field": "WOC_USER",
+        "label": "管理员用户名",
+        "defaultValue": "admin",
+        "rules": [{ "required": true, "message": "请输入管理员用户名" }]
+      },
+      {
+        "type": "password",
+        "field": "WOC_PASSWORD",
+        "label": "管理员密码（务必修改默认值）",
+        "rules": [{ "required": true, "message": "请输入管理员密码" }]
+      }
+    ]
+  },
+  {
+    "stepTitle": "运行参数",
+    "items": [
+      {
+        "type": "string",
+        "field": "WOC_HTTP_PORT",
+        "label": "对外访问端口",
+        "defaultValue": "36080"
+      },
+      {
+        "type": "string",
+        "field": "WOC_VERSION",
+        "label": "镜像版本（建议钉到具体版本）",
+        "defaultValue": "latest"
+      }
+    ]
+  }
+]
