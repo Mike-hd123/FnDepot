@@ -44,7 +44,7 @@ FnDepot/
 ## 打包说明
 
 - 打包工具：fnOS 官方 `fnpack build -d <project-dir>`，产物内 manifest appname/version 与 fnpack.json 一致。
-- 云微改动全在 `src/panel`（面板 web）与 fpk 打包层（cmd/、manifest），本仓库 `src/` 与 [Mike-hd123/WechatOnCloud](https://github.com/Mike-hd123/WechatOnCloud) 同步。
+- 云微改动全在 `src/panel`（面板 web）与 fpk 打包层（cmd/、manifest），本仓库 `src/` 与 [Mike-hd123/WechatOnCloud](https://github.com/Gloridust/WechatOnCloud) 同步。
 - HyAtlas 汉化与降权改动在 fpk 打包层（site-patches/、systemd 单元），未侵入 `src/`。
 - Octopus 为官方 release 二进制原样打包。
 - 发布者：Mike · https://github.com/Mike-hd123
