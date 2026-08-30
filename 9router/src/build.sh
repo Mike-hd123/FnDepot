@@ -105,10 +105,10 @@ display_name          = 9Router
 desc                  = FREE AI Router & Token Saver - AI 编码路由器，连接 Claude Code/Codex/Cursor 等工具到 40+ 免费 AI 提供商
 platform              = ${ARCH}
 source                = thirdparty
-maintainer            = Mike
-maintainer_url        = https://github.com/mike-hd123/9router-fnos
+maintainer            = decolua
+maintainer_url        = https://github.com/decolua/9router
 distributor           = Mike
-distributor_url       = https://github.com/mike-hd123/9router-fnos
+distributor_url       = https://github.com/Mike-hd123
 desktop_uidir         = ui
 desktop_applaunchname = 9router.Application
 service_port          = 20128
@@ -125,7 +125,7 @@ cat > "${BUILD_DIR}/app/ui/config" <<'EOF'
     "9router.Application": {
       "title": "9Router",
       "icon": "images/icon_{0}.png",
-      "type": "url",
+      "type": "iframe",
       "protocol": "http",
       "port": "20128",
       "url": "/",

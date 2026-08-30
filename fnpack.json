@@ -1,170 +1,138 @@
 {
- "schema_version": "2",
- "source_info": {
-  "name": "Mike 的飞牛应用源",
-  "author": "Mike",
-  "homepage": "https://github.com/Mike-hd123",
-  "description": "个人维护的飞牛 fnOS 第三方应用源：云微(WechatOnCloud)、HyAtlas(混元记忆)、WaLiAPI(多Key轮询网关)、9Router(FREE AI Router & Token Saver)。均为上游开源项目的 NAS 原生化打包。"
+  "schema_version": "2",
+  "source_info": {
+    "name": "Mike 的飞牛应用源",
+    "author": "Mike",
+    "homepage": "https://github.com/Mike-hd123",
+    "description": "个人维护的飞牛 fnOS 第三方应用源：云微(WechatOnCloud)、HyAtlas(混元记忆)、WaLiAPI(多Key轮询网关)、9Router(FREE AI Router & Token Saver)。均为上游开源项目的 NAS 原生化打包。"
   },
   "apps": {
-   "9router": {
-    "display_name": "9Router",
-    "desc": "FREE AI Router & Token Saver：AI 编码路由器，连接 Claude Code/Codex/Cursor 等工具到 40+ 免费 AI 提供商。上游：decolua/9router。",
-    "platform": [
-     "x86"
-    ],
-    "categories": [
-     "系统工具",
-     "开发工具"
-    ],
-    "icon_url": "./9router/ICON.PNG",
-    "maintainer": "Mike",
-    "maintainer_url": "https://github.com/Mike-hd123",
-    "distributor": "Mike",
-    "run_as": "package",
-    "install_type": "volume",
-    "is_docker": false,
-    "service_port": "20128",
-    "releases": {
-     "0.5.59": {
-      "changelog": "maintainer 改 Mike 指向 mike-hd123/9router-fnos + 基于 decolua/9router 0.5.59 打包。",
-      "updated_at": "2026-08-30T09:40:00+08:00",
-      "packages": {
-       "x86": {
-        "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/9router/9router-0.5.59-x86.fpk",
-        "sha256": "f89019c75e2e080ade7d2c157d113d5f504c54b7ea999be0bc864a57ea28cef4",
-        "size": 34621810
-       }
+    "9router": {
+      "display_name": "9Router",
+      "desc": "FREE AI Router & Token Saver：AI 编码路由器，连接 Claude Code/Codex/Cursor 等工具到 40+ 免费 AI 提供商。上游：decolua/9router。",
+      "platform": [
+        "x86"
+      ],
+      "categories": [
+        "系统工具",
+        "开发工具"
+      ],
+      "icon_url": "./9router/ICON.PNG",
+      "maintainer": "Mike",
+      "maintainer_url": "https://github.com/Mike-hd123",
+      "distributor": "Mike",
+      "run_as": "package",
+      "install_type": "volume",
+      "is_docker": false,
+      "service_port": "20128",
+      "releases": {
+        "0.5.59": {
+          "changelog": "maintainer 改 Mike 指向 mike-hd123/9router-fnos + 基于 decolua/9router 0.5.59 打包。",
+          "updated_at": "2026-08-30T09:40:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/9router/9router-0.5.59-x86.fpk",
+              "sha256": "f89019c75e2e080ade7d2c157d113d5f504c54b7ea999be0bc864a57ea28cef4",
+              "size": 34621810
+            }
+          }
+        }
       }
-     }
-    }
-   },
-   "wechat-on-cloud": {
-   "display_name": "云微(飞牛云微信)",
-   "desc": "NAS 原生微信面板：Node.js 面板 + dockerode 管理微信实例容器，ipvlan 单网卡直连局域网，数据落主机目录，移动端触屏优化。上游项目：Gloridust/WechatOnCloud。",
-   "platform": [
-    "all"
-   ],
-   "categories": [
-    "生活服务",
-    "系统工具"
-   ],
-   "icon_url": "./wechat-on-cloud/ICON.PNG",
-   "maintainer": "Mike",
-   "maintainer_url": "https://github.com/Mike-hd123",
-   "distributor": "Mike",
-   "run_as": "root",
-   "install_type": "root",
-   "is_docker": false,
-   "service_port": "8080",
-   "releases": {
-    "1.5.1": {
-     "changelog": "ipvlan(woc-lan)单网卡固化 + WOC_DATA_DIR 主机路径bind + 面板版本号对齐1.5.1 + 移动端触屏焦点修复(6fcf299)。",
-     "updated_at": "2026-08-29T21:45:00+08:00",
-     "packages": {
-      "all": {
-       "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/wechat-on-cloud/wechat-on-cloud.fpk",
-       "sha256": "bfef9610696e6ea74f7b52069eac41f8df0a30632f7c9d951fb516732f8a7401",
-       "size": 15721685
+    },
+    "wechat-on-cloud": {
+      "display_name": "云微(飞牛云微信)",
+      "desc": "NAS 原生微信面板：Node.js 面板 + dockerode 管理微信实例容器，ipvlan 单网卡直连局域网，数据落主机目录，移动端触屏优化。上游项目：Gloridust/WechatOnCloud。",
+      "platform": [
+        "all"
+      ],
+      "categories": [
+        "生活服务",
+        "系统工具"
+      ],
+      "icon_url": "./wechat-on-cloud/ICON.PNG",
+      "maintainer": "Mike",
+      "maintainer_url": "https://github.com/Mike-hd123",
+      "distributor": "Mike",
+      "run_as": "root",
+      "install_type": "root",
+      "is_docker": false,
+      "service_port": "8080",
+      "releases": {
+        "1.5.1": {
+          "changelog": "ipvlan(woc-lan)单网卡固化 + WOC_DATA_DIR 主机路径bind + 面板版本号对齐1.5.1 + 移动端触屏焦点修复(6fcf299)。",
+          "updated_at": "2026-08-29T21:45:00+08:00",
+          "packages": {
+            "all": {
+              "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/wechat-on-cloud/wechat-on-cloud.fpk",
+              "sha256": "bfef9610696e6ea74f7b52069eac41f8df0a30632f7c9d951fb516732f8a7401",
+              "size": 15721685
+            }
+          }
+        }
       }
-     }
-    }
-   }
-  },
-  "hyatlas": {
-   "display_name": "HyAtlas(混元记忆)",
-   "desc": "混元记忆系统：AI 长期记忆与知识库，zvec 双索引，仪表盘汉化并支持 token=admin 自动登录，hy-memory 用户降权运行，数据在 /vol1/@appshare/hyatlas。上游项目：tuancookiez-hub/HyAtlas-Memory。",
-   "platform": [
-    "all"
-   ],
-   "categories": [
-    "AI赋能"
-   ],
-   "icon_url": "./hyatlas/ICON.PNG",
-   "maintainer": "Mike",
-   "maintainer_url": "https://github.com/Mike-hd123",
-   "distributor": "Mike",
-   "run_as": "root",
-   "install_type": "root",
-   "is_docker": false,
-   "service_port": "8765",
-   "releases": {
-    "2.0.1": {
-     "changelog": "面板汉化重打包 + dash token 固定 admin 双位读写 + zvec 双索引 + hy-memory 用户降权。",
-     "updated_at": "2026-08-29T21:48:00+08:00",
-     "packages": {
-      "all": {
-       "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/hyatlas/hyatlas.fpk",
-       "sha256": "3a45989ac3d0d3e7938608feca4dcc9efa9db54b09224582407f830a61955e5c",
-       "size": 104812606
+    },
+    "hyatlas": {
+      "display_name": "HyAtlas(混元记忆)",
+      "desc": "混元记忆系统：AI 长期记忆与知识库，zvec 双索引，仪表盘汉化并支持 token=admin 自动登录，hy-memory 用户降权运行，数据在 /vol1/@appshare/hyatlas。上游项目：tuancookiez-hub/HyAtlas-Memory。",
+      "platform": [
+        "all"
+      ],
+      "categories": [
+        "AI赋能"
+      ],
+      "icon_url": "./hyatlas/ICON.PNG",
+      "maintainer": "Mike",
+      "maintainer_url": "https://github.com/Mike-hd123",
+      "distributor": "Mike",
+      "run_as": "root",
+      "install_type": "root",
+      "is_docker": false,
+      "service_port": "8765",
+      "releases": {
+        "2.0.1": {
+          "changelog": "面板汉化重打包 + dash token 固定 admin 双位读写 + zvec 双索引 + hy-memory 用户降权。",
+          "updated_at": "2026-08-29T21:48:00+08:00",
+          "packages": {
+            "all": {
+              "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/hyatlas/hyatlas.fpk",
+              "sha256": "3a45989ac3d0d3e7938608feca4dcc9efa9db54b09224582407f830a61955e5c",
+              "size": 104812606
+            }
+          }
+        }
       }
-     }
-    }
-   }
-  },
-  "octopus": {
-   "display_name": "Octopus",
-   "desc": "LLM API 聚合网关：Go 单二进制 + 内嵌前端 + SQLite 存储，多渠道/多模型管理，原生宿主机运行，端口 8081。上游项目：bestruirui/octopus。",
-   "platform": [
-    "all"
-   ],
-   "categories": [
-    "AI赋能",
-    "编程开发"
-   ],
-   "icon_url": "./octopus/ICON.PNG",
-   "maintainer": "Mike",
-   "maintainer_url": "https://github.com/Mike-hd123",
-   "distributor": "Mike",
-   "run_as": "root",
-   "install_type": "root",
-   "is_docker": false,
-   "service_port": "8081",
-   "releases": {
-    "0.12.1": {
-     "changelog": "官方 0.12.1 release 二进制，宿主机原生运行，端口 8081(避开云微 8080)。",
-     "updated_at": "2026-08-29T21:49:00+08:00",
-     "packages": {
-      "all": {
-       "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/octopus/octopus.fpk",
-       "sha256": "5048a9939ef25f5c14bfb0810a5e90788b38ba6e907bde3c022583a6840f60d7",
-       "size": 22579457
+    },
+    "waliapi": {
+      "display_name": "WaLiAPI",
+      "desc": "多 Key API 网关聚合：Rust 单二进制 + 内嵌 Web 面板 + SQLite 存储，单渠道多 Key 加权随机轮询分流，解商汤限次痛点，原生宿主机运行，端口 8777。上游项目：fuzhengwei/WaLiAPI。",
+      "platform": [
+        "all"
+      ],
+      "categories": [
+        "AI赋能",
+        "编程开发"
+      ],
+      "icon_url": "./waliapi/ICON.PNG",
+      "maintainer": "Mike",
+      "maintainer_url": "https://github.com/Mike-hd123",
+      "distributor": "Mike",
+      "run_as": "root",
+      "install_type": "root",
+      "is_docker": false,
+      "service_port": "8777",
+      "releases": {
+        "0.2.5": {
+          "changelog": "官方 docker 镜像 0.2.5-amd64 内 headless 二进制，自带 webkit 运行库回调，端口 8777(避开云微 8080/octopus 8081)。",
+          "updated_at": "2026-08-30T06:45:00+08:00",
+          "packages": {
+            "all": {
+              "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/waliapi/waliapi.fpk",
+              "sha256": "4518b05993ad4d493fd91b85dd019669e8572ca5ce512740cbe09cdd0ade0bf2",
+              "size": 63797355
+            }
+          }
+        }
       }
-     }
     }
-   }
-  },
-  "waliapi": {
-   "display_name": "WaLiAPI",
-   "desc": "多 Key API 网关聚合：Rust 单二进制 + 内嵌 Web 面板 + SQLite 存储，单渠道多 Key 加权随机轮询分流，解商汤限次痛点，原生宿主机运行，端口 8777。上游项目：fuzhengwei/WaLiAPI。",
-   "platform": [
-    "all"
-   ],
-   "categories": [
-    "AI赋能",
-    "编程开发"
-   ],
-   "icon_url": "./waliapi/ICON.PNG",
-   "maintainer": "Mike",
-   "maintainer_url": "https://github.com/Mike-hd123",
-   "distributor": "Mike",
-   "run_as": "root",
-   "install_type": "root",
-   "is_docker": false,
-   "service_port": "8777",
-   "releases": {
-    "0.2.5": {
-     "changelog": "官方 docker 镜像 0.2.5-amd64 内 headless 二进制，自带 webkit 运行库回调，端口 8777(避开云微 8080/octopus 8081)。",
-     "updated_at": "2026-08-30T06:45:00+08:00",
-     "packages": {
-      "all": {
-       "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/waliapi/waliapi.fpk",
-       "sha256": "4518b05993ad4d493fd91b85dd019669e8572ca5ce512740cbe09cdd0ade0bf2",
-       "size": 63797355
-      }
-     }
-    }
-   }
   }
- }
 }
