@@ -1,6 +1,6 @@
 # FnDepot — Mike 的飞牛第三方应用源
 
-飞牛 fnOS 外部应用源（schema_version 2），收录 4 个自打包应用。每个应用目录 = 安装包(fpk) + 图标 + 说明 + 上游源码 fork(src/)。
+飞牛 fnOS 外部应用源（schema_version 2），收录 3 个自打包应用。每个应用目录 = 安装包(fpk) + 图标 + 说明 + 上游源码 fork(src/)。
 
 ## 添加源
 

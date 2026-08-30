@@ -1,0 +1,48 @@
+[
+  {
+    "stepTitle": "记忆服务配置",
+    "items": [
+      {
+        "type": "text",
+        "field": "HY_MEMORY_AUTH_TOKEN",
+        "label": "鉴权 Token",
+        "initValue": "",
+        "helpText": "混元记忆 API 鉴权令牌（已存在 .env 则保留原值）"
+      },
+      {
+        "type": "text",
+        "field": "HY_MEMORY_LLM_API_KEY",
+        "label": "LLM API Key",
+        "initValue": "",
+        "helpText": "9router 或 OpenAI 兼容 LLM 的 API Key（已存在 .env 则保留原值）"
+      },
+      {
+        "type": "text",
+        "field": "HY_MEMORY_LLM_MODEL",
+        "label": "LLM 模型名",
+        "initValue": "tt/deepseek-v4-flash-0731",
+        "helpText": "默认使用现役 9router deepseek"
+      },
+      {
+        "type": "text",
+        "field": "HY_DASH_PORT",
+        "label": "仪表盘端口",
+        "initValue": "8765",
+        "rules": [
+          { "pattern": "^[0-9]+$", "message": "端口必须是数字" }
+        ],
+        "helpText": "仪表盘 Web 端口（默认 8765）"
+      },
+      {
+        "type": "text",
+        "field": "HY_MEMORY_PORT",
+        "label": "API 端口",
+        "initValue": "19527",
+        "rules": [
+          { "pattern": "^[0-9]+$", "message": "端口必须是数字" }
+        ],
+        "helpText": "记忆 API 端口（默认 19527，内部调用）"
+      }
+    ]
+  }
+]

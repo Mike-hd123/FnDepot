@@ -1,0 +1,34 @@
+#!/bin/bash
+# hyatlas upgrade_callback — 升级时重打 site-patches 补丁 (代码在 target, /opt 不再使用)
+set -u
+LOG="${TRIM_PKGVAR}/upgrade.log"
+echo "===== upgrade_callback $(date) ===== > $LOG"
+
+APPDIR="${TRIM_APPDEST:-/usr/local/apps/@appcenter/hyatlas}"
+SP_TARGET="${APPDIR}/site-packages"
+
+if [ ! -d "$SP_TARGET" ] || [ -z "$(ls -A "$SP_TARGET" 2>/dev/null)" ]; then
+  echo "ERROR: APPDIR/site-packages missing/empty at $SP_TARGET" >> "$LOG"
+  exit 1
+fi
+chmod -R a+rX "$SP_TARGET"
+find "$SP_TARGET" -type d -exec chmod 755 {} +
+find "$SP_TARGET" -type f -name "*.so" -exec chmod 755 {} +
+echo "site-packages present at target (standard layout)" >> "$LOG"
+
+SITE_PKGS="$SP_TARGET/hyatlas_memory"
+mkdir -p "$SITE_PKGS/server/dashboard" "$SITE_PKGS/pipelines"
+if [ -d "$APPDIR/site-patches" ]; then
+  if [ -d "$APPDIR/site-patches/dashboard" ]; then
+    cp -r "$APPDIR/site-patches/dashboard/." "$SITE_PKGS/server/dashboard/" 2>/dev/null || true
+  fi
+  if [ -d "$APPDIR/site-patches/pipelines" ]; then
+    cp -r "$APPDIR/site-patches/pipelines/." "$SITE_PKGS/pipelines/" 2>/dev/null || true
+  fi
+  echo "site-patches applied -> $SITE_PKGS" >> "$LOG"
+else
+  echo "site-patches MISSING in APPDIR=$APPDIR" >> "$LOG"
+fi
+
+echo "===== done =====" >> "$LOG"
+exit 0

@@ -9,8 +9,8 @@
 
 - `9router-0.5.59-x86.fpk` — 上游 decolua/9router v0.5.59，本仓库重打包
   - manifest checksum: `e13cbdabc5962d805e397c23471627e7`
-  - 文件 sha256: `f89019c75e2e080ade7d2c157d113d5f504c54b7ea999be0bc864a57ea28cef4`
-  - 大小: 34,621,810 字节 (33 MB)
+  - 文件 sha256: `5274cb4e2c22b1d12f9b84f5206402163d0593eec23916b54cf2236eac92e9ca`
+  - 大小: 34,647,749 字节 (33 MB)
 - 服务端口: 20128（本体监听），依赖 `nodejs_v24`（fnOS 应用中心依赖声明 `install_dep_apps = nodejs_v24`）
 
 ## 目录结构

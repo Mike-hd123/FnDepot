@@ -1,0 +1,20 @@
+appname                    = wechat-on-cloud
+version                    = 1.5.1
+display_name               = 云微
+desc                       = WeChatOnCloud 官方 Linux 微信面板（原生部署）
+platform                   = all
+source                     = thirdparty
+maintainer                 = Gloridust
+maintainer_url             = https://github.com/Gloridust/WechatOnCloud
+distributor                = Mike
+distributor_url            = https://github.com/Mike-hd123
+os_min_version             = 0.9.27
+ctl_stop                   = true
+checkport                  = false
+service_port               = 8080
+desktop_uidir              = ui
+desktop_applaunchname      = wechat-on-cloud.panel
+disable_authorization_path = false
+; 1.5.0 纯 ipvlan 单网卡 + 数据卷 bind 主机目录
+changelog                  = 1.5.1 面板config落@appshare
+checksum                   = ad93204e90a67c128a726965a8467f2b

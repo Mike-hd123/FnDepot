@@ -1,0 +1,133 @@
+#!/bin/bash
+set -u
+
+APP_DIR="${TRIM_APPDEST:-/usr/local/apps/@appcenter/wechat-on-cloud}"
+# NAS 定制: 面板数据(accounts/sessions/log/pid)统一落 @appshare(用户要求 config 存 share)
+VAR_DIR="${WOC_VAR_DIR:-/vol1/@appshare/wechat-on-cloud}"
+LOG_FILE="${VAR_DIR}/panel.log"
+PID_FILE="${VAR_DIR}/panel.pid"
+PROXY_PID_FILE="${VAR_DIR}/proxy.pid"
+SYNC_PID_FILE="${VAR_DIR}/hosts-sync.pid"
+NODE_BIN="/vol1/@appcenter/nodejs_v24/bin/node"
+TSX_BIN="${APP_DIR}/server/node_modules/tsx/dist/cli.mjs"
+
+mkdir -p "${VAR_DIR}"
+
+is_running() {
+  if [ -f "$PID_FILE" ]; then
+    local pid
+    pid=$(cat "$PID_FILE" 2>/dev/null)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+ensure_proxy() {
+  proxy_sock="${APP_DIR}/app.sock"
+  [ -S "$proxy_sock" ] && return 0
+  proxy_script="${APP_DIR}/server/proxy.py"
+  if [ -f "$proxy_script" ] && command -v python3 >/dev/null 2>&1; then
+    rm -f "$proxy_sock"
+    nohup python3 "$proxy_script" > "${VAR_DIR}/proxy.log" 2>&1 &
+    echo $! > "$PROXY_PID_FILE"
+  fi
+}
+
+# 宿主侧面板按容器名反代需 /etc/hosts 映射。实例重建/新建后 IP 会变，
+# 面板启动时刷一次，再加后台 30s 循环持续同步，避免新建实例 /etc/hosts 缺失。
+sync_woc_hosts() {
+  [ -w /etc/hosts ] || return 0
+  local hosts_file=/etc/hosts
+  local tmp
+  tmp=$(mktemp)
+  grep -v -E ' woc-wx-[0-9a-f]+$' "$hosts_file" > "$tmp"
+  for cid in $(docker ps -a --filter "name=woc-wx-" --format '{{.ID}}' 2>/dev/null); do
+    local ip name
+    # 优先取 woc-net 网络 IP（有内嵌 DNS，实例按名互访）
+    ip=$(docker inspect "$cid" --format '{{range $net, $conf := .NetworkSettings.Networks}}{{if eq $net "woc-net"}}{{.IPAddress}}{{end}}{{end}}' 2>/dev/null)
+    # 兜底：无 woc-net 时取首个非空 IP
+    [ -z "$ip" ] && ip=$(docker inspect "$cid" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' 2>/dev/null | tr ' ' '\n' | grep -v '^$' | head -1)
+    name=$(docker inspect "$cid" --format '{{.Name}}' 2>/dev/null | sed 's#^/##')
+    [ -n "$ip" ] && [ -n "$name" ] && echo "$ip $name" >> "$tmp"
+  done
+  cp "$hosts_file" "$hosts_file.bak_woc" 2>/dev/null
+  cat "$tmp" > "$hosts_file"
+  rm -f "$tmp"
+}
+
+# 方案 A：反代已改 docker.sock 实时查容器 IP，不再依赖 /etc/hosts 同步循环。
+# 仅保留启动时一次性刷新（兜底旧版本残留容器名条目）。循环已移除，根治：
+#   - 30s 盲窗（新实例创建后到下次同步之间不可达）
+#   - hosts 非原子写 + 无守护 + 重启丢失
+#   - hosts 同步循环对 dockerd 的高频 docker 调用（dockermgr 死锁隐患源之一）
+
+case "${1:-}" in
+  start)
+    # 清理残留面板进程，避免双面板端口冲突（EADDRINUSE）
+    if [ -f "$PID_FILE" ]; then
+      old_pid=$(cat "$PID_FILE" 2>/dev/null)
+      [ -n "$old_pid" ] && kill "$old_pid" 2>/dev/null
+      sleep 1
+      kill -9 "$old_pid" 2>/dev/null || true
+      rm -f "$PID_FILE"
+    fi
+    # 兜底：按 cmdline 匹配本应用残留 node 进程
+    for pid in $(pgrep -f "${APP_DIR}/server/src/index.ts" 2>/dev/null); do
+      [ "$pid" != "$$" ] && kill "$pid" 2>/dev/null
+    done
+    # 清理残留 hosts-sync 进程 + 陈旧锁
+    rm -f "$SYNC_PID_FILE"
+    sleep 1
+    is_running && exit 0
+    # 启动时立即同步一次 hosts（方案 A 兜底：清旧残留容器名条目，兼容旧面板版本）
+    sync_woc_hosts
+    export PORT="${PORT:-8080}"
+    export WOC_PANEL_PORT="${WOC_PANEL_PORT:-8080}"
+    export HOST="${HOST:-0.0.0.0}"
+    export SOCK_PATH="${SOCK_PATH:-${APP_DIR}/app.sock}"
+    export PANEL_DATA="${PANEL_DATA:-${VAR_DIR}/data/accounts.json}"
+    export WOC_VERSION="${WOC_VERSION:-1.5.1}"
+    export PANEL_ALLOWED_HOSTS="${PANEL_ALLOWED_HOSTS:-*.mike-hd123.fnos.net}"
+    # docker 权限检测：非 root 运行时若无 docker 组，实例管理不可用
+    if ! id -nG 2>/dev/null | tr ' ' '\n' | grep -qx docker 2>/dev/null; then
+      if [ "$(id -u)" != "0" ]; then
+        echo "警告：当前用户无 docker 权限，实例管理（创建/启停/删除容器）不可用。请将 wechat-on-cloud 加入 docker 组：sudo usermod -aG docker wechat-on-cloud" >&2
+      fi
+    fi
+    export WOC_WECHAT_IMAGE="${WOC_WECHAT_IMAGE:-ghcr.nju.edu.cn/gloridust/wechat-on-cloud:latest}"
+    export WOC_DOCKER_NETWORK="${WOC_DOCKER_NETWORK:-woc-lan}"
+    export STATIC_DIR="${APP_DIR}/web-dist"
+    mkdir -p "$(dirname "${PANEL_DATA}")"
+    nohup "$NODE_BIN" "$TSX_BIN" "${APP_DIR}/server/src/index.ts" \
+      > "$LOG_FILE" 2>&1 &
+    echo $! > "$PID_FILE"
+    sleep 2
+    ensure_proxy
+    is_running && echo "Panel started" || echo "Panel start failed"
+    ;;
+  stop)
+    if [ -f "$SYNC_PID_FILE" ]; then
+      sp=$(cat "$SYNC_PID_FILE" 2>/dev/null)
+      [ -n "$sp" ] && kill "$sp" 2>/dev/null
+      rm -f "$SYNC_PID_FILE"
+    fi
+    pf="$PROXY_PID_FILE"
+    [ -f "$pf" ] && kill "$(cat "$pf")" 2>/dev/null; rm -f "$pf"
+    rm -f "${APP_DIR}/app.sock" 2>/dev/null
+    if is_running; then
+      pid=$(cat "$PID_FILE")
+      kill "$pid" 2>/dev/null
+      sleep 2
+      kill -9 "$pid" 2>/dev/null || true
+      rm -f "$PID_FILE"
+    fi
+    ;;
+  status)
+    is_running && exit 0 || exit 3
+    ;;
+  *)
+    exit 0
+    ;;
+esac

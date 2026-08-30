@@ -1,0 +1,9 @@
+#!/bin/bash
+set -u
+# 清理 systemd 单元
+for unit in hyatlas hyatlas-dashboard; do
+  systemctl disable "$unit" 2>/dev/null || true
+  rm -f "/etc/systemd/system/${unit}.service" 2>/dev/null || true
+done
+systemctl daemon-reload
+exit 0

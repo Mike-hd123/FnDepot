@@ -32,8 +32,8 @@
           "packages": {
             "x86": {
               "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/9router/9router-0.5.59-x86.fpk",
-              "sha256": "f89019c75e2e080ade7d2c157d113d5f504c54b7ea999be0bc864a57ea28cef4",
-              "size": 34621810
+              "sha256": "5274cb4e2c22b1d12f9b84f5206402163d0593eec23916b54cf2236eac92e9ca",
+              "size": 34647749
             }
           }
         }
@@ -64,8 +64,8 @@
           "packages": {
             "all": {
               "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/wechat-on-cloud/wechat-on-cloud.fpk",
-              "sha256": "bfef9610696e6ea74f7b52069eac41f8df0a30632f7c9d951fb516732f8a7401",
-              "size": 15721685
+              "sha256": "8fc32cad5ce6df105b749f33c190a40ad6f14e667aec52cf684f04abe07775e7",
+              "size": 15717931
             }
           }
         }
@@ -95,8 +95,8 @@
           "packages": {
             "all": {
               "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/hyatlas/hyatlas.fpk",
-              "sha256": "3a45989ac3d0d3e7938608feca4dcc9efa9db54b09224582407f830a61955e5c",
-              "size": 104812606
+              "sha256": "7b3be82bf02cc35bf09b8d8e6b94a31007ff689127b1ae63cc3adf6413dc102a",
+              "size": 104695175
             }
           }
         }

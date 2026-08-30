@@ -1,0 +1,39 @@
+#!/bin/bash
+set -u
+# NAS 定制: 面板数据统一落 @appshare(与 cmd/main 一致)
+VAR_DIR="${WOC_VAR_DIR:-/vol1/@appshare/wechat-on-cloud}"
+PID_FILE="${VAR_DIR}/panel.pid"
+PROXY_PID_FILE="${VAR_DIR}/proxy.pid"
+SYNC_PID_FILE="${VAR_DIR}/hosts-sync.pid"
+APP_DIR="${TRIM_APPDEST:-/usr/local/apps/@appcenter/wechat-on-cloud}"
+
+# 停止面板进程（直接读 PID 文件 kill，不调 cmd/main）
+if [ -f "$PID_FILE" ]; then
+  pid=$(cat "$PID_FILE" 2>/dev/null)
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null
+    sleep 2
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+  rm -f "$PID_FILE"
+fi
+
+# 清理 proxy 进程
+if [ -f "$PROXY_PID_FILE" ]; then
+  ppid=$(cat "$PROXY_PID_FILE" 2>/dev/null)
+  [ -n "$ppid" ] && kill "$ppid" 2>/dev/null
+  rm -f "$PROXY_PID_FILE"
+fi
+
+# 清理 hosts-sync 后台循环
+if [ -f "$SYNC_PID_FILE" ]; then
+  sp=$(cat "$SYNC_PID_FILE" 2>/dev/null)
+  [ -n "$sp" ] && kill "$sp" 2>/dev/null
+  rm -f "$SYNC_PID_FILE"
+fi
+
+# 清理 socket 和 pid
+rm -f "${APP_DIR}/app.sock" 2>/dev/null || true
+rm -f "${VAR_DIR}/panel.pid" 2>/dev/null || true
+rm -f "${VAR_DIR}/hosts-sync.pid" 2>/dev/null || true
+exit 0

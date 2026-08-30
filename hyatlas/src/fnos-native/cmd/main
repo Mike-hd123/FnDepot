@@ -1,0 +1,56 @@
+#!/bin/bash
+# hyatlas 原生运行控制 (2026-08-28 原生版, 应用名 hyatlas)
+# 由 trim_app_center 调用，管理两个 systemd 服务:
+#   hyatlas            - 核心 API 服务 (19527)
+#   hyatlas-dashboard  - 仪表盘 (8765)
+set -u
+
+VAR_DIR="${TRIM_PKGVAR:-/var/apps/hyatlas/var}"
+LOG_FILE="${VAR_DIR}/panel.log"
+PID_FILE="${VAR_DIR}/panel.pid"
+
+mkdir -p "${VAR_DIR}"
+
+is_running() {
+  if [ -f "$PID_FILE" ]; then
+    local pid
+    pid=$(cat "$PID_FILE" 2>/dev/null)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+sync_pid() {
+  # 把 systemd MainPID 同步到 PID_FILE，供商店状态检测
+  local spid
+  spid=$(systemctl show -p MainPID --value hyatlas 2>/dev/null)
+  [ -n "$spid" ] && [ "$spid" != "0" ] && echo "$spid" > "$PID_FILE"
+}
+
+case "${1:-}" in
+  start)
+    sync_pid
+    if is_running; then
+      echo "hyatlas already running (pid $(cat "$PID_FILE"))"
+      exit 0
+    fi
+    systemctl start hyatlas hyatlas-dashboard 2>>"$LOG_FILE" || exit 1
+    sleep 2
+    sync_pid
+    is_running && echo "hyatlas started (pid $(cat "$PID_FILE"))" || { echo "hyatlas start failed" >&2; exit 3; }
+    ;;
+  stop)
+    systemctl stop hyatlas-dashboard hyatlas 2>>"$LOG_FILE"
+    rm -f "$PID_FILE"
+    echo "hyatlas stopped"
+    ;;
+  status)
+    sync_pid
+    is_running && exit 0 || exit 3
+    ;;
+  *)
+    exit 0
+    ;;
+esac

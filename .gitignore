@@ -1,1 +1,4 @@
 waliapi/app/
+*.bak_*
+hyatlas/src/fnos-native/app.tgz
+wechat-on-cloud/src/fnos-native/app.tgz

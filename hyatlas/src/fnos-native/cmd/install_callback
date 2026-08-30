@@ -1,0 +1,138 @@
+#!/bin/bash
+# hyatlas 原生版 install_callback (2026-08-29 标准化布局版)
+# 代码+配置迁出 /opt：site-packages 用 target 自带(APPDEST)，.env 写 etc/ 标准位，unit 指 target+etc+home
+# 1) 应用 site-patches 补丁到 APPDEST/site-packages
+# 2) 沿用现有 etc/.env(若存在)，否则写入 wizard 值
+# 3) 确保 systemd 单元存在并 daemon-reload
+set -u
+LOG="${TRIM_PKGVAR}/install.log"
+echo "===== install_callback $(date) ===== > $LOG"
+
+ENV_FILE="/var/apps/hyatlas/etc/.env"
+UNIT_SERVER="/etc/systemd/system/hyatlas.service"
+UNIT_DASH="/etc/systemd/system/hyatlas-dashboard.service"
+APPDIR="${TRIM_APPDEST:-/usr/local/apps/@appcenter/hyatlas}"
+SP_TARGET="${APPDIR}/site-packages"
+
+mkdir -p /var/log/hy-memory /var/apps/hyatlas/etc /var/apps/hyatlas/home
+
+# --- 0.5 创建应用 share 目录 (标准 fnOS shares 结构) ---
+mkdir -p /var/apps/hyatlas/shares
+ln -sfn /vol1/@appshare/hyatlas /var/apps/hyatlas/shares/hyatlas
+mkdir -p /vol1/@appshare/hyatlas
+echo "share dirs ready" >> "$LOG"
+
+# --- 0. 确认 target 自带瘦身 site-packages (解包即有, 无需再拷 /opt) ---
+if [ ! -d "$SP_TARGET" ] || [ -z "$(ls -A "$SP_TARGET" 2>/dev/null)" ]; then
+  echo "ERROR: APPDIR/site-packages missing/empty at $SP_TARGET" >> "$LOG"
+  exit 1
+fi
+chmod -R a+rX "$SP_TARGET"
+find "$SP_TARGET" -type d -exec chmod 755 {} +
+find "$SP_TARGET" -type f -name "*.so" -exec chmod 755 {} +
+echo "site-packages present at target (standard layout, /opt no longer used)" >> "$LOG"
+
+# --- 0.6 应用 site-patches 补丁(单一真相源, 覆盖 site-packages 内对应文件) ---
+# 目录结构对应：site-patches/dashboard/ -> hyatlas_memory/server/dashboard/
+#              site-patches/pipelines/ -> hyatlas_memory/pipelines/
+SITE_PKGS="$SP_TARGET/hyatlas_memory"
+mkdir -p "$SITE_PKGS/server/dashboard" "$SITE_PKGS/pipelines"
+if [ -d "$APPDIR/site-patches" ]; then
+  if [ -d "$APPDIR/site-patches/dashboard" ]; then
+    cp -r "$APPDIR/site-patches/dashboard/." "$SITE_PKGS/server/dashboard/" 2>/dev/null || true
+  fi
+  if [ -d "$APPDIR/site-patches/pipelines" ]; then
+    cp -r "$APPDIR/site-patches/pipelines/." "$SITE_PKGS/pipelines/" 2>/dev/null || true
+  fi
+  echo "site-patches applied -> $SITE_PKGS" >> "$LOG"
+else
+  echo "site-patches MISSING in APPDIR=$APPDIR" >> "$LOG"
+fi
+
+# --- 1. 环境变量: 已有 etc/.env 则沿用, 否则从 wizard 写入 (标准位 /var/apps/hyatlas/etc/) ---
+if [ -f "$ENV_FILE" ] && [ -s "$ENV_FILE" ]; then
+  echo "existing .env found, keep it ($ENV_FILE)" >> "$LOG"
+else
+  cat > "$ENV_FILE" << EOF
+HYATLAS_HOME=/var/apps/hyatlas/shares/hyatlas
+PYTHONPATH=${SP_TARGET}
+HY_MEMORY_PORT=${HY_MEMORY_PORT:-19527}
+HY_MEMORY_HOST=0.0.0.0
+HY_MEMORY_AUTH_TOKEN=${HY_MEMORY_AUTH_TOKEN:-}
+MEMORY_LLM_MODEL=${HY_MEMORY_LLM_MODEL:-flash}
+MEMORY_LLM_BASE_URL=${HY_MEMORY_LLM_BASE_URL:-http://127.0.0.1:20128/v1}
+MEMORY_LLM_API_KEY=${HY_MEMORY_LLM_API_KEY:-}
+MEMORY_EMBEDDER_PROVIDER=${MEMORY_EMBEDDER_PROVIDER:-remote}
+MEMORY_EMBEDDING_DIMS=${MEMORY_EMBEDDING_DIMS:-1024}
+MEMORY_EMBEDDER_MODEL=${MEMORY_EMBEDDER_MODEL:-bge-large-zh-v1.5}
+MEMORY_EMBEDDER_BASE_URL=${MEMORY_EMBEDDER_BASE_URL:-http://127.0.0.1:18080/v1}
+MEMORY_EMBEDDER_API_KEY=${MEMORY_EMBEDDER_API_KEY:-}
+HY_DASH_PORT=${HY_DASH_PORT:-8765}
+HY_DASH_BIND=0.0.0.0
+MEMORY_MODE=${MEMORY_MODE:-ultra}
+MEMORY_ENABLE_SUMMARY=${MEMORY_ENABLE_SUMMARY:-true}
+MEMORY_SKIP_RECONCILE=${MEMORY_SKIP_RECONCILE:-1}
+MEMORY_LLM_MODEL_BACKUP=${HY_MEMORY_LLM_MODEL_BACKUP:-hc/DeepSeek-V4-Flash}
+EOF
+  chmod 600 "$ENV_FILE"
+  echo "new .env written ($ENV_FILE)" >> "$LOG"
+fi
+
+# --- 2. systemd 单元(不存在才写, 指向 target+etc+home 标准布局) ---
+if [ ! -f "$UNIT_SERVER" ]; then
+  cat > "$UNIT_SERVER" << EOF
+[Unit]
+Description=HyAtlas Memory Server (native)
+After=network.target ov-embedder.service 9router.service
+Wants=ov-embedder.service
+
+[Service]
+Type=simple
+User=hy-memory
+Group=hy-memory
+EnvironmentFile=/var/apps/hyatlas/etc/.env
+Environment=PYTHONPATH=${SP_TARGET}
+Environment=HYATLAS_HOME=/var/apps/hyatlas/shares/hyatlas
+WorkingDirectory=/var/apps/hyatlas/home
+ExecStart=/usr/bin/python3 -m hyatlas_memory.server.start_server
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/hy-memory/server.log
+StandardError=append:/var/log/hy-memory/server.log
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  echo "hyatlas.service written" >> "$LOG"
+fi
+
+if [ ! -f "$UNIT_DASH" ]; then
+  cat > "$UNIT_DASH" << EOF
+[Unit]
+Description=HyAtlas Memory Dashboard (native)
+After=network.target hyatlas.service
+Wants=hyatlas.service
+
+[Service]
+Type=simple
+User=hy-memory
+Group=hy-memory
+EnvironmentFile=/var/apps/hyatlas/etc/.env
+Environment=PYTHONPATH=${SP_TARGET}
+Environment=HYATLAS_HOME=/var/apps/hyatlas/shares/hyatlas
+WorkingDirectory=/var/apps/hyatlas/home
+ExecStart=/usr/bin/python3 -m hyatlas_memory.server.dashboard.dashboard
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/hy-memory/dashboard.log
+StandardError=append:/var/log/hy-memory/dashboard.log
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  echo "hyatlas-dashboard.service written" >> "$LOG"
+fi
+
+systemctl daemon-reload
+echo "===== done =====" >> "$LOG"
+exit 0
