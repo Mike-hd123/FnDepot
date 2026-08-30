@@ -4,10 +4,42 @@
   "name": "Mike 的飞牛应用源",
   "author": "Mike",
   "homepage": "https://github.com/Mike-hd123",
-  "description": "个人维护的飞牛 fnOS 第三方应用源：云微(WechatOnCloud)、HyAtlas(混元记忆)、Octopus(LLM聚合网关)、WaLiAPI(多Key轮询网关)。均为上游开源项目的 NAS 原生化打包。"
- },
- "apps": {
-  "wechat-on-cloud": {
+  "description": "个人维护的飞牛 fnOS 第三方应用源：云微(WechatOnCloud)、HyAtlas(混元记忆)、WaLiAPI(多Key轮询网关)、9Router(FREE AI Router & Token Saver)。均为上游开源项目的 NAS 原生化打包。"
+  },
+  "apps": {
+   "9router": {
+    "display_name": "9Router",
+    "desc": "FREE AI Router & Token Saver：AI 编码路由器，连接 Claude Code/Codex/Cursor 等工具到 40+ 免费 AI 提供商。上游：decolua/9router。",
+    "platform": [
+     "x86"
+    ],
+    "categories": [
+     "系统工具",
+     "开发工具"
+    ],
+    "icon_url": "./9router/ICON.PNG",
+    "maintainer": "Mike",
+    "maintainer_url": "https://github.com/Mike-hd123",
+    "distributor": "Mike",
+    "run_as": "package",
+    "install_type": "volume",
+    "is_docker": false,
+    "service_port": "20128",
+    "releases": {
+     "0.5.59": {
+      "changelog": "maintainer 改 Mike 指向 mike-hd123/9router-fnos + 基于 decolua/9router 0.5.59 打包。",
+      "updated_at": "2026-08-30T09:40:00+08:00",
+      "packages": {
+       "x86": {
+        "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/9router/9router-0.5.59-x86.fpk",
+        "sha256": "f89019c75e2e080ade7d2c157d113d5f504c54b7ea999be0bc864a57ea28cef4",
+        "size": 34621810
+       }
+      }
+     }
+    }
+   },
+   "wechat-on-cloud": {
    "display_name": "云微(飞牛云微信)",
    "desc": "NAS 原生微信面板：Node.js 面板 + dockerode 管理微信实例容器，ipvlan 单网卡直连局域网，数据落主机目录，移动端触屏优化。上游项目：Gloridust/WechatOnCloud。",
    "platform": [

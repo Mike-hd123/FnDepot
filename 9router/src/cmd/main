@@ -1,0 +1,117 @@
+#!/bin/bash
+set -euo pipefail
+
+APP_NAME="${TRIM_APPNAME:-9router}"
+APP_DIR="${TRIM_APPDEST:-/var/apps/${APP_NAME}}"
+# 数据目录: 优先 TRIM_PKGVAR (fnOS 注入). 兜底: 从 fnOS home 软链 (/volX/@apphome/<app>) 推导卷,
+# 或从 APP_DIR 推导; 不写死具体卷. (某些 fnOS 部署 APP_DIR=/var/apps/<app> 且无 TRIM_PKGVAR)
+APP_VOL=""
+if [ -n "${TRIM_PKGVAR:-}" ]; then
+    DATA_DIR="${TRIM_PKGVAR}"
+else
+    if [ -L "${APP_DIR}/home" ]; then
+        APP_HOME="$(readlink -f "${APP_DIR}/home")"
+        APP_VOL="$(printf '%s' "${APP_HOME}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
+    fi
+    if [ -z "${APP_VOL}" ]; then
+        APP_VOL="$(printf '%s' "${APP_DIR}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
+    fi
+    if [ -n "${APP_VOL}" ]; then
+        DATA_DIR="${APP_VOL}/@appdata/${APP_NAME}"
+    else
+        DATA_DIR="${APP_DIR}/var"
+    fi
+fi
+
+# 兼容两种部署布局：
+#   fnOS 传 TRIM_APPDEST=/vol4/@appcenter/9router → server 直接在 ${APP_DIR}/server
+#   旧版/部分版本 TRIM_APPDEST=/var/apps/9router    → server 在 ${APP_DIR}/target/server
+if [ -d "${APP_DIR}/server" ]; then
+    SRC_DIR="${APP_DIR}/server"
+elif [ -d "${APP_DIR}/target/server" ]; then
+    SRC_DIR="${APP_DIR}/target/server"
+else
+    echo "ERROR: server dir not found (tried ${APP_DIR}/server and ${APP_DIR}/target/server)" >&2
+    exit 1
+fi
+
+# Node.js 运行时（由 manifest install_dep_apps=nodejs_v24 提供）
+APP_VOL="$(printf '%s' "${DATA_DIR}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
+NODE_BIN=""
+for cand in "/var/apps/nodejs_v24/target/bin/node" "${APP_VOL}/@appcenter/nodejs_v24/bin/node" "/vol4/@appcenter/nodejs_v24/bin/node"; do
+  [ -x "$cand" ] && NODE_BIN="$cand" && break
+done
+[ -n "$NODE_BIN" ] || NODE_BIN="$(command -v node || echo /usr/bin/node)"
+if [ ! -x "$NODE_BIN" ]; then
+  echo "ERROR: Node.js runtime not found. Please install the 'nodejs_v24' app from the fnOS App Center." >&2
+  exit 1
+fi
+
+PORT="${TRIM_SERVICE_PORT:-20128}"
+HOSTNAME="0.0.0.0"
+LOG="${DATA_DIR}/9router.log"
+PID_FILE="${DATA_DIR}/9router.pid"
+
+start() {
+    mkdir -p "${DATA_DIR}"
+    if [ -f "${PID_FILE}" ] && kill -0 "$(cat "${PID_FILE}")" 2>/dev/null; then
+        echo "already running (pid $(cat "${PID_FILE}"))"
+        return 0
+    fi
+    # 清理 SQLite WAL/SHM 残留（旧版/跨用户安装后属主可能错误，导致 node:sqlite 无法打开）
+    rm -f "${DATA_DIR}/db/data.sqlite-shm" "${DATA_DIR}/db/data.sqlite-wal" 2>/dev/null || true
+    # 确保 .env 存在（NEXT.js 读取 INITIAL_PASSWORD 等配置）
+    if [ ! -f "${SRC_DIR}/.env" ]; then
+        cat > "${SRC_DIR}/.env" <<'ENVEOF'
+INITIAL_PASSWORD=123456
+JWT_SECRET=change-me-to-a-random-string
+ENVEOF
+        echo "created default .env in ${SRC_DIR}"
+    fi
+    cd "${SRC_DIR}"
+    # 初始密码: 数据库未设密码或 requireLogin=false 时, 用 INITIAL_PASSWORD 兜底,
+    # 避免远程访问用默认密码被 "Default password must be changed before remote access" 拦截。
+    # 首次登录后建议在 Web UI 修改为自定义密码。
+    INITIAL_PASSWORD="${INITIAL_PASSWORD:-123456}"
+    DATA_DIR="${DATA_DIR}" PORT="${PORT}" HOSTNAME="${HOSTNAME}" \
+        INITIAL_PASSWORD="${INITIAL_PASSWORD}" \
+        nohup "${NODE_BIN}" --max-old-space-size=4096 custom-server.js >> "${LOG}" 2>&1 &
+    echo $! > "${PID_FILE}"
+    # 等待服务就绪（最多 60s）
+    for i in $(seq 1 60); do
+        if curl -sf "http://127.0.0.1:${PORT}/api/health" >/dev/null 2>&1; then
+            echo "started (pid $(cat "${PID_FILE}"))"
+            return 0
+        fi
+        sleep 1
+    done
+    echo "started, but health check timed out (check ${LOG})"
+    return 0
+}
+
+stop() {
+    if [ -f "${PID_FILE}" ]; then
+        kill "$(cat "${PID_FILE}")" 2>/dev/null || true
+        rm -f "${PID_FILE}"
+    fi
+    # 兜底：杀掉残留的 next-server 进程（仅限本应用目录）
+    pkill -f "${SRC_DIR}/custom-server.js" 2>/dev/null || true
+    echo "stopped"
+}
+
+status() {
+    if [ -f "${PID_FILE}" ] && kill -0 "$(cat "${PID_FILE}")" 2>/dev/null; then
+        echo "running"
+        return 0
+    fi
+    echo "stopped"
+    return 1
+}
+
+case "${1:-start}" in
+    start) start ;;
+    stop) stop ;;
+    status) status ;;
+    restart) stop; sleep 1; start ;;
+    *) echo "Usage: $0 {start|stop|status|restart}"; exit 1 ;;
+esac
