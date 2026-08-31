@@ -88,7 +88,7 @@ case "${1:-}" in
     export HOST="${HOST:-0.0.0.0}"
     export SOCK_PATH="${SOCK_PATH:-${APP_DIR}/app.sock}"
     export PANEL_DATA="${PANEL_DATA:-${VAR_DIR}/data/accounts.json}"
-    export WOC_VERSION="${WOC_VERSION:-1.5.1}"
+    export WOC_VERSION="${WOC_VERSION:-1.5.2}"
     export PANEL_ALLOWED_HOSTS="${PANEL_ALLOWED_HOSTS:-*.mike-hd123.fnos.net}"
     # docker 权限检测：非 root 运行时若无 docker 组，实例管理不可用
     if ! id -nG 2>/dev/null | tr ' ' '\n' | grep -qx docker 2>/dev/null; then

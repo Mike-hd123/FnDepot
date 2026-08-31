@@ -14,7 +14,7 @@ https://github.com/Mike-hd123/FnDepot
 
 | 应用 | 版本 | 说明 | 上游项目 |
 |---|---|---|---|
-| 云微(飞牛云微信) `wechat-on-cloud` | 1.5.1 | NAS 原生微信面板，Node.js 面板 + dockerode 管理微信实例容器，ipvlan(woc-lan) 单网卡直连局域网，数据落主机目录 bind，移动端触屏优化 | [Gloridust/WechatOnCloud](https://github.com/Gloridust/WechatOnCloud) |
+| 云微(飞牛云微信) `wechat-on-cloud` | 1.5.2 | NAS 原生微信面板，Node.js 面板 + dockerode 管理微信实例容器，ipvlan(woc-lan) 单网卡直连局域网，数据落主机路径 bind，移动端触屏优化，实例「电源」下拉(重启/关机) | [Gloridust/WechatOnCloud](https://github.com/Gloridust/WechatOnCloud) |
 | HyAtlas(混元记忆) `hyatlas` | 2.0.1 | AI 长期记忆系统，zvec 双索引，仪表盘汉化 + token 自动登录，降权运行 | [tuancookiez-hub/HyAtlas-Memory](https://github.com/tuancookiez-hub/HyAtlas-Memory) |
 | 9Router `9router` | 0.5.59 | FREE AI Router & Token Saver，Next.js + open-sse SSE 引擎，40+ 免费 AI 提供商聚合，端口 20128 | [decolua/9router](https://github.com/decolua/9router) |
 

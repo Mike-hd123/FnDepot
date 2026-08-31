@@ -154,6 +154,12 @@ const MenuIcon = (
   </svg>
 );
 
+const CaretIcon = (
+  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M6 9l6 6 6-6" />
+  </svg>
+);
+
 export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void }) {
   const { id } = useParams<{ id: string }>();
   const nav = useNavigate();
@@ -248,6 +254,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
   const [starting, setStarting] = useState(false);
   const [control, setControl] = useState<{ free: boolean; mine: boolean; holder: string | null } | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [powerMenuOpen, setPowerMenuOpen] = useState(false); // 远程页「电源」下拉（重启/关机）
   const [settingsTab, setSettingsTab] = useState<'bg' | 'font'>('bg');
   const [bgList, setBgList] = useState<string[]>([]);
   const [fontList, setFontList] = useState<string[]>([]);
@@ -259,6 +266,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
   const fontInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
+  const powerMenuRef = useRef<HTMLDivElement>(null); // 电源下拉点击外部关闭
   const dragDepth = useRef(0);
   const lastBeat = useRef(0);
   const audioRef = useRef<VncAudio | null>(null);
@@ -284,8 +292,19 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
     setClipText('');
     setImeText('');
     setProbing(true);
+    setPowerMenuOpen(false);
     recovering.current = false;
   }, [id]);
+
+  // 电源下拉：点击菜单外部时关闭
+  useEffect(() => {
+    if (!powerMenuOpen) return;
+    const onDocDown = (e: MouseEvent) => {
+      if (powerMenuRef.current && !powerMenuRef.current.contains(e.target as Node)) setPowerMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDocDown);
+    return () => document.removeEventListener('mousedown', onDocDown);
+  }, [powerMenuOpen]);
 
   // 桌面久未加载出来 → 判为"无响应"，把无限转圈换成可操作的重试/重启，不让用户干等。
   // （实测容器跑久了会 I/O/服务 stall，进程没死、显示在线，但读不出 VNC 文件而永远连接中。）
@@ -883,6 +902,23 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
     }
   };
 
+  const stopInstance = async () => {
+    const ok = await confirm({
+      title: '关机该实例？',
+      body: `会停止容器（数据保留，可随时再启动），${appLabel}将关闭。`,
+      confirmText: '关机',
+    });
+    if (!ok) return;
+    try {
+      await api.instanceStop(id);
+      toast('已关机', 'ok');
+      // 返回管理页：关机后 VNC 连接断开，留在远程页面无意义
+      setTimeout(() => nav('/'), 800);
+    } catch (e: any) {
+      toast(e.message || '关机失败', 'error');
+    }
+  };
+
   const takeControl = async () => {
     try {
       const r = await api.controlTake(id);
@@ -971,9 +1007,30 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
                 <button className={'ws-action' + (showSettings ? ' on' : '')} title="桌面设置（壁纸/字体）" onClick={() => { setShowSettings((v) => !v); if (!showSettings) { refreshBgList(); refreshFontList(); } }}>
                   桌面
                 </button>
-                <button className="ws-action" title="重启实例（修复卡死/最小化丢失）" onClick={restartInstance}>
-                  重启
-                </button>
+                <div className="inst-menu-wrap" ref={powerMenuRef} style={{ display: 'inline-block' }}>
+                  <button
+                    className={'ws-action' + (powerMenuOpen ? ' on' : '')}
+                    title="电源操作（重启/关机）"
+                    onClick={() => setPowerMenuOpen((v) => !v)}
+                  >
+                    电源 <span className="inst-menu-caret" style={{ display: 'inline-flex', verticalAlign: 'middle' }}>{CaretIcon}</span>
+                  </button>
+                  {powerMenuOpen && (
+                    <div className="inst-menu" style={{ right: 0, left: 'auto', minWidth: '150px' }} onClick={() => setPowerMenuOpen(false)}>
+                      <div className="inst-menu-group">
+                        <div className="inst-menu-label">电源</div>
+                        <div className="inst-menu-items">
+                          <button className="btn-text" onClick={restartInstance} title="重启实例（修复卡死/最小化丢失，数据保留）">
+                            重启
+                          </button>
+                          <button className="btn-text danger" onClick={stopInstance} title="关机=停止容器（数据保留，可随时再启动）">
+                            关机
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </>
             )}
           </>

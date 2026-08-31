@@ -68,6 +68,17 @@
               "size": 15717931
             }
           }
+        },
+        "1.5.2": {
+          "changelog": "面板「电源」下拉（重启/关机，关机=停微信实例容器数据保留）；远程页顶部重启按钮改下拉含关机，修复关机文字竖排；版本号全链同步1.5.2。",
+          "updated_at": "2026-08-31T14:10:00+08:00",
+          "packages": {
+            "all": {
+              "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/wechat-on-cloud/wechat-on-cloud.fpk",
+              "sha256": "d1ff5b355b28f400d64d425fc4ae751a993c781a02475e5bf9bb650da3a27872",
+              "size": 15401443
+            }
+          }
         }
       }
     },

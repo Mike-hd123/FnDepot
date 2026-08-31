@@ -25,6 +25,6 @@ bash src/fnos-native/build.sh
 
 ## checksum 约定
 
-- `manifest` 的 `checksum` 字段 = `md5(app.tgz)`，当前为 `ad93204e90a67c128a726965a8467f2b`。
+- `manifest` 的 `checksum` 字段 = `md5(app.tgz)`，当前为 `b067ed1052e8fc69fba7cf83174ad59f`。
 - `app.tgz` 定档自已发布 fpk 原包（面板源码在 `src/panel` 可复现，但构建产物带 node_modules、环境差异导致字节不稳定，故定档）。更新 `app.tgz` 时必须同步重算并更新 `manifest` 的 `checksum` 行，`build.sh` 会校验两者一致否则中止。
 - `build.sh` 内部先跑 `fnpack build -d .` 做结构校验，再用 python3 tarfile 确定性重拼（fnpack v1.2.4 会重压 app.tgz 并改写 checksum，其产物不直接发布），保证 `tar tzf` 清单与 manifest 与原包逐行一致。
