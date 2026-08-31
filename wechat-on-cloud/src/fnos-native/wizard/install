@@ -13,7 +13,7 @@
         "type": "text",
         "field": "WOC_VERSION",
         "label": "镜像版本",
-        "initValue": "1.5.2"
+        "initValue": "1.4.9"
       },
       {
         "type": "text",

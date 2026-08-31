@@ -58,27 +58,17 @@
       "is_docker": false,
       "service_port": "8080",
       "releases": {
-        "1.5.1": {
-          "changelog": "ipvlan(woc-lan)单网卡固化 + WOC_DATA_DIR 主机路径bind + 面板版本号对齐1.5.1 + 移动端触屏焦点修复(6fcf299)。",
-          "updated_at": "2026-08-29T21:45:00+08:00",
+        "1.4.9": {
+          "changelog": "跟随上游 v1.4.9；本地改动：创建实例可选数据目录 + 多实例IP自增",
           "packages": {
             "all": {
-              "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/wechat-on-cloud/wechat-on-cloud.fpk",
-              "sha256": "8fc32cad5ce6df105b749f33c190a40ad6f14e667aec52cf684f04abe07775e7",
-              "size": 15717931
+              "url": "https://github.com/Mike-hd123/FnDepot/raw/main/wechat-on-cloud/wechat-on-cloud.fpk",
+              "sha256": "TBD",
+              "size": 0
             }
-          }
-        },
-        "1.5.2": {
-          "changelog": "面板「电源」下拉（重启/关机，关机=停微信实例容器数据保留）；远程页顶部重启按钮改下拉含关机，修复关机文字竖排；版本号全链同步1.5.2。",
-          "updated_at": "2026-08-31T14:10:00+08:00",
-          "packages": {
-            "all": {
-              "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/wechat-on-cloud/wechat-on-cloud.fpk",
-              "sha256": "a5f09a5553ed1ea04e600c6b4d498a43f83eadf6051fa1c4b1142ef53e2efaaf",
-              "size": 15401476
-            }
-          }
+          },
+          "sha256": "d5fb5d71677a3ca23e591b79ae7ca5aef16da4fd7faa76d8fd0d84608e0e4ff1",
+          "size": 15416672
         }
       }
     },

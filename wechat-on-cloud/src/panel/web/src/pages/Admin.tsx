@@ -1946,6 +1946,9 @@ function CreateInstance({ subs, onClose, onDone }: { subs: PanelUser[]; onClose:
   // 未使用的旧数据卷（之前删除实例但未勾选「彻底清除」时保留下来的），允许在此复用以继承聊天记录。
   const [orphans, setOrphans] = useState<{ name: string; createdAt?: string }[]>([]);
   const [reuse, setReuse] = useState<string>(''); // '' = 不复用，新建空卷
+  // 可选「数据父目录」：留空走面板默认（env WOC_DATA_DIR 或 docker 命名卷）；
+  // 填写绝对路径 → 数据 bind 挂载到 <dataDir>/woc-data-<id> 子目录（自动创建）。
+  const [dataDir, setDataDir] = useState('');
 
   useEffect(() => {
     let alive = true;
@@ -1965,7 +1968,7 @@ function CreateInstance({ subs, onClose, onDone }: { subs: PanelUser[]; onClose:
     setErr('');
     setBusy(true);
     try {
-      await api.createInstance(name.trim(), [...sel], reuse || undefined, appType);
+      await api.createInstance(name.trim(), [...sel], reuse || undefined, appType, dataDir.trim() || undefined);
       onDone();
     } catch (e: any) {
       setErr(e.message || '创建失败');
@@ -1998,6 +2001,16 @@ function CreateInstance({ subs, onClose, onDone }: { subs: PanelUser[]; onClose:
         {appType === 'chromium' && (
           <div className="muted small">Chromium 浏览器随镜像就绪，创建后直接「进入实例」即可（无需下载安装）。</div>
         )}
+        <div className="field-label">数据目录（可选）</div>
+        <input
+          className="input"
+          placeholder="留空=默认（面板配置或命名卷）"
+          autoCapitalize="off"
+          autoCorrect="off"
+          value={dataDir}
+          onChange={(e) => setDataDir(e.target.value)}
+        />
+        <div className="muted small">填绝对路径 → 数据存到 <code>{'{目录}'}/woc-data-{'{id}'}</code> 子目录（自动创建）。留空走面板默认。</div>
         <div className="field-label">允许访问的子账号（管理员默认可访问全部）</div>
         <ChipMultiSelect
           options={subs.map((u) => ({ id: u.id, label: u.username }))}

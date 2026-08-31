@@ -449,12 +449,22 @@ app.post('/api/instances/:id/clientlog', async (req, reply) => {
 app.post('/api/admin/instances', async (req, reply) => {
   const admin = requireAdmin(req, reply);
   if (!admin) return;
-  const { name, reuseVolume, appType } = (req.body as any) ?? {};
+  const { name, reuseVolume, appType, dataDir } = (req.body as any) ?? {};
   const allowedUserIds = Array.isArray((req.body as any)?.allowedUserIds) ? (req.body as any).allowedUserIds : [];
   if (!name || String(name).trim().length === 0 || String(name).length > 30) {
     return reply.code(400).send({ error: '实例名称为 1-30 个字符' });
   }
   const type: AppType = APP_TYPES.includes(appType) ? appType : 'wechat';
+  // 可选「数据父目录」：非空 → 数据 bind 挂载到 <dataDir>/woc-data-<id>（绝对路径）。
+  // 校验：必须是绝对路径，且不含 .. 等穿越成分，避免任意路径写入。
+  let dataDirPath: string | undefined;
+  if (dataDir !== undefined && dataDir !== null && String(dataDir).trim() !== '') {
+    const d = String(dataDir).trim();
+    if (!d.startsWith('/') || /(^|\/)\.\.(\/|$)/.test(d) || d.includes('\0')) {
+      return reply.code(400).send({ error: '数据目录需为绝对路径（不含 ..）' });
+    }
+    dataDirPath = d;
+  }
   // 复用卷：必须以 woc-data- 开头，且不能被现存实例占用。后端先校验，避免坏名穿透到 docker run。
   let reuseVolumeName: string | undefined;
   if (reuseVolume) {
@@ -466,10 +476,10 @@ app.post('/api/admin/instances', async (req, reply) => {
     }
     reuseVolumeName = reuseVolume;
   }
-  const inst = createInstance(String(name), admin.id, allowedUserIds, reuseVolumeName, type);
+  const inst = createInstance(String(name), admin.id, allowedUserIds, reuseVolumeName, type, dataDirPath);
   appendPanelLog(
     'INFO',
-    `创建实例「${inst.name}」(${type}, id=${inst.id}) by ${admin.username}${reuseVolumeName ? ` · 复用卷 ${reuseVolumeName}` : ''} → 开始创建容器（镜像缺失会自动拉取，首次较慢）`,
+    `创建实例「${inst.name}」(${type}, id=${inst.id}) by ${admin.username}${reuseVolumeName ? ` · 复用卷 ${reuseVolumeName}` : ''}${dataDirPath ? ` · 数据目录 ${dataDirPath}` : ''} → 开始创建容器（镜像缺失会自动拉取，首次较慢）`,
   );
   appendInstanceLog(inst.id, `实例创建（${type}）by ${admin.username}`);
   try {

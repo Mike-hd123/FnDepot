@@ -4,7 +4,7 @@ import { appendInstanceLog, deleteInstanceLog, appendPanelLog, readInstanceLog, 
 import http from 'node:http';
 import zlib from 'node:zlib';
 import Docker from 'dockerode';
-import { instanceAppType, getDesktopDark, type Instance } from './store.js';
+import { instanceAppType, getDesktopDark, listInstances, setInstanceLanIP, type Instance } from './store.js';
 
 // 实例镜像引用。版本耦合（架构守则 R1）：面板与实例镜像同一 release 同步出包、按同版本号
 // 互相验证——正式版面板把 :latest 改写为与自身相同的版本 tag（如 1.4.1），保证
@@ -130,18 +130,27 @@ let networkName: string | null = process.env.WOC_DOCKER_NETWORK || null;
 //         默认 docker 命名卷 woc-data-<id>。见 dataBind()。
 
 const WOC_LAN_NET = 'woc-lan';
+// 实例 IP 分配起点（多实例：从 .50 起递增分配，每实例固定，重建沿用）。
+const WOC_LAN_IP_BASE = process.env.WOC_LAN_IP || '192.168.5.50';
+// 兼容旧 env 名（单实例场景显式锁 IP 时直接作为固定 IP）
 const WOC_LAN_IP = process.env.WOC_LAN_IP || '192.168.5.50';
 
-// 数据挂载形态：WOC_DATA_DIR 非空 → bind 主机路径（面板与容器同 uid 1000 兼容）。
-// 目录缺失由 runInstance 预建；容器启动时 Kasm init 会按 PUID/PGID chown /config。
+// 数据挂载形态：优先 instance.dataDir（新建实例时可选的「数据父目录」）→ 非空则 bind
+// `${dataDir}/woc-data-<id>:/config`；否则按 WOC_DATA_DIR env 非空 bind；都不满足 → docker
+// 命名卷。目录缺失由 runInstance 预建；容器启动时 Kasm init 会按 PUID/PGID chown /config。
 function dataBind(inst: Instance): string {
+  const custom = (inst.dataDir || '').trim();
+  if (custom) return `${custom}/woc-data-${inst.id}:/config`;
   const dir = (process.env.WOC_DATA_DIR || '').trim();
   if (dir) return `${dir}/woc-data-${inst.id}:/config`;
   return `${inst.volumeName}:/config`;
 }
 
-// WOC_DATA_DIR 模式下源目录绝对路径（无此 env 返回 null）
+// 当前生效的数据源目录绝对路径（bind 形态）。非 bind（命名卷）返回 null。
+// 优先 instance.dataDir，其次 env WOC_DATA_DIR。
 function dataDirFor(inst: Instance): string | null {
+  const custom = (inst.dataDir || '').trim();
+  if (custom) return `${custom}/woc-data-${inst.id}`;
   const dir = (process.env.WOC_DATA_DIR || '').trim();
   if (!dir) return null;
   return `${dir}/woc-data-${inst.id}`;
@@ -161,6 +170,37 @@ function defaultRouteIface(): string | null {
   } catch {
     return null;
   }
+}
+
+// 为实例分配 woc-lan 固定 IP：优先沿用已持久化的 lanIP（重建沿用）；否则从
+// WOC_LAN_IP_BASE 起递增，跳过「实例记录已占用」+「docker 网络在网容器实际占用」
+// （老实例无 lanIP 字段但容器真实占着 IP，必须排除）。分配后持久化。
+// ⚠️ .51 是宿主 ipvl0 虚接口地址（面板经它访问实例），不可分给容器。
+async function instanceLanIP(inst: Instance): Promise<string> {
+  if (inst.lanIP) return inst.lanIP;
+  const used = new Set<string>();
+  for (const i of listInstances()) if (i.lanIP) used.add(i.lanIP);
+  try {
+    const net: any = await docker.getNetwork(WOC_LAN_NET).inspect();
+    const containers: Record<string, any> = net?.Containers || {};
+    for (const c of Object.values(containers)) {
+      if (c?.IPv4Address) used.add(String(c.IPv4Address));
+    }
+  } catch {
+    /* 网络不存在则无在网容器 */
+  }
+  const baseMatch = /^(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(WOC_LAN_IP_BASE);
+  if (!baseMatch) return WOC_LAN_IP_BASE;
+  const [a, b, c, start] = baseMatch.slice(1).map(Number);
+  let ip = `${a}.${b}.${c}.${start}`;
+  for (let i = start; i <= 254; i++) {
+    if (i === 51) continue; // 宿主 ipvl0 虚接口地址，跳过
+    const candidate = `${a}.${b}.${c}.${i}`;
+    if (!used.has(candidate)) { ip = candidate; break; }
+  }
+  // 分配后持久化，避免不同实例拿到同一 IP
+  try { setInstanceLanIP(inst.id, ip); } catch { /* 持久化失败不阻塞启动 */ }
+  return ip;
 }
 
 // 挂 woc-lan（ipvlan 主网卡）到实例容器 —— 单网卡模式，这是唯一网络。
@@ -196,8 +236,9 @@ export async function ensureWocLan(containerName: string): Promise<void> {
     const info: any = await container.inspect();
     const nets: Record<string, any> = info?.NetworkSettings?.Networks || {};
     if (nets[WOC_LAN_NET]) return; // 已挂，跳过（connect 非幂等）
-    await docker.getNetwork(WOC_LAN_NET).connect({ Container: containerName, IPAMConfig: { IPv4Address: WOC_LAN_IP } });
-    appendInstanceLog(containerName.replace(/^woc-wx-/, ''), `已挂 ${WOC_LAN_NET} (${WOC_LAN_IP}) 业务网卡（微信备份同广播域）`);
+    const lanIP = await instanceLanIP(inst);
+    await docker.getNetwork(WOC_LAN_NET).connect({ Container: containerName, IPAMConfig: { IPv4Address: lanIP } });
+    appendInstanceLog(containerName.replace(/^woc-wx-/, ''), `已挂 ${WOC_LAN_NET} (${lanIP}) 业务网卡（微信备份同广播域）`);
   } catch (e: any) {
     appendPanelLog('WARN', `实例 ${containerName} 挂 ${WOC_LAN_NET} 失败：${e?.message || e}`);
   }
@@ -452,7 +493,7 @@ export async function runInstance(inst: Instance, opts?: { keepImage?: boolean }
   if (net) {
     const ep: any = {} as any;
     if (net !== WOC_LAN_NET) ep.MacAddress = mac;
-    if (net === WOC_LAN_NET) ep.IPAMConfig = { IPv4Address: WOC_LAN_IP };
+    if (net === WOC_LAN_NET) ep.IPAMConfig = { IPv4Address: await instanceLanIP(inst) };
     createOpts.NetworkingConfig = { EndpointsConfig: { [net]: ep } };
   } else {
     (createOpts as any).MacAddress = mac;
@@ -646,11 +687,11 @@ export async function removeInstance(inst: Instance, purgeVolume: boolean): Prom
     /* 容器可能已不存在 */
   }
   if (purgeVolume) {
-    // 兼容两种形态：命名卷 docker volume rm；bind 目录 rm -rf（WOC_DATA_DIR 下）
-    const dataDir = (process.env.WOC_DATA_DIR || '').trim();
-    if (dataDir && inst.volumeName.startsWith('woc-data-') && !inst.volumeName.includes('/')) {
+    // 兼容两种形态：命名卷 docker volume rm；bind 目录 rm -rf（instance.dataDir / WOC_DATA_DIR 下）
+    const bindDir = (inst.dataDir || '').trim() || (process.env.WOC_DATA_DIR || '').trim();
+    if (bindDir && inst.volumeName.startsWith('woc-data-') && !inst.volumeName.includes('/')) {
       try {
-        rmSync(`${dataDir}/${inst.volumeName}`, { recursive: true, force: true });
+        rmSync(`${bindDir}/${inst.volumeName}`, { recursive: true, force: true });
       } catch { /* 目录可能不存在 */ }
     } else {
       try {

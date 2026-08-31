@@ -46,6 +46,11 @@ export interface Instance {
   icon?: string; // 自定义图标：data: 图片(base64) 或 builtin:<key>；缺省按 appType 取默认图标
   containerName: string; // woc-wx-<id>
   volumeName: string; // woc-data-<id>
+  // 自定义数据父目录（可选）。非空 → 数据落在此目录下 woc-data-<id> 子目录（bind 挂载）；
+  // 空 → 旧逻辑：env WOC_DATA_DIR 或 docker 命名卷。见 docker.ts dataBind()。
+  dataDir?: string;
+  // 实例在 woc-lan 的固定 IP（多实例支持：创建时分配并持久化，重建沿用）。缺省=未分配。
+  lanIP?: string;
   kasmUser: string; // 随机生成，服务端注入反代，永不下发前端
   kasmPassword: string;
   createdAt: string;
@@ -252,6 +257,8 @@ export function publicInstance(i: Instance) {
     name: i.name,
     appType: instanceAppType(i), // 老实例无字段时回退 wechat
     icon: i.icon,
+    dataDir: i.dataDir,
+    lanIP: i.lanIP,
     createdAt: i.createdAt,
     createdBy: i.createdBy,
     memSoftLimitMB: i.memSoftLimitMB,
@@ -288,6 +295,15 @@ export function listInstances() {
   return data.instances.slice().sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
+// 设置实例在 woc-lan 的固定 IP（docker.ts 创建容器时分配；重建容器沿用同 IP）。
+export function setInstanceLanIP(id: string, ip: string) {
+  const inst = findInstance(id);
+  if (!inst) throw new Error('实例不存在');
+  inst.lanIP = ip;
+  persist();
+  return inst.lanIP;
+}
+
 export function findInstance(id: string) {
   return data.instances.find((i) => i.id === id);
 }
@@ -318,12 +334,14 @@ export function createInstance(
   allowedUserIds: string[] = [],
   reuseVolumeName?: string,
   appType: AppType = 'wechat',
+  dataDir?: string,
 ) {
   const type: AppType = APP_TYPES.includes(appType) ? appType : 'wechat';
   let id = randomBytes(5).toString('hex'); // 10 hex chars
   // WOC_DATA_DIR 非空 = bind 主机路径形态：volumeName 仍存基名 woc-data-<id>
   // （docker.ts dataBind() 拼 ${WOC_DATA_DIR}/woc-data-<id>:/config；孤儿扫描也按基名）。
-  const useBind = !!(process.env.WOC_DATA_DIR || '').trim();
+  // dataDir 参数非空时显式指定数据父目录（覆盖 env），仍存基名 volumeName。
+  const useBind = !!(process.env.WOC_DATA_DIR || '').trim() || !!(dataDir || '').trim();
   let volumeName = `woc-data-${id}`;
   if (reuseVolumeName) {
     const reusedId = parseIdFromVolume(reuseVolumeName);
@@ -346,6 +364,7 @@ export function createInstance(
     appType: type,
     containerName: `woc-wx-${id}`,
     volumeName,
+    dataDir: (dataDir || '').trim() || undefined,
     kasmUser: 'woc',
     // 用 hex（仅 0-9a-f）：容器内 init 脚本以 `openssl passwd -apr1 ${PASSWORD}` 未加引号方式生成 .htpasswd，
     // base64url 可能含前导 '-' 而被 openssl 当作命令行选项，导致密码哈希为空、所有鉴权失败。hex 不含任何 shell 特殊字符。

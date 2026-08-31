@@ -49,6 +49,7 @@ export interface PanelInstance {
   name: string;
   appType?: AppType; // 缺省（老实例）= wechat
   icon?: string; // 自定义图标：data: 图片 / builtin:<key>；缺省按 appType 取默认图标
+  dataDir?: string; // 自定义数据父目录（可选，新建时可指定）
   createdAt: string;
   createdBy: string;
   memSoftLimitMB?: number;
@@ -160,10 +161,10 @@ export const api = {
 
   // 微信实例
   listInstances: () => req<{ instances: InstanceWithStatus[] }>('/api/instances'),
-  createInstance: (name: string, allowedUserIds: string[] = [], reuseVolume?: string, appType: AppType = 'wechat') =>
+  createInstance: (name: string, allowedUserIds: string[] = [], reuseVolume?: string, appType: AppType = 'wechat', dataDir?: string) =>
     req<{ instance: PanelInstance }>('/api/admin/instances', {
       method: 'POST',
-      body: JSON.stringify({ name, allowedUserIds, reuseVolume: reuseVolume || undefined, appType }),
+      body: JSON.stringify({ name, allowedUserIds, reuseVolume: reuseVolume || undefined, appType, dataDir: dataDir || undefined }),
     }),
   regenMachineId: (id: string) =>
     req(`/api/admin/instances/${id}/regen-machine-id`, { method: 'POST' }),

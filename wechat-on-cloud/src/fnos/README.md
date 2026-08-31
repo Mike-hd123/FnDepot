@@ -10,7 +10,7 @@ src/fnos-native/
 ├── cmd/               # 生命周期脚本（main / *_callback / *_init），install_callback 需 root（建 woc-lan ipvlan + systemd 固化 ipvl0）
 ├── config/privilege   # 运行身份：run-as=root（install_callback 的 docker/systemd 操作 package 用户无法执行）
 ├── config/resource    # 资源声明 {}
-├── wizard/install     # 安装向导（PORT / WOC_VERSION=1.5.2 / WOC_WECHAT_IMAGE）
+├── wizard/install     # 安装向导（PORT / WOC_VERSION=1.4.9 / WOC_WECHAT_IMAGE）
 ├── manifest           # INI 元数据；checksum 字段 = md5(app.tgz)
 └── build.sh           # 一键构建脚本
 ```
