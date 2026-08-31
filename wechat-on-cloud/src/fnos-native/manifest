@@ -16,6 +16,6 @@ desktop_uidir              = ui
 desktop_applaunchname      = wechat-on-cloud.panel
 disable_authorization_path = false
 ; 1.5.0 纯 ipvlan 单网卡 + 数据卷 bind 主机目录
-; 1.5.2 面板加「关机」按钮（停止微信实例容器，数据保留）
-changelog                  = 1.5.2 面板加关机按钮
+; 1.5.2 远程页「电源」下拉（重启/关机），关机=停容器数据保留
+changelog                  = 1.5.2 远程页电源下拉(重启/关机)+横排修复
 checksum                    = a1e918a110d45ba471c1f4bfee9e74e2
