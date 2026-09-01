@@ -18,4 +18,4 @@ disable_authorization_path = false
 ; 1.5.0 纯 ipvlan 单网卡 + 数据卷 bind 主机目录
 ; 1.4.9 跟随上游版本号；本地改动含创建实例可选数据目录 + 多实例IP自增
 changelog                  = 1.4.9 跟随上游；创建实例可选数据目录 + 多实例IP自增
-checksum                    = c0081fc6a16edc8d382bab25094e7dad
+checksum                    = 6e39a6544e23546be4eba8a2c0bff415

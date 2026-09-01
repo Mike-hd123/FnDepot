@@ -14,11 +14,20 @@ GATEWAY=192.168.5.1
 IPVL0_IP=192.168.5.51
 
 # --- woc-lan ipvlan 网络 ---
+# IFACE 选取：只挑真正可用的网卡——UP 状态 + 有默认路由。
+# 坑：曾抓到 DOWN 的 enp4s0(NO-CARRIER) 当 parent，ipvlan 挂死网卡上容器失联。
 if ! docker network inspect "$NET_NAME" >/dev/null 2>&1; then
-  IFACE=$(ip route show default | awk '{print $5; exit}')
-  [ -z "$IFACE" ] && IFACE=eno1
-  docker network create -d ipvlan --subnet=$SUBNET --gateway=$GATEWAY \
-    -o parent="$IFACE" -o ipvlan_mode=l2 "$NET_NAME" 2>/dev/null || echo "WARN: woc-lan 创建失败/已存在"
+  IFACE=""
+  for IF in $(ls /sys/class/net | grep -vE '^(lo|docker0|br-|veth|ipvl|tun|wg)'); do
+    ip link show "$IF" 2>/dev/null | grep -q 'state UP' || continue
+    awk -v i="$IF" '$1==i && $2=="00000000"' /proc/net/route | grep -q . || continue
+    IFACE="$IF"; break
+  done
+  [ -z "$IFACE" ] && { echo "ERROR: 无可用物理网卡(UP+默认路由)，woc-lan 不创建，待下次安装/升级重试"; }
+  if [ -n "$IFACE" ]; then
+    docker network create -d ipvlan --subnet=$SUBNET --gateway=$GATEWAY \
+      -o parent="$IFACE" -o ipvlan_mode=l2 "$NET_NAME" 2>/dev/null || echo "WARN: woc-lan 创建失败/已存在"
+  fi
 fi
 
 # --- 宿主 ipvl0：独立脚本 + systemd 单元双保险（开机动态取 iface） ---
@@ -26,16 +35,23 @@ cat > /usr/local/bin/woc-ensure-ipvl0.sh <<'SH'
 #!/bin/bash
 # 确保宿主 ipvl0 虚接口存在（.51, ipvlan l2, parent=默认路由网卡）。
 # 幂等：已存在则不动。被 systemd 开机调用；也可手动执行。
+# IFACE 选取：UP 状态 + 有默认路由的物理网卡。找不到不硬造（exit 0 等 systemd 重试），
+# 坑：boot 抢跑时默认路由未起 + 兜底 eno1 不存在 → 曾导致服务 failed。
 set -u
 IPVL0_IP=192.168.5.51
-IFACE=$(ip route show default | awk '{print $5; exit}')
-[ -z "$IFACE" ] && IFACE=eno1
 if ip link show ipvl0 >/dev/null 2>&1; then
   # 已存在：确保 IP 配上（异常半残状态补全）
   ip addr show ipvl0 | grep -q "$IPVL0_IP/" || ip addr add "$IPVL0_IP/24" dev ipvl0 2>/dev/null
   ip link set ipvl0 up 2>/dev/null
   exit 0
 fi
+IFACE=""
+for IF in $(ls /sys/class/net | grep -vE '^(lo|docker0|br-|veth|ipvl|tun|wg)'); do
+  ip link show "$IF" 2>/dev/null | grep -q 'state UP' || continue
+  awk -v i="$IF" '$1==i && $2=="00000000"' /proc/net/route | grep -q . || continue
+  IFACE="$IF"; break
+done
+[ -z "$IFACE" ] && { echo "no usable iface(UP+default route), skip; systemd will retry"; exit 0; }
 ip link add ipvl0 link "$IFACE" type ipvlan mode l2 || exit 1
 ip link set ipvl0 up || true
 ip addr add "$IPVL0_IP/24" dev ipvl0 || true
@@ -46,7 +62,9 @@ chown root:root /usr/local/bin/woc-ensure-ipvl0.sh
 cat > /etc/systemd/system/woc-ipvl0.service <<'UNIT'
 [Unit]
 Description=woc ipvl0 slave interface for wechat-on-cloud (192.168.5.51)
-After=network.target
+# 等 network-online：boot 抢跑时默认路由未起，曾致脚本失败
+After=network.target network-online.target
+Wants=network-online.target
 
 [Service]
 Type=oneshot
