@@ -43,7 +43,7 @@ mkdir -p "${BUILD_DIR}"
 echo ""
 echo "[1/8] 克隆 decolua/9router..."
 cd "${BUILD_DIR}"
-git clone --depth 1 --branch v0.5.59 https://github.com/decolua/9router.git upstream 2>&1 | tail -3
+git clone --depth 1 --branch "v${VERSION}" https://github.com/decolua/9router.git upstream 2>&1 | tail -3
 
 # ── 3. 安装依赖并构建 ──
 echo ""
