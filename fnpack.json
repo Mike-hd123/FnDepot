@@ -4,7 +4,7 @@
     "name": "Mike 的飞牛应用源",
     "author": "Mike",
     "homepage": "https://github.com/Mike-hd123",
-    "description": "个人维护的飞牛 fnOS 第三方应用源：云微(WechatOnCloud)、HyAtlas(混元记忆)、9Router(FREE AI Router & Token Saver)。均为上游开源项目的 NAS 原生化打包。"
+    "description": "个人维护的飞牛 fnOS 第三方应用源：云微(WechatOnCloud)、HyAtlas(混元记忆)、9Router(FREE AI Router & Token Saver)、Octopus(LLM聚合网关)。均为上游开源项目的 NAS 原生化打包。"
   },
   "apps": {
     "9router": {
@@ -98,6 +98,37 @@
               "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/hyatlas/hyatlas.fpk",
               "sha256": "7b3be82bf02cc35bf09b8d8e6b94a31007ff689127b1ae63cc3adf6413dc102a",
               "size": 104695175
+            }
+          }
+        }
+      }
+    },
+    "octopus": {
+      "display_name": "Octopus",
+      "desc": "LLM API 聚合网关：Go 单二进制 + 内嵌前端 + SQLite 存储，多渠道/多模型管理，支持单渠道多 Key，原生宿主机运行，端口 8081。上游项目：bestruirui/octopus。",
+      "platform": [
+        "all"
+      ],
+      "categories": [
+        "AI赋能",
+        "编程开发"
+      ],
+      "icon_url": "./octopus/ICON.PNG",
+      "maintainer": "Mike",
+      "maintainer_url": "https://github.com/Mike-hd123",
+      "distributor": "Mike",
+      "run_as": "package",
+      "is_docker": false,
+      "service_port": "8081",
+      "releases": {
+        "0.13.2": {
+          "changelog": "官方 0.13.2 release 二进制(2026-09-02)，支持一渠道多 Key；volume 安装落用户存储卷，数据迁移 /vol1/@appdata/octopus/（对齐 9router 规范）。",
+          "updated_at": "2026-09-04T12:15:00+08:00",
+          "packages": {
+            "all": {
+              "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/octopus/octopus.fpk",
+              "sha256": "d5e5da416ac34cd1263bf472db020f5b933ddcae9fe46842b628c2ed44f08364",
+              "size": 22584328
             }
           }
         }

@@ -1,6 +1,6 @@
 # FnDepot — Mike 的飞牛第三方应用源
 
-飞牛 fnOS 外部应用源（schema_version 2），收录 3 个自打包应用。每个应用目录 = 安装包(fpk) + 图标 + 说明 + 上游源码 fork(src/)。
+飞牛 fnOS 外部应用源（schema_version 2），收录 4 个自打包应用。每个应用目录 = 安装包(fpk) + 图标 + 说明 + 上游源码 fork(src/)。
 
 ## 添加源
 
@@ -17,6 +17,7 @@ https://github.com/Mike-hd123/FnDepot
 | 云微(飞牛云微信) `wechat-on-cloud` | 1.4.9 | NAS 原生微信面板，Node.js 面板 + dockerode 管理微信实例容器，ipvlan(woc-lan) 单网卡直连局域网，数据落主机路径 bind，创建实例可选数据目录，移动端触屏优化，实例「电源」下拉(重启/关机) | [Gloridust/WechatOnCloud](https://github.com/Gloridust/WechatOnCloud) |
 | HyAtlas(混元记忆) `hyatlas` | 2.0.1 | AI 长期记忆系统，zvec 双索引，仪表盘汉化 + token 自动登录，降权运行 | [tuancookiez-hub/HyAtlas-Memory](https://github.com/tuancookiez-hub/HyAtlas-Memory) |
 | 9Router `9router` | 0.5.65 | FREE AI Router & Token Saver，Next.js + open-sse SSE 引擎，40+ 免费 AI 提供商聚合，端口 20128 | [decolua/9router](https://github.com/decolua/9router) |
+| Octopus `octopus` | 0.13.2 | LLM API 聚合网关，Go 单二进制 + 内嵌前端 + SQLite，多渠道/多模型管理，支持单渠道多 Key，端口 8081 | [bestruirui/octopus](https://github.com/bestruirui/octopus) |
 
 ## 目录结构
 
@@ -39,6 +40,11 @@ FnDepot/
 │   ├── README.md
 │   ├── 9router-0.5.65-x86.fpk
 │   └── src/                 # 打包层源码（build.sh + cmd/config/wizard/manifest.upstream）
+├── octopus/
+│   ├── ICON.PNG / ICON_256.PNG
+│   ├── README.md
+│   ├── octopus.fpk
+│   └── src/                 # 上游 v0.13.2 源码（打包层 cmd/config/wizard 在 fpk 内）
 ```
 
 ## 打包说明
