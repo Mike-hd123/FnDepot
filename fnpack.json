@@ -26,14 +26,14 @@
       "is_docker": false,
       "service_port": "20128",
       "releases": {
-        "0.5.59": {
-          "changelog": "maintainer 改 Mike 指向 mike-hd123/9router-fnos + 基于 decolua/9router 0.5.59 打包。",
-          "updated_at": "2026-08-30T09:40:00+08:00",
+        "0.5.65": {
+          "changelog": "升级至上游 v0.5.65；build.sh 版本参数化，产物 0.5.59 → 0.5.65。",
+          "updated_at": "2026-09-03T18:59:00+08:00",
           "packages": {
             "x86": {
-              "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/9router/9router-0.5.59-x86.fpk",
-              "sha256": "5274cb4e2c22b1d12f9b84f5206402163d0593eec23916b54cf2236eac92e9ca",
-              "size": 34647749
+              "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/9router/9router-0.5.65-x86.fpk",
+              "sha256": "3d8028e06b8cd08760673f6e470c475ad20b6ec32cdef55ed6798a0a519ac346",
+              "size": 34674717
             }
           }
         }
