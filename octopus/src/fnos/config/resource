@@ -1,0 +1,15 @@
+{
+    "data-share":
+    {
+        "shares":
+        [
+            {
+                "name": "octopus",
+                "permission":
+                {
+                    "rw": ["octopus"]
+                }
+            }
+        ]
+    }
+}

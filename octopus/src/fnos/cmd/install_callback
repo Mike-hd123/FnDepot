@@ -1,0 +1,59 @@
+#!/bin/bash
+set -u
+LOG="${TRIM_PKGVAR:-/var/apps/octopus/var}/install.log"
+mkdir -p "${TRIM_PKGVAR:-/var/apps/octopus/var}"
+echo "===== install_callback $(date) =====" > "$LOG"
+
+APP_DIR="${TRIM_APPDEST:-/vol1/@appcenter/octopus}"
+# 数据目录: 与 cmd/main 同逻辑, 优先 TRIM_PKGVAR, 兜底按卷推导
+DATA_DIR="${TRIM_PKGVAR:-}"
+if [ -z "${DATA_DIR}" ]; then
+  APP_VOL="$(printf '%s' "${APP_DIR}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
+  if [ -n "${APP_VOL}" ]; then
+    DATA_DIR="${APP_VOL}/@appdata/octopus"
+  else
+    DATA_DIR="/var/apps/octopus/var"
+  fi
+fi
+
+RUN_USER="${TRIM_USERNAME:-octopus}"
+RUN_GROUP="${TRIM_GROUPNAME:-octopus}"
+
+# 1) 建数据目录 + 属主
+mkdir -p "${DATA_DIR}"
+chown -R "${RUN_USER}:${RUN_GROUP}" "${DATA_DIR}" 2>/dev/null || true
+echo "data dir ready: ${DATA_DIR} (owner ${RUN_USER}:${RUN_GROUP})" >> "$LOG"
+
+# 2) 网关 sidecar 脚本可执行 + 可读（root 运行，权限兜底防降权场景）
+if [ -f "${APP_DIR}/gateway/gateway_proxy.py" ]; then
+  chmod 755 "${APP_DIR}/gateway" 2>/dev/null || true
+  chmod 644 "${APP_DIR}/gateway/gateway_proxy.py" 2>/dev/null || true
+  echo "gateway sidecar ready: ${APP_DIR}/gateway/gateway_proxy.py" >> "$LOG"
+else
+  echo "WARN: gateway_proxy.py missing in APPDEST" >> "$LOG"
+fi
+
+# 3) 迁移旧 root 安装数据 (系统目录 -> share, 幂等: 已有 data.db 不覆盖)
+OLD_DATA="/usr/local/apps/@appcenter/octopus/data"
+if [ -f "${OLD_DATA}/data.db" ] && [ ! -f "${DATA_DIR}/data.db" ]; then
+  echo "migrating legacy data from ${OLD_DATA}" >> "$LOG"
+  cp -n "${OLD_DATA}/data.db" "${DATA_DIR}/data.db" 2>/dev/null || true
+  [ -f "${OLD_DATA}/data.db-wal" ] && cp -n "${OLD_DATA}/data.db-wal" "${DATA_DIR}/" 2>/dev/null || true
+  [ -f "${OLD_DATA}/data.db-shm" ] && cp -n "${OLD_DATA}/data.db-shm" "${DATA_DIR}/" 2>/dev/null || true
+  cp -n "${OLD_DATA}/config.json" "${DATA_DIR}/config.json" 2>/dev/null || true
+  chown "${RUN_USER}:${RUN_GROUP}" "${DATA_DIR}"/data.db* "${DATA_DIR}"/config.json 2>/dev/null || true
+  echo "legacy data migrated" >> "$LOG"
+fi
+
+# 4) 迁移 docker 版历史数据 (原逻辑保留)
+DOCKER_DATA="/vol1/@apphome/hermes-studio/data/octopus"
+if [ -d "$DOCKER_DATA" ] && [ -f "${DOCKER_DATA}/data.db" ] && [ ! -f "${DATA_DIR}/data.db" ]; then
+  echo "Found docker data, migrating..." >> "$LOG"
+  cp -n "${DOCKER_DATA}/data.db" "${DATA_DIR}/data.db" 2>/dev/null || true
+  cp -n "${DOCKER_DATA}/config.json" "${DATA_DIR}/config.json" 2>/dev/null || true
+  chown "${RUN_USER}:${RUN_GROUP}" "${DATA_DIR}/data.db" "${DATA_DIR}/config.json" 2>/dev/null || true
+  echo "Data migrated to ${DATA_DIR}" >> "$LOG"
+fi
+
+echo "===== done =====" >> "$LOG"
+exit 0

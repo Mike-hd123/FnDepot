@@ -1,0 +1,19 @@
+appname                    = octopus
+version                    = 0.13.2-8
+display_name               = Octopus
+desc                       = One Hub All LLMs For You —— LLM API 聚合网关，Go 单二进制，SQLite 存储，原生宿主机运行。v5 gateway sidecar 升级为剥前缀 HTTP 反代（含 SSE 流式透传），手机端 /app/octopus 全链路可路由。
+platform                   = x86
+source                     = thirdparty
+maintainer                 = bestruirui
+maintainer_url             = https://github.com/bestruirui/octopus
+distributor                = Mike
+distributor_url            = https://github.com/Mike-hd123
+os_min_version             = 0.9.27
+ctl_stop                   = true
+micro_app                  = true
+checkport                  = false
+service_port               = 8081
+desktop_uidir              = ui
+desktop_applaunchname      = octopus.panel
+disable_authorization_path = false
+changelog                  = v8: 修复 sidecar v7 只给 HTML 注入 ?v=v7 导致 ES 模块图内部裸 URL import 生成 React 双实例（ThemeProvider Context 断裂 → useTheme 崩溃白屏，桌面手机均白）。v8 对 JS 内部相对 chunk 引用统一注入同一版本参数，全模块图单一 URL 空间单实例，CDP 隔离实验全链验证通过。
