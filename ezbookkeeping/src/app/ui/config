@@ -1,0 +1,13 @@
+{
+    ".url": {
+        "ezbookkeeping.Application": {
+            "title": "EZBookkeeping",
+            "icon": "images/icon-{0}.png",
+            "type": "iframe",
+            "protocol": "",
+            "port": "8580",
+            "url": "/",
+            "allUsers": true
+        }
+    }
+}

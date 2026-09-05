@@ -1,0 +1,14 @@
+appname               = ezbookkeeping
+version               = 1.6.1-5
+display_name          = EZBookkeeping
+desc                  = 轻量自托管个人记账：多账本/报表洞察/账单批量导入(Excel·微信·支付宝·京东)/原生 MCP 与 API 接口。v5 修复手机端 /app/ 100001：gateway sidecar 由裸 TCP 盲转发改为剥前缀 HTTP 反代（对齐 EasyTier gateway-proxy），无尾斜杠自动 301，前端相对/绝对资源与 API 均可正确路由。
+platform              = x86
+source                = thirdparty
+maintainer            = MaysWind
+maintainer_url        = https://github.com/mayswind/ezbookkeeping
+distributor           = Mike
+distributor_url       = https://github.com/Mike-hd123
+desktop_uidir         = ui
+desktop_applaunchname = ezbookkeeping.Application
+service_port          = 8580
+ctl_stop              = true

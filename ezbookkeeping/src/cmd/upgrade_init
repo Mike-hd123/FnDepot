@@ -1,0 +1,3 @@
+#!/bin/bash
+# 升级前置：数据目录固定 /volX/@appdata/ezbookkeeping，严禁迁移/换目录（octopus 丢库教训）
+exit 0

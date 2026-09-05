@@ -1,0 +1,191 @@
+#!/bin/bash
+# cmd/main — EZBookkeeping 进程管理（fnOS 标准桌面应用法，参照 9router 模板）
+# v3: 补 fnOS 统一网关 socket 自注册（对齐 minibill 模式），恢复手机端 /app/ezbookkeeping 路由。
+# PID 文件管理，不依赖 systemd；数据目录钉死 @appdata/ezbookkeeping，升级不换目录。
+set -uo pipefail
+
+APP_NAME="${TRIM_APPNAME:-ezbookkeeping}"
+APP_DIR="${TRIM_APPDEST:-/var/apps/${APP_NAME}}"
+# 数据目录: 优先 TRIM_PKGVAR (fnOS 注入). 兜底: 从 fnOS home 软链或 APP_DIR 推导卷, 不写死具体卷.
+APP_VOL=""
+if [ -n "${TRIM_PKGVAR:-}" ]; then
+    DATA_DIR="${TRIM_PKGVAR}"
+else
+    if [ -L "${APP_DIR}/home" ]; then
+        APP_HOME="$(readlink -f "${APP_DIR}/home")"
+        APP_VOL="$(printf '%s' "${APP_HOME}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
+    fi
+    if [ -z "${APP_VOL}" ]; then
+        APP_VOL="$(printf '%s' "${APP_DIR}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
+    fi
+    if [ -n "${APP_VOL}" ]; then
+        DATA_DIR="${APP_VOL}/@appdata/${APP_NAME}"
+    else
+        DATA_DIR="${APP_DIR}/var"
+    fi
+fi
+
+# 兼容两种部署布局（对齐 9router）：fnOS 传 TRIM_APPDEST=/volX/@appcenter/<app> → 二进制在 ${APP_DIR}/server；
+# 部分版本 TRIM_APPDEST=/var/apps/<app> → 在 ${APP_DIR}/target/server
+if [ -d "${APP_DIR}/server" ]; then
+    BIN_DIR="${APP_DIR}/server"
+elif [ -d "${APP_DIR}/target/server" ]; then
+    BIN_DIR="${APP_DIR}/target/server"
+else
+    echo "ERROR: server dir not found (tried ${APP_DIR}/server and ${APP_DIR}/target/server)" >&2
+    exit 1
+fi
+
+APP_BIN="${BIN_DIR}/ezbookkeeping"
+CONF="${DATA_DIR}/ezbookkeeping.ini"
+PID_FILE="${DATA_DIR}/ezbookkeeping.pid"
+GW_PID_FILE="${DATA_DIR}/gateway.pid"
+GW_LOG="${DATA_DIR}/gateway.log"
+GW_SCRIPT="${APP_DIR}/gateway/gateway_proxy.py"
+[ -f "${GW_SCRIPT}" ] || GW_SCRIPT="${APP_DIR}/target/gateway/gateway_proxy.py"
+BOOT_LOG="${DATA_DIR}/boot.log"
+
+# 端口：优先 fnOS 注入 TRIM_SERVICE_PORT，其次读数据目录配置，兜底 8580
+PORT="${TRIM_SERVICE_PORT:-}"
+if [ -z "${PORT}" ] && [ -f "${CONF}" ]; then
+    PORT="$(sed -n 's/^http_port *= *//p' "${CONF}" | head -1)"
+fi
+PORT="${PORT:-8580}"
+
+gw_running() {
+    [ -f "${GW_PID_FILE}" ] && kill -0 "$(cat "${GW_PID_FILE}" 2>/dev/null)" 2>/dev/null
+}
+
+start_gateway() {
+    if gw_running; then
+        return 0
+    fi
+    if [ ! -f "${GW_SCRIPT}" ]; then
+        echo "WARN: gateway script missing (${GW_SCRIPT}), socket entry disabled" >> "${BOOT_LOG}"
+        return 1
+    fi
+    rm -f "${APP_DIR}/app.sock" "${APP_DIR}/target/app.sock" 2>/dev/null || true
+    GATEWAY_SOCK_PATH="${APP_DIR}/app.sock" \
+    GATEWAY_BACKEND_PORT="${PORT}" \
+    GATEWAY_PID_FILE="${GW_PID_FILE}" \
+    nohup python3 "${GW_SCRIPT}" >> "${GW_LOG}" 2>&1 &
+    echo $! > "${GW_PID_FILE}"
+    sleep 1
+    if gw_running && [ -S "${APP_DIR}/app.sock" ]; then
+        echo "gateway sidecar ready (${APP_DIR}/app.sock -> 127.0.0.1:${PORT})" >> "${BOOT_LOG}"
+        return 0
+    fi
+    echo "WARN: gateway sidecar failed to start (check ${GW_LOG})" >> "${BOOT_LOG}"
+    rm -f "${GW_PID_FILE}"
+    return 1
+}
+
+stop_gateway() {
+    if [ -f "${GW_PID_FILE}" ]; then
+        GWPID="$(cat "${GW_PID_FILE}" 2>/dev/null)"
+        if [ -n "${GWPID}" ] && kill -0 "${GWPID}" 2>/dev/null; then
+            kill "${GWPID}" 2>/dev/null || true
+            for i in $(seq 1 5); do
+                kill -0 "${GWPID}" 2>/dev/null || break
+                sleep 1
+            done
+            kill -9 "${GWPID}" 2>/dev/null || true
+        fi
+        rm -f "${GW_PID_FILE}"
+    fi
+    rm -f "${APP_DIR}/app.sock" "${APP_DIR}/target/app.sock" 2>/dev/null || true
+}
+
+# ── 配置管理 ──
+# 首次部署：从应用自带模板生成数据目录配置（含随机 secret_key）
+ensure_conf() {
+    mkdir -p "${DATA_DIR}/data" "${DATA_DIR}/log" "${DATA_DIR}/storage"
+    if [ ! -f "${CONF}" ]; then
+        if [ -f "${BIN_DIR}/conf/ezbookkeeping.ini" ]; then
+            cp "${BIN_DIR}/conf/ezbookkeeping.ini" "${CONF}"
+        else
+            echo "ERROR: conf template missing (${BIN_DIR}/conf/ezbookkeeping.ini)" >&2
+            exit 1
+        fi
+    fi
+    # 每次启动刷新占位符（升级安全：非占位符值不动，secret_key 保留原值，数据目录永不更换）
+    if grep -q '^secret_key = @SECRET_KEY@$' "${CONF}" 2>/dev/null; then
+        SECRET="$(openssl rand -hex 32 2>/dev/null || (head -c 64 /dev/urandom | md5sum | cut -c1-64))"
+        sed -i "s#^secret_key = @SECRET_KEY@\$#secret_key = ${SECRET}#" "${CONF}"
+    fi
+    sed -i \
+        -e "s#^http_port = .*#http_port = ${PORT}#" \
+        -e "s#^db_path = @DB_PATH@\$#db_path = ${DATA_DIR}/data/ezbookkeeping.db#" \
+        -e "s#^log_path = @LOG_PATH@\$#log_path = ${DATA_DIR}/log/ezbookkeeping.log#" \
+        -e "s#^local_filesystem_path = @STORAGE_PATH@\$#local_filesystem_path = ${DATA_DIR}/storage/#" \
+        "${CONF}"
+}
+
+running() {
+    [ -f "${PID_FILE}" ] && kill -0 "$(cat "${PID_FILE}" 2>/dev/null)" 2>/dev/null
+}
+
+start() {
+    ensure_conf
+    if running; then
+        echo "already running (pid $(cat "${PID_FILE}"))"
+        start_gateway || true
+        return 0
+    fi
+    # 清理异常退出残留
+    rm -f "${PID_FILE}"
+    pkill -f "^${APP_BIN} server run" 2>/dev/null || true
+    cd "${BIN_DIR}"
+    nohup "${APP_BIN}" server run --conf-path "${CONF}" >> "${BOOT_LOG}" 2>&1 &
+    echo $! > "${PID_FILE}"
+    # 等待服务就绪（最多 30s，HTTP 根路径 200 即 PWA 可用）
+    for i in $(seq 1 30); do
+        if curl -sf -o /dev/null "http://127.0.0.1:${PORT}/" 2>/dev/null; then
+            echo "started (pid $(cat "${PID_FILE}"), port ${PORT})"
+            start_gateway || true
+            return 0
+        fi
+        # 进程若已退出则不再等待
+        running || break
+        sleep 1
+    done
+    echo "started, but health check timed out (check ${BOOT_LOG})"
+    start_gateway || true
+    return 0
+}
+
+stop() {
+    stop_gateway
+    if [ -f "${PID_FILE}" ]; then
+        PID="$(cat "${PID_FILE}" 2>/dev/null)"
+        if [ -n "${PID}" ] && kill -0 "${PID}" 2>/dev/null; then
+            kill "${PID}" 2>/dev/null || true
+            for i in $(seq 1 10); do
+                kill -0 "${PID}" 2>/dev/null || break
+                sleep 1
+            done
+            kill -9 "${PID}" 2>/dev/null || true
+        fi
+        rm -f "${PID_FILE}"
+    fi
+    # 兜底：清掉本应用残留进程（仅匹配本应用二进制+配置的精确命令行）
+    pkill -f "^${APP_BIN} server run --conf-path ${CONF}" 2>/dev/null || true
+    echo "stopped"
+}
+
+status() {
+    if running; then
+        echo "running"
+        return 0
+    fi
+    echo "stopped"
+    return 1
+}
+
+case "${1:-start}" in
+    start) start ;;
+    stop) stop ;;
+    status) status ;;
+    restart) stop; sleep 1; start ;;
+    *) echo "Usage: $0 {start|stop|status|restart}"; exit 1 ;;
+esac
