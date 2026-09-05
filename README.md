@@ -15,7 +15,7 @@ https://github.com/Mike-hd123/FnDepot
 | 应用 | 版本 | 说明 | 上游项目 |
 |---|---|---|---|
 | 云微(飞牛云微信) `wechat-on-cloud` | 1.4.9 | NAS 原生微信面板，Node.js 面板 + dockerode 管理微信实例容器，ipvlan(woc-lan) 单网卡直连局域网，数据落主机路径 bind，创建实例可选数据目录，移动端触屏优化，实例「电源」下拉(重启/关机) | [Gloridust/WechatOnCloud](https://github.com/Gloridust/WechatOnCloud) |
-| HyAtlas(混元记忆) `hyatlas` | 2.0.1 | AI 长期记忆系统，zvec 双索引，仪表盘汉化 + token 自动登录，降权运行 | [tuancookiez-hub/HyAtlas-Memory](https://github.com/tuancookiez-hub/HyAtlas-Memory) |
+|| HyAtlas(混元记忆) `hyatlas` | 2.0.1 / **v4.1.1** | AI 长期记忆系统。**v3**: zvec 双索引，仪表盘汉化 + token 自动登录，降权运行。**v4**: Go 重写单二进制(~10MB)，chromem-go 向量库，dashboard go:embed，socket 型 fnOS 入口。本包为验证版：不自动安装、不切换现役 v3.5.0。| [tuancookiez-hub/HyAtlas-Memory](https://github.com/tuancookiez-hub/HyAtlas-Memory) |
 | 9Router `9router` | 0.5.65 | FREE AI Router & Token Saver，Next.js + open-sse SSE 引擎，40+ 免费 AI 提供商聚合，端口 20128 | [decolua/9router](https://github.com/decolua/9router) |
 | Octopus `octopus` | 0.13.2-5 | LLM API 聚合网关，Go 单二进制 + 内嵌前端 + SQLite，多渠道/多模型管理，支持单渠道多 Key，端口 8081。v5 修手机端 /app/octopus 路由 | [bestruirui/octopus](https://github.com/bestruirui/octopus) |
 
@@ -32,9 +32,10 @@ FnDepot/
 │   └── src/                 # fork 上游源码 + 全部 NAS 适配改动
 ├── hyatlas/
 │   ├── ICON.PNG / ICON_256.PNG
-│   ├── README.md
-│   ├── hyatlas.fpk
-│   └── src/                 # 上游 HyAtlas v3.5.0 源码（汉化/在打包层另做）
+│   ├── README.md              # v3.5.0 Python 版说明
+│   ├── README.v4.1.1.md       # v4.1.1 Go 重写版说明（本文件）
+│   ├── hyatlas.fpk            # v3 产物（~100MB site-packages）
+│   └── src/                   # 上游 HyAtlas v3.5.0 源码（汉化/在打包层另做）
 ├── 9router/
 │   ├── ICON.PNG / ICON_256.PNG
 │   ├── README.md
@@ -46,6 +47,8 @@ FnDepot/
 │   ├── octopus.fpk
 │   └── src/                 # 上游 v0.13.2 源码 + fnos/（fnOS 打包层 cmd/config/gateway/manifest）
 ```
+
+**v4.1.1 fpk 独立存档**: `/vol2/1000/download/hyatlas-4.1.1-x86.fpk`（未推 FnDepot git，待用户确认入库）。详见 `hyatlas/README.v4.1.1.md`。
 
 ## 打包说明
 

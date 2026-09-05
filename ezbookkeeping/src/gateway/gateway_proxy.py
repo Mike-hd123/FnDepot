@@ -17,6 +17,7 @@ import sys
 import threading
 import urllib.error
 import urllib.request
+import gzip
 
 APP_DIR = os.environ.get("TRIM_APPDEST", "/vol2/@appcenter/ezbookkeeping")
 SOCK_PATH = os.environ.get("GATEWAY_SOCK_PATH", os.path.join(APP_DIR, "app.sock"))
@@ -25,6 +26,10 @@ BACKEND_HOST = os.environ.get("GATEWAY_BACKEND_HOST", "127.0.0.1")
 PID_FILE = os.environ.get("GATEWAY_PID_FILE", "")
 
 _PREFIX = "/app/ezbookkeeping"
+_ASSET_VER = "v7"
+# EZ 入口页的资源引用形如 ./js/index-*.js（哈希文件名，天然防缓存），
+# 但仍需 no-cache 头防代理/中间层缓存；SW 自杀代码防已装旧 SW 拦截
+_SW_REG_RE = re.compile(r"serviceWorker\.register\(")
 _BACKEND_BASE = "http://%s:%d" % (BACKEND_HOST, BACKEND_PORT)
 _RE_LOC_BASE = re.compile(r"\b(https?://[^/]*)?(/?)" + re.escape(_PREFIX))
 
@@ -199,7 +204,8 @@ def handle(sock):
 
         # 过滤 hop-by-hop 头
         out = []
-        ban = set(hop) | {"content-length", "transfer-encoding", "keep-alive"}
+        ban = set(hop) | {"content-length", "transfer-encoding", "keep-alive",
+                          "cache-control", "etag", "last-modified", "expires", "age"}
         hvals = dict(resp_head.items()) if hasattr(resp_head, "items") else {}
         for k0, v0 in (hvals.items() if isinstance(hvals, dict) else []):
             k0l = k0.lower()
@@ -215,6 +221,54 @@ def handle(sock):
 
         reason = _status_text(status)
         resp_bytes = resp_body if isinstance(resp_body, bytes) else resp_body.encode("utf-8", "replace")
+        ctype = ""
+        for kk0, vv0 in (hvals.items() if isinstance(hvals, dict) else []):
+            if kk0.lower() == "content-type":
+                ctype = vv0
+                break
+
+        # —— v7：SW 自杀 + 全资源 no-cache 防浏览器缓存旧版 ——
+        # 先改写内容，再 gzip
+        if "html" in ctype.lower():
+            try:
+                text = resp_bytes.decode("utf-8", "replace")
+                if _SW_REG_RE.search(text):
+                    text = _SW_REG_RE.sub(
+                        "navigator.serviceWorker.getRegistrations().then(r=>r.forEach(x=>x.unregister()))",
+                        text)
+                    resp_bytes = text.encode("utf-8", "replace")
+            except Exception:
+                pass
+
+        # —— v8：gzip 压缩静态资源（后端不压缩，手机远程加载 734KB JS 很慢）——
+        # 仅在客户端声明支持 gzip、且响应体可压缩时压缩；流式/已压缩(图片/音视频)跳过
+        client_gzip = any(
+            k.strip().lower() == "accept-encoding" and "gzip" in v.lower()
+            for ln in lines[1:]
+            for k, _, v in [ln.partition(":")]
+        ) if isinstance(lines, list) else False
+        if client_gzip and 256 < len(resp_bytes) < 8 * 1024 * 1024 and (
+            "javascript" in ctype.lower() or "css" in ctype.lower()
+            or "html" in ctype.lower() or "json" in ctype.lower()
+            or "svg" in ctype.lower() or "xml" in ctype.lower()
+        ):
+            try:
+                gz = gzip.compress(resp_bytes, compresslevel=6)
+                if len(gz) < len(resp_bytes):
+                    resp_bytes = gz
+                    out.append("Content-Encoding: gzip")
+                    out.append("Vary: Accept-Encoding")
+            except Exception:
+                pass
+        # —— v9：缓存策略分流 ——
+        # 哈希文件名资源(js/css, 天然防缓存) → 长缓存, 手机端不重复下载
+        # HTML/API → no-cache 每次校验 (HTML 引用哈希名, 更新即换名)
+        if "html" in ctype.lower():
+            out.append("Cache-Control: no-cache, max-age=0, must-revalidate")
+        elif "javascript" in ctype.lower() or "css" in ctype.lower():
+            out.append("Cache-Control: public, max-age=31536000, immutable")
+        else:
+            out.append("Cache-Control: no-cache, max-age=0, must-revalidate")
         head_out = (
             "HTTP/1.1 %d %s\r\n" % (status, reason)
             + "".join(o + "\r\n" for o in out)
