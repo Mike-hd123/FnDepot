@@ -1,4 +1,0 @@
-# 构建产物：fpk 包不入库（源码才是真相源，产物走 /vol2/1000/download）
-*.fpk
-__pycache__/
-*.pyc

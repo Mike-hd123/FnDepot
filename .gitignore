@@ -2,3 +2,9 @@ waliapi/app/
 *.bak_*
 hyatlas/src/fnos-native/app.tgz
 wechat-on-cloud/src/fnos-native/app.tgz
+# 构建产物：版本化 fpk 不入库（产物真相源在 /vol2/1000/download/）
+# 市场分发用固定名 fpk（<app>/<app>.fpk）需要入库，见 fnpack.json download_url
+src/*.fpk
+*/src/*.fpk
+__pycache__/
+*.pyc
