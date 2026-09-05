@@ -23,5 +23,13 @@ fi
 mkdir -p "${DATA_DIR}/data" "${DATA_DIR}/log" "${DATA_DIR}/storage"
 chmod -R a+rwx "${DATA_DIR}" 2>/dev/null || true
 
+# v12 P0 幂等兜底：确保运行配置 enable_gzip=true（老配置 enable_gzip=false 会在升级时保留，
+# 导致 gzip 提速丢失）。仅改这一行，其余配置不动；只在明确为 false 时才改。
+if [ -f "${DATA_DIR}/ezbookkeeping.ini" ] && grep -q '^enable_gzip *= *false' "${DATA_DIR}/ezbookkeeping.ini"; then
+    cp -a "${DATA_DIR}/ezbookkeeping.ini" "${DATA_DIR}/ezbookkeeping.ini.bak_gzip" 2>/dev/null || true
+    sed -i 's#^enable_gzip *= *false#enable_gzip = true#' "${DATA_DIR}/ezbookkeeping.ini"
+    echo "[$(date '+%F %T')] enable_gzip=false -> true (P0 idempotent fix)" >> "${DATA_DIR}/install.log"
+fi
+
 echo "[$(date '+%F %T')] install_callback ok, data dir: ${DATA_DIR}" >> "${DATA_DIR}/install.log"
 exit 0

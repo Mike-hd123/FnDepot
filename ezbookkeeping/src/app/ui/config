@@ -5,8 +5,9 @@
             "icon": "images/icon-{0}.png",
             "type": "iframe",
             "protocol": "",
-            "port": "8580",
-            "url": "/",
+            "gatewayPrefix": "/app/ezbookkeeping",
+            "gatewaySocket": "app.sock",
+            "url": "/app/ezbookkeeping",
             "allUsers": true
         }
     }

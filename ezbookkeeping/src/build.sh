@@ -71,58 +71,6 @@ else
 fi
 echo "  上游原样保持: 手机 UA→desktop.html（桌面版导航）, 桌面 UA→mobile.html"
 
-# ── 2.6 index.html 纯跳转页化（P3：消除双重页面加载）──
-# 上游 index.html 是完整 Vue SPA（431B 入口 import vendor-common 734KB+CSS 101KB），
-# 执行完 UA 检测才 location.replace 到目标页，目标页再拉一遍自身 bundle = 双重页面生命周期。
-# 此处把 index.html 替换为纯 inline-JS 跳转页（~1KB，零 bundle），UA 检测逻辑与上游
-# js/index-*.js 完全一致（移动设备→desktop.html，桌面→mobile.html），一步直达目标页。
-echo "[2.6/7] index.html 纯跳转页化（消除双重加载 ~835KB 白拉）..."
-PUB2="${BUILD_DIR}/app/server/public"
-if [ -f "${PUB2}/index.html" ]; then
-    cat > "${PUB2}/index.html" <<'INDEX_EOF'
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="utf-8">
-    <meta http-equiv="Content-Type" content="text/html;charset=utf-8"/>
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, minimal-ui, viewport-fit=cover">
-    <meta name="mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-capable" content="yes"/>
-    <meta name="apple-mobile-web-app-title" content="记账"/>
-    <meta name="apple-mobile-web-app-status-bar-style" content="default"/>
-    <meta name="theme-color" content="#c67e48">
-    <meta name="format-detection" content="telephone=no"/>
-    <meta name="description" content="轻量自托管个人记账">
-    <title>记账</title>
-    <link rel="shortcut icon" type="image/x-icon" href="favicon.ico">
-    <link rel="apple-touch-icon" href="touchicon.png">
-</head>
-<body>
-    <noscript>
-        <strong>We're sorry but ezBookkeeping doesn't work properly without JavaScript enabled. Please enable it to continue.</strong>
-    </noscript>
-    <script>
-    // 纯跳转页：与上游入口 bundle 的 UA 检测逻辑一致
-    // 移动设备（含 wearable/embedded）→ desktop.html（桌面版导航），桌面 → mobile.html
-    !function(){
-        var ua = navigator.userAgent;
-        if (!ua) { window.location.replace('desktop.html'); return; }
-        var mobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(ua);
-        var page = mobile ? 'desktop.html' : 'mobile.html';
-        window.location.replace(page + '#/');
-    }();
-    </script>
-</body>
-</html>
-INDEX_EOF
-    # 断言：确认已替换（不再是 SPA 入口；匹配真正的 module script 标签，不误伤注释）
-    grep -q '纯跳转页' "${PUB2}/index.html" || { echo "ERROR: index.html 纯跳转页化失败"; exit 1; }
-    grep -q 'script type="module"[^>]*src="\./js/index-' "${PUB2}/index.html" && { echo "ERROR: index.html 仍引用 SPA 入口 bundle，替换失败"; exit 1; }
-    echo "  index.html 已替换为纯跳转页（~1KB，不再拉取 835KB bundle）"
-else
-    echo "NOTICE: 未找到 index.html，跳过纯跳转页化"
-fi
-
 # ── 3. 配置打占位符（首次启动由 cmd/main 换真实值）──
 echo "[3/7] 配置占位符化..."
 INI="${BUILD_DIR}/app/server/conf/ezbookkeeping.ini"
@@ -158,7 +106,7 @@ cat > "${BUILD_DIR}/manifest" <<EOF
 appname               = ezbookkeeping
 version               = ${FULL_VERSION}
 display_name          = 记账
-desc                  = 轻量自托管个人记账：多账本/报表洞察/账单批量导入(Excel·微信·支付宝·京东)/原生 MCP 与 API 接口。v11 新增 index.html 纯跳转页化消除双重加载；v10 撤销 v9 UA 跳转器 patch(恢复手机 desktop 桌面版导航)+enable_gzip=true；沿用 v5 gateway sidecar 剥前缀反代。
+desc                  = 轻量自托管个人记账：多账本/报表洞察/账单批量导入(Excel·微信·支付宝·京东)/原生 MCP 与 API 接口。v12 回退 v11 index 纯跳转页(恢复上游原版 SPA 入口)；sidecar 加 desktop/mobile.html 静态兜底(内置服务器场景 UA 跳转不再 100001)；桌面/手机图标改 socket 型(/app/ezbookkeeping，经 sidecar 剥前缀反代+gzip)；install_callback 幂等兜底 enable_gzip=true。
 platform              = ${ARCH}
 source                = thirdparty
 maintainer            = MaysWind

@@ -143,6 +143,48 @@ def handle(sock):
 
         fwd_path = _strip_prefix(path)
 
+        # —— v12：静态页兜底 ——
+        # 上游前端入口 js 是 UA 跳转器：location.replace('desktop.html'/'mobile.html')。
+        # 但 EZ 后端 Gin 只 serve '/'（SPA 单入口），对 /desktop.html、/mobile.html 一律回
+        # 100001 api not found —— 内置服务器场景跳转即 404。此处按白名单直接回
+        # ${APP_DIR}/server/public/ 下的对应静态文件，不落后端。
+        _fb_name = fwd_path.lstrip("/")
+        if _fb_name in ("desktop.html", "mobile.html"):
+            _fb_file = os.path.normpath(
+                os.path.join(APP_DIR, "server", "public", _fb_name))
+            if os.path.isfile(_fb_file) and _fb_file.startswith(
+                    os.path.join(APP_DIR, "server", "public")):
+                try:
+                    with open(_fb_file, "rb") as fh:
+                        fb_body = fh.read()
+                    out_fb = [
+                        "Content-Type: text/html; charset=utf-8",
+                        "Cache-Control: no-cache, max-age=0, must-revalidate",
+                    ]
+                    # 客户端支持 gzip 则压缩（与 v8 行为一致）
+                    _fb_gz_ok = any(
+                        ln.lower().startswith("accept-encoding:") and "gzip" in ln.lower()
+                        for ln in lines[1:])
+                    if _fb_gz_ok and len(fb_body) > 256:
+                        try:
+                            gz = gzip.compress(fb_body, compresslevel=6)
+                            if len(gz) < len(fb_body):
+                                fb_body = gz
+                                out_fb.append("Content-Encoding: gzip")
+                                out_fb.append("Vary: Accept-Encoding")
+                        except Exception:
+                            pass
+                    sock.sendall((
+                        "HTTP/1.1 200 OK\r\n"
+                        + "".join(o + "\r\n" for o in out_fb)
+                        + "Content-Length: %d\r\n" % len(fb_body)
+                        + "Connection: close\r\n\r\n").encode("ascii") + fb_body)
+                except Exception:
+                    sock.sendall(error_response(500, "static fallback read error"))
+                sock.close()
+                return
+            # 文件缺失 → 落后端保持旧行为（404 api not found），不吞错误
+
         # 转发头：Host 改后端，Host 头重写为 back-host
         hop = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
                "te", "trailer", "transfer-encoding", "upgrade"}
@@ -226,6 +268,23 @@ def handle(sock):
             if kk0.lower() == "content-type":
                 ctype = vv0
                 break
+
+        # —— v12：后端 gzip 已启用（enable_gzip=true）——
+        # urllib 不解压，resp_bytes 是原始 gzip 字节；若不处理，v8 会在其上二次 gzip
+        # （浏览器解一层仍是 gzip → 白屏）。统一：后端已 gzip → 先解压为明文、
+        # 剥掉后端的 Content-Encoding 头，再走下方 v7 改写 + v8 按需压缩管线。
+        resp_enc = ""
+        for kk0, vv0 in (hvals.items() if isinstance(hvals, dict) else []):
+            if kk0.lower() == "content-encoding":
+                resp_enc = vv0.strip().lower()
+                break
+        if resp_enc == "gzip":
+            try:
+                resp_bytes = gzip.decompress(resp_bytes)
+                out = [o for o in out if not o.lower().startswith("content-encoding:")]
+                resp_enc = ""
+            except Exception:
+                pass  # 解压失败按原始字节透传（保留后端 Content-Encoding 头）
 
         # —— v7：SW 自杀 + 全资源 no-cache 防浏览器缓存旧版 ——
         # 先改写内容，再 gzip

@@ -33,6 +33,15 @@ server/           # 【构建时生成】官方二进制 + public/ + conf/ + tem
   无尾斜杠精确前缀 301 到带斜杠（前端相对资源 ./js/... 才能正确解析）。
   v4 及以前是裸 TCP 盲转发 → 手机端 /app/ezbookkeeping 报 100001 api not found；
   v5 改为 HTTP 层前缀代理（对齐 EasyTier gateway-proxy -prefix 语义）。
+  v7/v8/v9 增加 SW 自杀、静态资源 gzip、缓存分流。
+  v12 增加 desktop/mobile.html 静态兜底（EZ 后端 Gin 只 serve /，UA 跳转器
+  location.replace 到这两个页面在内置服务器场景会 404 100001，sidecar 直接回
+  APPDEST/server/public/ 下的文件）+ 后端 gzip 单层保护（后端 enable_gzip=true
+  后，先解压再按需重压，防 gzip 双层白屏）。
+- ui/config 为 socket 型（gatewayPrefix=/app/ezbookkeeping + gatewaySocket=app.sock），
+  桌面/手机图标走 /app/ezbookkeeping 经 sidecar 反代（剥前缀+gzip+缓存分流），
+  端口 8580 仅作为后端监听与桌面直连兜底。
+- install_callback 幂等兜底 enable_gzip=true（升级不覆盖旧配置的老问题）。
 
 构建
 ----
