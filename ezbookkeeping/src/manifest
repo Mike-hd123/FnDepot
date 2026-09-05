@@ -1,7 +1,7 @@
 appname               = ezbookkeeping
-version               = 1.6.1-5
-display_name          = EZBookkeeping
-desc                  = 轻量自托管个人记账：多账本/报表洞察/账单批量导入(Excel·微信·支付宝·京东)/原生 MCP 与 API 接口。v5 修复手机端 /app/ 100001：gateway sidecar 由裸 TCP 盲转发改为剥前缀 HTTP 反代（对齐 EasyTier gateway-proxy），无尾斜杠自动 301，前端相对/绝对资源与 API 均可正确路由。
+version               = 1.6.1-11
+display_name          = 记账
+desc                  = 轻量自托管个人记账：多账本/报表洞察/账单批量导入(Excel·微信·支付宝·京东)/原生 MCP 与 API 接口。v11 新增 P3 index.html 纯跳转页化，消除双重页面加载(约835KB白拉)；v10 撤销 v9 UA 跳转器 patch(恢复手机 desktop 桌面版导航)+ enable_gzip=true；沿用 v5 gateway 剥前缀反代。
 platform              = x86
 source                = thirdparty
 maintainer            = MaysWind
