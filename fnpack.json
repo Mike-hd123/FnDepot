@@ -4,7 +4,7 @@
     "name": "Mike 的飞牛应用源",
     "author": "Mike",
     "homepage": "https://github.com/Mike-hd123",
-    "description": "个人维护的飞牛 fnOS 第三方应用源：云微(WechatOnCloud)、HyAtlas(混元记忆)、9Router(FREE AI Router & Token Saver)、Octopus(LLM聚合网关)、记账(EZBookkeeping 家庭记账)。均为上游开源项目的 NAS 原生化打包。"
+    "description": "个人维护的飞牛 fnOS 第三方应用源：自打包 NAS 应用，fpk 安装包 + 上游源码 fork + fnpack.json 单文件索引，均为上游开源项目的 NAS 原生化打包。"
   },
   "apps": {
     "9router": {
