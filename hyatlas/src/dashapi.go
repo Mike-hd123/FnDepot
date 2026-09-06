@@ -185,10 +185,10 @@ func (s *Server) handleDashStorage(w http.ResponseWriter, r *http.Request) {
 			"platform":        "linux/amd64 (fnOS NAS)",
 		},
 		"config": map[string]any{
-			"mode":      "ultra",
-			"data_dir":  s.dataDir,
-			"llm_model": s.llmModel,
-			"llm_base":  s.llmBase,
+			"mode":       "ultra",
+			"data_dir":   s.dataDir,
+			"llm_model":  s.llmModel,
+			"llm_base":   s.llmBase,
 			"embed_dims": s.embedDims,
 		},
 		"disk_usage_summary": fmt.Sprintf("%d 个文件, %.1f MB", len(files), float64(totalBytes)/1024/1024),
@@ -246,9 +246,9 @@ func (s *Server) handleDashLayerHealth(w http.ResponseWriter, r *http.Request) {
 		"l7_intention": counts["l7_intention"],
 	}
 	writeJSON(w, 200, map[string]any{
-		"layers":   layers,
-		"user_id":  "default",
-		"agent_id": "hermes",
+		"layers":                      layers,
+		"user_id":                     "default",
+		"agent_id":                    "hermes",
 		"fresh_l2_for_digest":         freshL2,
 		"graph_layer_counts":          graphCounts,
 		"graph_layer_counts_global":   graphCounts,
@@ -260,7 +260,12 @@ func (s *Server) handleDashLayerHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleDashL6Schemas lists L6 schema items.
+// handleDashL6Schemas lists L6 schema items. The settings page reads
+// `.count` (not `.total`) and per-item `node_id`/`name` (not the v4
+// `memory_id`/`content`), so serve both families — real data, no fabrication.
+// `graph_l6_total` is intentionally omitted: v4's graph store holds L5
+// entities only, so there is no honest L6-in-graph number to report (UI
+// falls back to "—").
 func (s *Server) handleDashL6Schemas(w http.ResponseWriter, r *http.Request) {
 	n := atoi(r.URL.Query().Get("n"), 6)
 	items, _ := s.store.List(memory.L6Schema, "", "", n, 0)
@@ -268,40 +273,149 @@ func (s *Server) handleDashL6Schemas(w http.ResponseWriter, r *http.Request) {
 	for _, it := range items {
 		out = append(out, map[string]any{
 			"memory_id": it.ID, "content": it.Content, "layer": it.Layer,
+			"node_id": it.ID, "name": it.Content,
 		})
 	}
-	writeJSON(w, 200, map[string]any{"schemas": out, "total": len(out)})
+	writeJSON(w, 200, map[string]any{"schemas": out, "total": len(out), "count": len(out)})
 }
 
-// handleDashL5Graph serves graph nodes/relations. Filters by layer when given
-// (l5_knowledge = knowledge entities; l6_schema/l7_intention are VDB layers and
-// come back as their own items so the observatory has something real to draw).
+// handleDashL5Graph serves /api/l5/graph in the v3.5 dashboard shape.
+// v3.5 UI (js/l5.js + app.js normalization) reads on nodes: name/node_id/
+// entity_type/mention_count/aliases/created_at, on relations: a/relation_type/
+// b/confidence, and page totals: node_count/relation_count/type_distribution/
+// relation_type_distribution/exported_at. The v4 graph store is {id,label,type}
+// + {from,to,relation,weight}; v3→v4 migration dropped the v3.5 field names,
+// so the page rendered "undefined" everywhere. Serve BOTH field families
+// (values are real store data: name=label, entity_type=type, mention_count=
+// edge degree (min 1), a/b are resolved node labels, confidence=edge weight).
+// The v4-native keys stay for API compatibility.
 func (s *Server) handleDashL5Graph(w http.ResponseWriter, r *http.Request) {
 	layer := r.URL.Query().Get("layer")
 	n := atoi(r.URL.Query().Get("n"), 500)
 	wantRels := r.URL.Query().Get("rels") != "false"
 
-	if layer == "" || layer == "l5_knowledge" {
-		nodes, rels := s.store.Graph().Snapshot(n)
-		writeJSON(w, 200, map[string]any{"nodes": nodes, "relations": rels, "total": len(nodes)})
-		return
-	}
-	// L6/L7 views render their layer items as pseudo-nodes (real content, real layer)
-	items, _ := s.store.List(memory.Layer(layer), "", "", n, 0)
-	type node struct {
+	type dashNode struct {
 		ID    string `json:"id"`
 		Label string `json:"label"`
-		Layer string `json:"layer"`
+		Type  string `json:"type"`
+		// v3.5 parity fields (Layer keeps the v4-native key: the observatory
+		// normalizer maps L6/L7 pseudo-nodes to their layers via n.layer)
+		NodeID       string   `json:"node_id"`
+		Name         string   `json:"name"`
+		EntityType   string   `json:"entity_type"`
+		Layer        string   `json:"layer,omitempty"`
+		MentionCount int      `json:"mention_count"`
+		Aliases      []string `json:"aliases"`
 	}
-	nodes := make([]node, 0, len(items))
+	type dashRel struct {
+		From     string  `json:"from"`
+		To       string  `json:"to"`
+		Relation string  `json:"relation"`
+		Weight   float64 `json:"weight"`
+		// v3.5 parity fields (a/b carry node LABELS, not ids)
+		A            string  `json:"a"`
+		B            string  `json:"b"`
+		RelationType string  `json:"relation_type"`
+		Confidence   float64 `json:"confidence"`
+	}
+
+	if layer == "" || layer == "l5_knowledge" {
+		// Unbounded snapshot: true totals for node_count/relation_count, the
+		// emitted lists stay capped at n (v3.5 shipped a capped node list too).
+		allNodes, allEdges := s.store.Graph().Snapshot(0)
+		labelOf := make(map[string]string, len(allNodes))
+		degree := make(map[string]int, len(allNodes))
+		for _, nd := range allNodes {
+			labelOf[nd.ID] = nd.Label
+		}
+		rels := make([]dashRel, 0, len(allEdges))
+		for _, e := range allEdges {
+			a, okA := labelOf[e.From]
+			b, okB := labelOf[e.To]
+			if !okA || !okB {
+				continue
+			}
+			degree[e.From]++
+			degree[e.To]++
+			rels = append(rels, dashRel{
+				From: e.From, To: e.To, Relation: e.Relation, Weight: e.Weight,
+				A: a, B: b, RelationType: e.Relation, Confidence: e.Weight,
+			})
+		}
+		// Distributions reflect the WHOLE graph (not the display-capped lists):
+		// they are page-level stats, and wantRels=false must not blank them.
+		// Computed BEFORE the n-cap below truncates allNodes.
+		typeDist := map[string]int{}
+		relDist := map[string]int{}
+		for _, nd := range allNodes {
+			t := nd.Type
+			if t == "" {
+				t = "other"
+			}
+			typeDist[t]++
+		}
+		for _, e := range allEdges {
+			relDist[e.Relation]++
+		}
+		if n > 0 && len(allNodes) > n {
+			allNodes = allNodes[:n]
+		}
+		nodes := make([]dashNode, 0, len(allNodes))
+		for _, nd := range allNodes {
+			mc := degree[nd.ID]
+			if mc < 1 {
+				mc = 1
+			}
+			// Display entity_type must agree with type_distribution ("" →
+			// "other"), otherwise the type chip filters to zero matches.
+			et := nd.Type
+			if et == "" {
+				et = "other"
+			}
+			nodes = append(nodes, dashNode{
+				ID: nd.ID, Label: nd.Label, Type: nd.Type,
+				NodeID: nd.ID, Name: nd.Label, EntityType: et,
+				MentionCount: mc, Aliases: []string{},
+			})
+		}
+		if !wantRels {
+			rels = nil
+		}
+		writeJSON(w, 200, map[string]any{
+			"nodes": nodes, "relations": rels,
+			"total":                      len(nodes),
+			"node_count":                 len(labelOf),
+			"relation_count":             len(allEdges),
+			"type_distribution":          typeDist,
+			"relation_type_distribution": relDist,
+			"exported_at":                time.Now().UTC().Format(time.RFC3339),
+		})
+		return
+	}
+	// L6/L7 views render their layer items as pseudo-nodes (real content, real
+	// layer). v3.5 shape: name/node_id + the v4-native layer key.
+	items, _ := s.store.List(memory.Layer(layer), "", "", n, 0)
+	nodes := make([]dashNode, 0, len(items))
 	for _, it := range items {
-		nodes = append(nodes, node{ID: it.ID, Label: it.Content, Layer: it.Layer})
+		nodes = append(nodes, dashNode{
+			ID: it.ID, Label: it.Content, Type: it.Layer,
+			NodeID: it.ID, Name: it.Content, EntityType: it.Layer,
+			Layer: it.Layer, MentionCount: 1, Aliases: []string{},
+		})
 	}
 	rels := []any{}
 	if !wantRels {
 		rels = nil
 	}
-	writeJSON(w, 200, map[string]any{"nodes": nodes, "relations": rels, "total": len(nodes)})
+	writeJSON(w, 200, map[string]any{
+		"nodes": nodes, "relations": rels,
+		"total":                      len(nodes),
+		"node_count":                 len(nodes),
+		"relation_count":             0,
+		"type_distribution":          map[string]int{},
+		"relation_type_distribution": map[string]int{},
+		"exported_at":                time.Now().UTC().Format(time.RFC3339),
+	})
 }
 
 // handleDashQuality computes a REAL quality snapshot from live store state —
@@ -376,7 +490,7 @@ func (s *Server) handleDashQuality(w http.ResponseWriter, r *http.Request) {
 				"l7":        layerCounts["l7_intention"],
 				"relations": graph.EdgeCount(),
 			},
-			"sys1_writes_7d": writes,
+			"sys1_writes_7d":  writes,
 			"sys2_digests_7d": nil,
 			"digest_log_status": func() string {
 				if s.lastExtractErr != "" {
@@ -386,7 +500,7 @@ func (s *Server) handleDashQuality(w http.ResponseWriter, r *http.Request) {
 			}(),
 		},
 		"at_a_glance": map[string]any{
-			"grade":        grade,
+			"grade": grade,
 			"health_label": func() string {
 				switch {
 				case composite >= 90:
@@ -422,10 +536,10 @@ func (s *Server) handleDashQuality(w http.ResponseWriter, r *http.Request) {
 		},
 		"tips": []any{},
 		"guides": map[string]any{
-			"composite": "综合评分由演进（分层覆盖）、活跃度（近 24h 写入）、时延（写入管线健康）加权得出",
-			"fresh_l2":  "近 6 小时写入的 L2 原始记忆，是消化(digest)的燃料",
-			"l6":        "L6 图式：从记忆中沉淀的结构化模式",
-			"relations": "图谱关系：L5 知识图谱的实体连边",
+			"composite":  "综合评分由演进（分层覆盖）、活跃度（近 24h 写入）、时延（写入管线健康）加权得出",
+			"fresh_l2":   "近 6 小时写入的 L2 原始记忆，是消化(digest)的燃料",
+			"l6":         "L6 图式：从记忆中沉淀的结构化模式",
+			"relations":  "图谱关系：L5 知识图谱的实体连边",
 			"llm_tokens": "LLM 令牌：v4 暂未统计单项令牌用量",
 		},
 	})
