@@ -74,9 +74,9 @@
     },
     "hyatlas": {
       "display_name": "HyAtlas(混元记忆)",
-      "desc": "混元记忆系统：AI 长期记忆与知识库，zvec 双索引，仪表盘汉化并支持 token=admin 自动登录，hy-memory 用户降权运行，数据在 /vol1/@appshare/hyatlas。上游项目：tuancookiez-hub/HyAtlas-Memory。",
+      "desc": "混元记忆系统：AI 长期记忆与知识库。v4 纯 Go 单二进制，内置 ONNX Runtime int8 向量引擎(bge-large-zh 1024d)，移除 llama.cpp 18080 依赖；dashboard 全量汉化 + 移动端响应式；chromem-go 存储，fnOS 网关 socket 入口 /app/hyatlas，端口 19528。上游项目：tuancookiez-hub/HyAtlas-Memory。",
       "platform": [
-        "all"
+        "x86"
       ],
       "categories": [
         "AI赋能"
@@ -88,7 +88,7 @@
       "run_as": "root",
       "install_type": "root",
       "is_docker": false,
-      "service_port": "8765",
+      "service_port": "19528",
       "releases": {
         "2.0.1": {
           "changelog": "面板汉化重打包 + dash token 固定 admin 双位读写 + zvec 双索引 + hy-memory 用户降权。",
@@ -98,6 +98,17 @@
               "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/hyatlas/hyatlas.fpk",
               "sha256": "7b3be82bf02cc35bf09b8d8e6b94a31007ff689127b1ae63cc3adf6413dc102a",
               "size": 104695175
+            }
+          }
+        },
+        "4.1.1-2": {
+          "changelog": "B2 改造：① 内置 ONNX Runtime int8 向量引擎(bge-large-zh 1024d)，替换外部 llama.cpp 18080 依赖；② dashboard 全量汉化；③ 移动端响应式布局(汉堡菜单+抽屉侧边栏)；④ 性能：add p50 22ms / search p50 ~20ms，cos vs llama.cpp q8_0 min=0.979 mean=0.983。",
+          "updated_at": "2026-09-06T12:35:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/hyatlas-4.1.1-2/hyatlas-4.1.1-2-x86.fpk",
+              "sha256": "4a5567cf837879bce94111512db567bf9995a6deef4933840b6900a9b0c8c1e0",
+              "size": 241787281
             }
           }
         }

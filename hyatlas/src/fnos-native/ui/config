@@ -1,0 +1,14 @@
+{
+  ".url": {
+    "hyatlas.panel": {
+      "title": "HyAtlas",
+      "icon": "images/icon-{0}.png",
+      "type": "iframe",
+      "protocol": "",
+      "gatewayPrefix": "/app/hyatlas",
+      "gatewaySocket": "app.sock",
+      "url": "/app/hyatlas",
+      "allUsers": true
+    }
+  }
+}
