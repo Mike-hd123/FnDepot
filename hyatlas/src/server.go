@@ -763,6 +763,7 @@ func main() {
 	mux.HandleFunc("/api/quality-metrics", srv.handleDashQuality)
 	mux.HandleFunc("/api/coding-count", srv.handleDashCodingCount)
 	mux.HandleFunc("/api/coding-memories", srv.handleDashCodingMemories)
+	mux.HandleFunc("/api/search", srv.handleDashSearch)
 	mux.Handle("/dashboard/", http.StripPrefix("/dashboard/", srv.handleDashboard()))
 
 	log.Printf("HyAtlas-Go listening on :%s (data=%s embed=%s llm=%s)", port, dir, embedModel, llmModel)

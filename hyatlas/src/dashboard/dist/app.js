@@ -112,7 +112,7 @@ function renderLoadErrors() {
     observatory: ['graph'],
     layers: ['graph'],
     today: ['operations'],
-    system: ['operations'],
+    system: ['operations', 'graph'],
     quality: ['quality'],
     l5: ['graph'],
   };
@@ -264,17 +264,25 @@ async function loadAllData() {
     const [status, info, memories, layerCounts] = coreResult.data;
     const [storage, metrics, codingCount, codingPayload] = opsResult.ok
       ? opsResult.data
-      : [storageData, metricsData, codingCountData, {memories: codingMemories}];
+      : [storageData, metricsData, codingCountData, { memories: codingMemories }];
+    // /api/storage may return a bare array (legacy) or {files,...} — normalize.
+    const storageObj = Array.isArray(storage)
+      ? { files: storage.map(f => (typeof f === 'string' ? `${f}` : (f.name || '?'))) }
+      : (storage || {});
     const [graphCounts, layerHealth, l6Schemas, l5, l6, l7] = graphResult.ok
       ? graphResult.data
       : [layerCountsData?.graph_counts, layerHealthData, l6SchemasData, l5Graph, null, null];
+    // /api/layer-health may be {layers:{...}} (bare) or full — normalize.
+    const layerHealthObj = (layerHealth && typeof layerHealth === 'object' && layerHealth.layers)
+      ? layerHealth
+      : Object.assign({}, layerHealth, layerHealth && layerHealth.layers ? { layers: layerHealth.layers } : {});
     const quality = qualityResult.ok ? qualityResult.data : qualityData;
     const failed = [opsResult, graphResult, qualityResult].filter(result => !result.ok);
 
     if (seq !== loadSeq || agentId !== currentAgentId) return false;
     loadErrors = failed;
     l5Graph = l5;
-    layerHealthData = layerHealth;
+    layerHealthData = layerHealthObj;
     l6SchemasData = l6Schemas;
 
     statusData = status;
@@ -342,8 +350,9 @@ async function loadAllData() {
       // modification time. The dashboard uses gmt_updated for "ago" when
       // available, so a coding memory that was just UPDATED shows as
       // recent even if its initial creation was hours ago.
-      gmt_created:      Math.floor(new Date(cm.created_at).getTime() / 1000),
-      gmt_updated:      Math.floor(new Date(cm.updated_at || cm.created_at).getTime() / 1000),
+      // Guard: missing/invalid dates must become 0, never NaN.
+      gmt_created:      cm.created_at ? (Math.floor(new Date(cm.created_at).getTime() / 1000) || 0) : 0,
+      gmt_updated:      (cm.updated_at || cm.created_at) ? (Math.floor(new Date(cm.updated_at || cm.created_at).getTime() / 1000) || 0) : 0,
       score:            null,
       workspace_id:     cm.workspace_id,
       branch:           cm.branch,
@@ -384,7 +393,39 @@ async function loadAllData() {
       };
     });
 
-    vdbMemories = memories.memories || [];
+    // /api/memories returns a grouped object {profile:[],proactive:[],normal:[]}
+    // (v4 v1-search shape). Flatten to a single array in group order; fall back
+    // to a legacy flat array or our new "items" key if present.
+    const mg = memories && memories.memories;
+    const flat = [];
+    if (Array.isArray(mg)) {
+      flat.push(...mg);
+    } else if (mg && typeof mg === 'object') {
+      flat.push(...(mg.profile || []), ...(mg.proactive || []), ...(mg.normal || []));
+    }
+    if (!flat.length && memories && Array.isArray(memories.items)) {
+      flat.push(...memories.items);
+    }
+    vdbMemories = flat;
+    // Timeline cache: accumulate fetched pages per scope (dedup by id) so the
+    // 时间线 view can page back through history across auto-refreshes.
+    if (timelineScope !== agentId) {
+      timelineScope = agentId;
+      timelineCache = [];
+      timelineSeen = new Set();
+      timelineOffset = 0;
+    }
+    for (const m of flat) {
+      if (m && m.memory_id && !timelineSeen.has(m.memory_id)) {
+        timelineSeen.add(m.memory_id);
+        timelineCache.push(m);
+      }
+    }
+    if (timelineCache.length > 3000) {
+      timelineCache.sort((a, b) => Number(b.gmt_created || 0) - Number(a.gmt_created || 0));
+      timelineCache.length = 3000;
+      timelineSeen = new Set(timelineCache.map(m => m.memory_id));
+    }
     codingMemories = codingMems;
     graphNodes = graphMems;
     graphRelations = l5Graph?.relations || [];
@@ -392,7 +433,7 @@ async function loadAllData() {
     observatoryMemories = [...vdbMemories, ...graphNodes];
 
 
-    storageData = storage;
+    storageData = storageObj;
     metricsData = metrics;
     qualityData = quality;
     codingCountData = codingCount;
@@ -805,7 +846,7 @@ async function performSearch() {
     };
     if (days) body.created_after = Date.now() / 1000 - days * 86400;
 
-    const resp = await fetchJSON('/api/search', {
+    const resp = await fetchJSON('/api/v1/search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
@@ -1310,12 +1351,29 @@ function renderLayerHierarchy(layerCounts) {
 
 // Today / Activity
 let todayFilter = 'all';
+// Timeline history cache (时间线): accumulates fetched pages per agent scope,
+// deduped by memory_id, so 载入更多 can page back through history across
+// the 30s auto-refresh (each refresh only re-fetches the newest page).
+let timelineCache = [];
+let timelineScope = null;
+let timelineSeen = new Set();
+let timelineRange = '24h';   // 24h | 7d | all
+let timelineOffset = 0;      // next page offset for /api/memories
 
 document.querySelectorAll('#page-today .tab').forEach(tab => {
   tab.addEventListener('click', () => {
     document.querySelectorAll('#page-today .tab').forEach(t => t.classList.remove('active'));
     tab.classList.add('active');
     todayFilter = tab.dataset.filter;
+    renderToday();
+  });
+});
+
+// Timeline range tabs (时间范围): 24h / 7天 / 全部
+document.querySelectorAll('#timeline-range-bar .tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    timelineRange = tab.dataset.range || '24h';
+    document.querySelectorAll('#timeline-range-bar .tab').forEach(t => t.classList.toggle('active', t === tab));
     renderToday();
   });
 });
@@ -1348,34 +1406,40 @@ document.getElementById('export-json').addEventListener('click', () => {
 });
 
 function renderToday() {
-  const since = Date.now() - 24 * 60 * 60 * 1000;
+  // 时间线视图: render from the accumulated timeline cache (all fetched
+  // pages), filtered by range. Newest first, grouped by day.
+  const ranges = { '24h': 24 * 3600, '7d': 7 * 86400, 'all': 0 };
+  const rangeSec = ranges[timelineRange] || 0;
+  const cutoff = rangeSec ? Date.now() / 1000 - rangeSec : 0;
 
-  let filtered = activityMemories.filter(m => {
-    const created = tsToDate(m.gmt_created);
-    return created && created.getTime() >= since;
+  let items = timelineCache.filter(m => {
+    const ts = Number(m.gmt_created || 0);
+    return ts > 0 && (!cutoff || ts >= cutoff);
   });
-  
-  if (todayFilter === 'vdb') {
-    filtered = filtered.filter(m => m.user_id !== 'coding');
-  } else if (todayFilter === 'coding') {
-    filtered = filtered.filter(m => m.user_id === 'coding');
-  }
-  
-  filtered.sort((a, b) => b.gmt_created - a.gmt_created);
-  
-  const html = filtered.slice(0, 20).map(m => {
-      const title = (m.content || '');
-      const preview = title.length > 100 ? title.substring(0, 100) + '…' : title;
-      const ts = Number(m.gmt_created) || 0;
-      const time = ts ? new Date(ts * 1000).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '—';
-      const ago = ts ? Math.floor((Date.now() / 1000 - ts) / 60) : 0;
-      const agoText = !ts ? '—' : ago < 60 ? `${ago} 分钟前` : `${Math.floor(ago / 60)} 小时前`;
+  items.sort((a, b) => Number(b.gmt_created || 0) - Number(a.gmt_created || 0));
 
-      const imp = typeof m.importance === 'number' ? m.importance : null;
-      const impCls = imp === null ? '' : imp >= 0.7 ? 'importance-high' : imp >= 0.4 ? 'importance-mid' : 'importance-low';
-      const impBadge = imp === null ? '' : `<span class="badge badge-importance ${impCls}" title="重要性评分（4 因子评分器）">★ ${imp.toFixed(2)}</span>`;
+  // Cap DOM rows; the rest stay reachable via 载入更多 + narrower range.
+  const MAX_ROWS = 500;
+  const shown = items.slice(0, MAX_ROWS);
 
-      return `
+  const fmtDay = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' });
+  let html = '';
+  let lastDay = '';
+  for (const m of shown) {
+    const ts = Number(m.gmt_created) || 0;
+    const d = new Date(ts * 1000);
+    const dayKey = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    if (dayKey !== lastDay) {
+      lastDay = dayKey;
+      html += `<div class="timeline-day-header" style="margin:14px 0 8px;font-weight:600;color:var(--accent);font-size:12px;letter-spacing:.05em;">${escapeHtml(fmtDay.format(d))}</div>`;
+    }
+    const title = (m.content || '');
+    const preview = title.length > 140 ? title.substring(0, 140) + '…' : title;
+    const time = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    const ago = Math.floor((Date.now() / 1000 - ts) / 60);
+    const agoText = ago < 60 ? `${ago} 分钟前` : ago < 1440 ? `${Math.floor(ago / 60)} 小时前` : `${Math.floor(ago / 1440)} 天前`;
+
+    html += `
         <div class="timeline-item" data-memory-id="${m.memory_id}" onclick="window.__openMemoryDetail && window.__openMemoryDetail('${m.memory_id}')">
           <div class="timeline-dot"></div>
           <div class="timeline-content">
@@ -1383,19 +1447,63 @@ function renderToday() {
             <div class="timeline-title">${escapeHtml(preview)}</div>
             <div class="flex gap-2 mt-2" style="flex-wrap: wrap; align-items: center;">
               <span class="badge badge-layer layer-${m.layer}">${m.layer}</span>
-              ${impBadge}
-              ${(m.tags || []).slice(0, 3).map(t => `<span class="badge badge-tag">${t}</span>`).join('')}
+              ${m.session_id ? `<span class="badge badge-tag" title="会话">${escapeHtml(String(m.session_id).slice(0, 18))}</span>` : ''}
             </div>
           </div>
         </div>
       `;
-    }).join('');
-  
-  document.getElementById('timeline').innerHTML = html || '<div class="text-muted">今日暂无动态</div>';
-  
-  // Right sidebar - summary
-  renderTodaySummary(filtered);
+  }
+
+  document.getElementById('timeline').innerHTML = html || '<div class="text-muted">该时间范围内暂无记忆</div>';
+
+  // Range tabs active state + count + load-more button
+  const rangeBar = document.getElementById('timeline-range-bar');
+  if (rangeBar) {
+    rangeBar.querySelectorAll('.tab').forEach(t => {
+      t.classList.toggle('active', t.dataset.range === timelineRange);
+    });
+  }
+  const cnt = document.getElementById('timeline-count');
+  if (cnt) cnt.textContent = `共 ${items.length} 条${items.length > shown.length ? `（显示最近 ${shown.length} 条）` : ''}`;
+  const more = document.getElementById('timeline-load-more');
+  if (more) {
+    // Keep the button visible whenever there may be more history; clicking
+    // it with nothing new simply reports "已载入更多 0 条".
+    more.style.display = '';
+  }
+
+  // Right sidebar - summary (reuse old summary logic on the filtered set)
+  renderTodaySummary(items);
 }
+
+// 载入更多历史: fetch the next page of /api/memories directly and merge into
+// the timeline cache, then re-render. Uses the current agent scope.
+async function loadMoreTimeline() {
+  try {
+    const scope = currentAgentId && currentAgentId !== 'all' ? `&agent_id=${encodeURIComponent(currentAgentId)}` : '&agent_id=all';
+    const nextOff = timelineOffset || 100;
+    const resp = await fetchJSON(`/api/memories?limit=200&offset=${nextOff}${scope}`);
+    const mg = resp && resp.memories;
+    const batch = Array.isArray(mg) ? mg : (mg ? [...(mg.profile || []), ...(mg.proactive || []), ...(mg.normal || [])] : []);
+    if (Array.isArray(resp?.items) && !batch.length) batch.push(...resp.items);
+    let added = 0;
+    for (const m of batch) {
+      if (m && m.memory_id && !timelineSeen.has(m.memory_id)) {
+        timelineSeen.add(m.memory_id);
+        timelineCache.push(m);
+        added++;
+      }
+    }
+    timelineCache.sort((a, b) => Number(b.gmt_created || 0) - Number(a.gmt_created || 0));
+    timelineOffset = nextOff + 200;
+    renderToday();
+    setScopeStatus(`时间线已载入更多 ${added} 条`);
+  } catch (err) {
+    console.error('loadMoreTimeline failed:', err);
+    setScopeStatus('时间线载入失败');
+  }
+}
+window.__loadMoreTimeline = loadMoreTimeline;
 
 function renderTodaySummary(todayMemories) {
   const uniqueSessions = new Set(todayMemories.map(m => m.session_id)).size;
@@ -1692,6 +1800,17 @@ function renderSystem() {
 
 function renderQuality() {
   const root = qualityData || {};
+  // v4 backend may report quality as unavailable — show an honest notice
+  // instead of a wall of N/A placeholders.
+  if (root.available === false) {
+    const off = document.getElementById('quality-vitals');
+    if (off) {
+      off.innerHTML = `<div class="text-muted">系统评分暂不可用：${escapeHtml(root.reason || '后端未提供')}</div>`;
+    }
+    const jEl = document.getElementById('quality-json');
+    if (jEl) jEl.textContent = JSON.stringify(root, null, 2);
+    return;
+  }
   const snap = root.snapshot || {};
   const scores = snap.scores || {};
   const guides = root.guides || {};

@@ -79,12 +79,9 @@
     
     <div class="nav-item" data-page="today">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
-        <line x1="16" y1="2" x2="16" y2="6"/>
-        <line x1="8" y1="2" x2="8" y2="6"/>
-        <line x1="3" y1="10" x2="21" y2="10"/>
+        <path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/>
       </svg>
-      <span>今日动态</span>
+      <span>时间线</span>
     </div>
     
     <div class="nav-item" data-page="system">
@@ -320,19 +317,21 @@
     <!-- Page 5: Today / Activity -->
     <div class="page-section" id="page-today">
       <div class="page-header">
-        <div class="page-label">05 // 今日动态</div>
-        <h1 class="page-title">今日</h1>
-        <div class="page-subtitle">过去 24 小时的记忆活动、事件与系统操作时间线。</div>
+        <div class="page-label">05 // 记忆时间线</div>
+        <h1 class="page-title">时间线</h1>
+        <div class="page-subtitle">按时间倒序浏览全部记忆 —— 快速回顾最近执行过的方案与操作。</div>
       </div>
       
-      <div class="tabs mb-4">
-        <div class="tab active" data-filter="all">全部</div>
-        <div class="tab" data-filter="vdb">向量记忆</div>
-        <div class="tab" data-filter="coding">编码记忆</div>
+      <div class="tabs mb-4" id="timeline-range-bar">
+        <div class="tab active" data-range="24h">24 小时</div>
+        <div class="tab" data-range="7d">7 天</div>
+        <div class="tab" data-range="all">全部</div>
       </div>
       
+      <div class="kv-list" id="timeline-count" style="margin-bottom:8px;"></div>
       <div class="timeline" id="timeline"></div>
       
+      <button class="export-btn" id="timeline-load-more" onclick="window.__loadMoreTimeline && window.__loadMoreTimeline()" style="display:none;margin-top:12px;">载入更多历史</button>
       <button class="export-btn" id="export-json">导出 JSON</button>
     </div>
     
@@ -505,7 +504,7 @@
   </div>
 </div>
 
-<script>window.REFRESH_S = __REFRESH_S__; window.USER_IDS = __USER_IDS__;</script>
+<script>window.REFRESH_S = 30; window.USER_IDS = ["default"];</script>
 <script src="app.js"></script>
 <script src="js/l5.js"></script>
 <script src="js/observatory.js"></script>
