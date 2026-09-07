@@ -176,6 +176,39 @@
           }
         }
       }
+    },
+    "vikunja": {
+      "display_name": "待办 (Vikunja)",
+      "desc": "自托管待办管理面板：Go 单二进制静态链接 + SQLite，中文 UI，CalDAV，API token 全自动读写，Hermes 提醒引擎。上游：go-vikunja/vikunja。",
+      "platform": [
+        "x86"
+      ],
+      "categories": [
+        "办公工具",
+        "生活服务"
+      ],
+      "icon_url": "./vikunja/ICON.PNG",
+      "maintainer": "kolaente",
+      "maintainer_url": "https://github.com/go-vikunja/vikunja",
+      "distributor": "Mike",
+      "distributor_url": "https://github.com/Mike-hd123",
+      "run_as": "root",
+      "install_type": "volume",
+      "is_docker": false,
+      "service_port": "3456",
+      "releases": {
+        "2.6.0-10": {
+          "changelog": "v10 修复编辑待办样式崩/加载失败：vite 动态 chunk preload base 硬编码根绝对 /assets 经网关丢前缀致 404。sidecar 网关流量改 preload base 为模块相对(../) + CSS url 打前缀，桌面直连零影响。",
+          "updated_at": "2026-09-07T12:15:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/vikunja/vikunja-2.6.0-10-x86.fpk",
+              "sha256": "4f638e8c41dcdf2a11173dcfa379d7d239828f62e1b99c8d9b7d4a9b719fd229",
+              "size": 45990118
+            }
+          }
+        }
+      }
     }
   }
 }

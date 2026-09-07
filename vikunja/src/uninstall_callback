@@ -1,0 +1,39 @@
+#!/bin/bash
+# 卸载后 hook: 清理 systemd 单元 + sidecar + socket（数据目录 @appdata 默认保留）
+set -e
+SERVICE="vikunja"
+SIDECAR="vikunja-sidecar"
+# 卷探测：env 缺失时扫描实际安装卷
+APP_DIR="${TRIM_APPDEST:-}"
+if [ -z "${APP_DIR}" ]; then
+  for v in /vol1 /vol2 /vol3 /vol4; do
+    [ -f "${v}/@appcenter/vikunja/vikunja" ] && APP_DIR="${v}/@appcenter/vikunja" && break
+  done
+  [ -n "${APP_DIR}" ] || APP_DIR="/vol2/@appcenter/vikunja"
+fi
+APPDATA="${TRIM_PKGVAR:-}"
+if [ -z "${APPDATA}" ]; then
+  APP_VOL="$(printf '%s' "${APP_DIR}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
+  [ -n "${APP_VOL}" ] && APPDATA="${APP_VOL}/@appdata/vikunja" || APPDATA="/var/apps/vikunja/var"
+fi
+
+# 停 sidecar（v9 = systemd 单元；并兼容清理 v8 及更早 nohup 残留）
+systemctl disable "${SIDECAR}" 2>/dev/null || true
+systemctl stop "${SIDECAR}" 2>/dev/null || true
+rm -f "/etc/systemd/system/${SIDECAR}.service"
+for pf in "${APPDATA}/gateway.pid" "${APPDATA}/gateway_proxy.pid" /var/run/vikunja-gw.pid; do
+    if [ -f "$pf" ]; then
+        kill "$(cat "$pf" 2>/dev/null)" 2>/dev/null || true
+        rm -f "$pf"
+    fi
+done
+pkill -f "vikunja/gateway/gateway_proxy.py" 2>/dev/null || true
+rm -f "${APP_DIR}/app.sock" "${APP_DIR}/target/app.sock" "${APPDATA}/app.sock" 2>/dev/null || true
+
+# 清 systemd 单元（skill 坑 #3：必须清理，防重装后旧 unit 与新 app_id 冲突）
+systemctl disable "${SERVICE}" 2>/dev/null || true
+systemctl stop "${SERVICE}" 2>/dev/null || true
+rm -f "/etc/systemd/system/${SERVICE}.service"
+systemctl daemon-reload
+
+echo "vikunja uninstall_callback done (data kept at ${APPDATA})"

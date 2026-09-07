@@ -1,6 +1,6 @@
 # FnDepot — Mike 的飞牛第三方应用源
 
-飞牛 fnOS 外部应用源（schema_version 2），收录 5 个自打包应用。每个应用目录 = 安装包(fpk) + 图标 + 说明 + 上游源码 fork(src/)。
+飞牛 fnOS 外部应用源（schema_version 2），收录 6 个自打包应用。每个应用目录 = 安装包(fpk) + 图标 + 说明 + 上游源码 fork(src/)。
 
 ## 添加源
 
@@ -19,6 +19,7 @@ https://github.com/Mike-hd123/FnDepot
 | 9Router `9router` | 0.5.65 | FREE AI Router & Token Saver，Next.js + open-sse SSE 引擎，40+ 免费 AI 提供商聚合，端口 20128 | [decolua/9router](https://github.com/decolua/9router) |
 | Octopus `octopus` | 0.13.2-5 | LLM API 聚合网关，Go 单二进制 + 内嵌前端 + SQLite，多渠道/多模型管理，支持单渠道多 Key，端口 8081。v5 修手机端 /app/octopus 路由 | [bestruirui/octopus](https://github.com/bestruirui/octopus) |
 | EZ记账 `ezbookkeeping` | 1.6.1-11 | 家庭记账：本地优先 SQLite 存储，多账本/预算/报表，支持微信/支付宝/信用卡账单导入，gzip 压缩提速，移动端触屏优化 | [mayswind/ezbookkeeping](https://github.com/mayswind/ezbookkeeping) |
+| 待办(Vikunja) `vikunja` | 2.6.0-10 | 自托管待办面板：Go 静态 ELF 单二进制 + SQLite，中文 UI + CalDAV，API token 全自动读写（Hermes 提醒引擎），桌面 3456 + 手机 /app/vikunja 双通道 | [go-vikunja/vikunja](https://github.com/go-vikunja/vikunja) |
 
 ## 目录结构
 
@@ -53,6 +54,11 @@ FnDepot/
 │   ├── README.md
 │   ├── ezbookkeeping.fpk
 │   └── src/                 # 打包层源码（sidecar/gateway/manifest 等 fnOS 适配）
+├── vikunja/
+│   ├── ICON.PNG / ICON_256.PNG
+│   ├── README.md
+│   ├── vikunja-2.6.0-10-x86.fpk
+│   └── src/                 # 打包层源码（manifest / ui-config / gateway_proxy.py）
 ```
 
 **4.1.1-2 fpk**: `/vol2/1000/download/hyatlas-4.1.1-2-x86.fpk`（230MB，走 GitHub Release `hyatlas-4.1.1-2` 分发，不进 git 跟踪）。详见 `hyatlas/README.v4.1.1.md`。

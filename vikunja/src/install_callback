@@ -1,0 +1,123 @@
+#!/bin/bash
+# 安装后 hook: 写 systemd 单元 + 生成 config.yml（仅缺省时）+ 数据目录 + 权限
+# 对齐 skill 坑 #18「占位符自举」：config.yml 只在不存在时生成，用户已有配置永不覆盖
+LOG=/tmp/vk_install.log
+exec >> "$LOG" 2>&1
+echo "==================== install_callback $(date '+%F %T') ===================="
+echo "env: TRIM_APPDEST=${TRIM_APPDEST:-<unset>} TRIM_PKGVAR=${TRIM_PKGVAR:-<unset>} TRIM_SERVICE_PORT=${TRIM_SERVICE_PORT:-<unset>} TRIM_APPNAME=${TRIM_APPNAME:-<unset>} euid=$(id -u)"
+set -x
+set -e
+APP="vikunja"
+SERVICE="vikunja"
+SIDECAR="vikunja-sidecar"
+UNIT="/etc/systemd/system/${SERVICE}.service"
+# 卷探测：env 缺失时扫描实际安装卷（安装器部分 callback 调用不带 TRIM_* env）
+APP_DIR="${TRIM_APPDEST:-}"
+if [ -z "${APP_DIR}" ]; then
+  for v in /vol1 /vol2 /vol3 /vol4; do
+    [ -f "${v}/@appcenter/vikunja/vikunja" ] && APP_DIR="${v}/@appcenter/vikunja" && break
+  done
+  [ -n "${APP_DIR}" ] || APP_DIR="/vol2/@appcenter/vikunja"
+fi
+APPDATA="${TRIM_PKGVAR:-}"
+if [ -z "${APPDATA}" ]; then
+  APP_VOL="$(printf '%s' "${APP_DIR}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
+  [ -n "${APP_VOL}" ] && APPDATA="${APP_VOL}/@appdata/vikunja" || APPDATA="/var/apps/vikunja/var"
+fi
+PORT="${TRIM_SERVICE_PORT:-3456}"
+BIN="${APP_DIR}/vikunja"
+
+mkdir -p "${APPDATA}/files" "${APPDATA}/logs"
+
+# ── 二进制就位校验（app.tgz 平铺解到 APPDEST）──
+if [ ! -x "${BIN}" ]; then
+  echo "ERROR: binary missing at ${BIN}" >&2
+  [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "Vikunja 二进制缺失：${BIN}" > "${TRIM_TEMP_LOGFILE}"
+  exit 1
+fi
+chmod 755 "${BIN}"
+
+# ── config.yml：不存在才生成（升级/重装保用户配置）──
+if [ ! -f "${APPDATA}/config.yml" ]; then
+  if [ -f "${APP_DIR}/config.yml.sample" ]; then
+    cp "${APP_DIR}/config.yml.sample" "${APPDATA}/config.yml"
+  fi
+  cat > "${APPDATA}/config.yml" <<EOS
+service:
+  JWTSecret: "$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  interface: ":${PORT}"
+  enableregistration: false
+  timezone: "Asia/Shanghai"
+  publicurl: ""
+  enablecaldav: true
+  enabletaskattachments: true
+database:
+  type: sqlite
+  path: "${APPDATA}/vikunja.db"
+files:
+  basepath: "${APPDATA}/files"
+log:
+  path: "${APPDATA}/logs"
+  enabled: true
+  level: INFO
+cors:
+  enable: false
+EOS
+  echo "generated default config.yml at ${APPDATA}/config.yml"
+else
+  echo "keeping existing config.yml"
+fi
+
+# ── systemd 单元（hermes-studio uid=1000 与历史手动实例一致，保数据属主）──
+cat > "${UNIT}" <<EOS
+[Unit]
+Description=Vikunja Todo (fnOS app)
+After=network.target
+
+[Service]
+Type=simple
+User=hermes-studio
+Group=hermes-studio
+WorkingDirectory=${APPDATA}
+Environment=VIKUNJA_SERVICE_INTERFACE=:${PORT}
+ExecStart=${BIN} --config ${APPDATA}/config.yml
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOS
+chmod 644 "${UNIT}"
+systemctl daemon-reload
+systemctl enable "${SERVICE}" >/dev/null 2>&1 || true
+
+# ── vikunja-sidecar systemd 单元（v9：sidecar 不再 nohup 裸跑）──
+# ExecStartPost 清理 nohup 时代遗留的 gateway.pid，防残留 PID 干扰
+if [ -f "${APP_DIR}/gateway/gateway_proxy.py" ]; then
+  chmod 755 "${APP_DIR}/gateway/gateway_proxy.py"
+  cat > "/etc/systemd/system/${SIDECAR}.service" <<EOS
+[Unit]
+Description=Vikunja Gateway Sidecar (fnOS app socket entry)
+After=${SERVICE}.service
+BindsTo=${SERVICE}.service
+
+[Service]
+Type=simple
+ExecStartPre=/bin/sh -c 'rm -f ${APPDATA}/gateway.pid /var/run/vikunja-gw.pid'
+ExecStart=/usr/bin/python3 ${APP_DIR}/gateway/gateway_proxy.py
+Environment=GATEWAY_SOCK_PATH=${APP_DIR}/app.sock
+Environment=GATEWAY_BACKEND_PORT=${PORT}
+Environment=GATEWAY_PID_FILE=/var/run/vikunja-gw.pid
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOS
+  chmod 644 "/etc/systemd/system/${SIDECAR}.service"
+  systemctl daemon-reload
+fi
+
+# 数据目录属主（服务以 hermes-studio 跑）
+chown -R hermes-studio:hermes-studio "${APPDATA}" 2>/dev/null || true
+echo "vikunja install_callback done (APPDEST=${APP_DIR}, APPDATA=${APPDATA}, PORT=${PORT})"

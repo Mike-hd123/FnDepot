@@ -1,0 +1,14 @@
+{
+  ".url": {
+    "vikunja.panel": {
+      "title": "待办 (Vikunja)",
+      "icon": "images/icon-{0}.png",
+      "type": "iframe",
+      "protocol": "",
+      "gatewayPrefix": "/app/vikunja",
+      "gatewaySocket": "app.sock",
+      "url": "/app/vikunja",
+      "allUsers": true
+    }
+  }
+}

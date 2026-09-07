@@ -1,0 +1,99 @@
+#!/bin/bash
+# cmd/main — Vikunja 进程管理（v9：sidecar 由 systemd 单元 vikunja-sidecar 托管）
+# 应用 = systemd 单元（原生二进制，User=hermes-studio）
+# sidecar = vikunja-sidecar 单元（socket 自注册，root 跑 —— 需在 APPDEST 建 app.sock）
+set -u
+
+SERVICE="vikunja"
+SIDECAR="vikunja-sidecar"
+# 卷探测：env 缺失时扫描实际安装卷
+APP_DIR="${TRIM_APPDEST:-}"
+if [ -z "${APP_DIR}" ]; then
+  for v in /vol1 /vol2 /vol3 /vol4; do
+    [ -f "${v}/@appcenter/vikunja/vikunja" ] && APP_DIR="${v}/@appcenter/vikunja" && break
+  done
+  [ -n "${APP_DIR}" ] || APP_DIR="/vol2/@appcenter/vikunja"
+fi
+DATA_DIR="${TRIM_PKGVAR:-}"
+if [ -z "${DATA_DIR}" ]; then
+  APP_VOL="$(printf '%s' "${APP_DIR}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
+  if [ -n "${APP_VOL}" ]; then
+    DATA_DIR="${APP_VOL}/@appdata/vikunja"
+  else
+    DATA_DIR="/var/apps/vikunja/var"
+  fi
+fi
+PORT="${TRIM_SERVICE_PORT:-3456}"
+BOOT_LOG="${DATA_DIR}/boot.log"
+
+mkdir -p "${DATA_DIR}" 2>/dev/null || true
+
+log() { echo "[$(date '+%F %T')] $*" >> "${BOOT_LOG}" 2>/dev/null || true; }
+
+port_ready() {
+  curl -s --max-time 2 "http://127.0.0.1:${PORT}/api/v1/info" >/dev/null 2>&1
+}
+
+sock_ready() {
+  [ -S "${APP_DIR}/app.sock" ] || [ -S "${APP_DIR}/target/app.sock" ]
+}
+
+start() {
+  if systemctl is-active --quiet "${SERVICE}" 2>/dev/null; then
+    log "app already running"
+  else
+    log "starting systemd unit ${SERVICE}"
+    systemctl start "${SERVICE}" || true
+    local ok=0
+    for i in $(seq 1 20); do
+      if port_ready; then ok=1; break; fi
+      sleep 1
+    done
+    if [ "${ok}" != "1" ]; then
+      log "ERROR: ${SERVICE} failed to start on port ${PORT}"
+      [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "Vikunja 启动失败，查看日志：journalctl -u ${SERVICE} -n 50" > "${TRIM_TEMP_LOGFILE}"
+      exit 1
+    fi
+    log "app started on port ${PORT}"
+  fi
+  # sidecar（手机/桌面网关统一入口）：失败不阻塞应用本身（应用数据无恙，入口可后补）
+  if [ -f "${APP_DIR}/gateway/gateway_proxy.py" ]; then
+    systemctl enable --now "${SIDECAR}" >/dev/null 2>&1 || systemctl start "${SIDECAR}" >/dev/null 2>&1 || true
+    local sok=0
+    for i in $(seq 1 5); do
+      if sock_ready; then sok=1; break; fi
+      sleep 1
+    done
+    if [ "${sok}" = "1" ]; then
+      log "gateway sidecar ready (${APP_DIR}/app.sock -> 127.0.0.1:${PORT})"
+    else
+      log "WARN: gateway sidecar not ready (check journalctl -u ${SIDECAR})"
+    fi
+  else
+    log "WARN: gateway script missing, socket entry disabled"
+  fi
+  log "start complete"
+}
+
+stop() {
+  systemctl stop "${SIDECAR}" 2>/dev/null || true
+  systemctl stop "${SERVICE}" 2>/dev/null || true
+  log "stopped"
+}
+
+status() {
+  if systemctl is-active --quiet "${SERVICE}" 2>/dev/null; then
+    echo "running"
+    return 0
+  fi
+  echo "stopped"
+  return 1
+}
+
+case "${1:-}" in
+  start)   start ;;
+  stop)    stop ;;
+  restart) stop; start ;;
+  status)  status ;;
+  *)       exit 0 ;;
+esac
