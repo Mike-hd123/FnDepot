@@ -1,11 +1,11 @@
 [
   {
-    "stepTitle": "HyAtlas v4.1.1-3 安装说明",
+    "stepTitle": "HyAtlas v4.1.1-5 安装说明",
     "items": [
       {
         "type": "tips",
         "label": "",
-        "helpText": "HyAtlas v4.1.1-3 (Go)\nupstream: tuancookiez-hub/HyAtlas-Memory (Apache-2.0)\n\n• 本版起服务以专用用户 hy-memory 运行（不再 root）；安装时会自动修复数据目录属主。\n• v4 监听 127.0.0.1:19528，桌面图标经 fnOS 网关 /app/hyatlas 打开面板。\n• Embedding 走内置 ONNX Runtime int8 (bge-large-zh 1024d)，无外部依赖。\n• LLM 走本机 Octopus (127.0.0.1:8081, 模型 flash, key 自动从 v3 配置读取)。\n• 数据目录 /vol1/@appshare/hyatlas/go-data 独立持久；升级不清数据。"
+        "helpText": "HyAtlas v4.1.1-5 (Go)\nupstream: tuancookiez-hub/HyAtlas-Memory (Apache-2.0)\n\n• 本版起服务以专用用户 hy-memory 运行（不再 root）；安装时会自动修复数据目录属主。\n• 本版起安装/升级回调自动自愈数据共享链接（shares→/vol1/@appshare），杜绝升级后数据空壳。\n• v4 监听 127.0.0.1:19528，桌面图标经 fnOS 网关 /app/hyatlas 打开面板。\n• Embedding 走内置 ONNX Runtime int8 (bge-large-zh 1024d)，无外部依赖。\n• LLM 走本机 Octopus (127.0.0.1:8081, 模型 flash, key 自动从 v3 配置读取)。\n• 数据目录 /vol1/@appshare/hyatlas/go-data 独立持久；升级不清数据。"
       }
     ]
   }

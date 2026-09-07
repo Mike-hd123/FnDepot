@@ -1,3 +1,51 @@
 #!/bin/bash
-# 升级后置：数据布局自包含，无需迁移
+# 升级后置（v4.1.1-5）：shares 实体化自愈 + 数据/运行时属主归还
+# 背景：fnOS 安装器在升级时可能把 /var/apps/hyatlas/shares 重建为实体目录，
+#       导致升级后读到空壳库、真库留在 /vol1/@appshare（v4 升级、4.1.1-4 改名装均已发生）。
+set -u
+LOG="${TRIM_PKGVAR:-/vol1/@appdata/hyatlas}/install.log"
+mkdir -p "${TRIM_PKGVAR:-/vol1/@appdata/hyatlas}" 2>/dev/null || true
+echo "===== upgrade_callback $(date) =====" >> "$LOG"
+
+APP_DIR="${TRIM_APPDEST:-/vol1/@appcenter/hyatlas}"
+RUN_USER="${TRIM_USERNAME:-hy-memory}"
+RUN_GROUP="${TRIM_GROUPNAME:-hy-memory}"
+if ! id "$RUN_USER" >/dev/null 2>&1; then
+  getent group "$RUN_GROUP" >/dev/null 2>&1 || groupadd "$RUN_GROUP" 2>/dev/null || true
+  useradd --system --no-create-home -g "$RUN_GROUP" -s /usr/sbin/nologin "$RUN_USER" 2>/dev/null || true
+fi
+RUN_GRP="$(id -gn "$RUN_USER" 2>/dev/null || echo "$RUN_GROUP")"
+
+# ── shares 实体化自愈（与 install_callback 同款，幂等）──
+SHARES_LINK="/var/apps/hyatlas/shares"
+SHARE_SRC="/vol1/@appshare"
+if [ -L "${SHARES_LINK}" ]; then
+  echo "shares is already a symlink -> $(readlink "${SHARES_LINK}"), skip" >> "$LOG"
+else
+  echo "shares is NOT a symlink (type: $(stat -c %F "${SHARES_LINK}" 2>/dev/null || echo missing)), healing" >> "$LOG"
+  # 实体目录移开留底（不直接 rm：若实体目录内有升级间隙的新写入数据可从 bak 找回），保留最近 2 份
+  if [ -e "${SHARES_LINK}" ] && [ ! -L "${SHARES_LINK}" ]; then
+    BAK="${SHARES_LINK}.entity-bak-$(date +%Y%m%d%H%M%S)"
+    mv "${SHARES_LINK}" "${BAK}" || { echo "FATAL: cannot move entity shares dir aside" >> "$LOG"; exit 1; }
+    echo "moved entity dir aside: ${BAK} (若其中有新写入数据，从该目录找回)" >> "$LOG"
+    ls -1dt "${SHARES_LINK}".entity-bak-* 2>/dev/null | tail -n +3 | xargs -r rm -rf
+  fi
+  mkdir -p "${SHARE_SRC}/hyatlas/go-data"
+  ln -sfn "${SHARE_SRC}" "${SHARES_LINK}" || { echo "FATAL: ln -s shares failed" >> "$LOG"; exit 1; }
+  echo "healed: relinked ${SHARES_LINK} -> ${SHARE_SRC} (data dir ${SHARE_SRC}/hyatlas/go-data)" >> "$LOG"
+  chown -R "${RUN_USER}:${RUN_GRP}" "${SHARE_SRC}/hyatlas" 2>/dev/null || true
+fi
+
+# ── 数据/运行时属主归还（防 root 遗留卡住降权进程）──
+DATA_DIR="${SHARES_LINK}/hyatlas/go-data"
+VAR_DIR="${TRIM_PKGVAR:-/vol1/@appdata/hyatlas}"
+chown -R "${RUN_USER}:${RUN_GRP}" "${DATA_DIR}" 2>/dev/null || true
+chown -R "${RUN_USER}:${RUN_GRP}" "${VAR_DIR}" 2>/dev/null || true
+
+# ── 二进制/网关/模型可执行可读 ──
+chmod 755 "${APP_DIR}/hyatlas-go" 2>/dev/null || true
+chmod 644 "${APP_DIR}/gateway/gateway_proxy.py" 2>/dev/null || true
+chmod 755 "${APP_DIR}/models/libonnxruntime.so" 2>/dev/null || true
+
+echo "===== upgrade_callback done (run-as ${RUN_USER}) =====" >> "$LOG"
 exit 0

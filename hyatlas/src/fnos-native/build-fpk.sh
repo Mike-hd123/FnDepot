@@ -1,31 +1,28 @@
 #!/bin/bash
-# HyAtlas v4.1.1-2 fpk 可复现构建（B2: 内置 ORT int8 bge-large-zh）
-#
-# 产物字节级等价于: /vol2/1000/download/hyatlas-4.1.1-2-x86.fpk
-#   sha256 = 4a5567cf837879bce94111512db567bf9995a6deef4933840b6900a9b0c8c1e0
-#   size   = 241787281
+# HyAtlas v4.1.1-5 fpk 构建（B2: 内置 ORT int8 bge-large-zh + shares 实体化治理）
 #
 # 输入来源：
 #   - fpk 控制层（cmd/config/wizard/manifest/ICON）：本目录归档原件
-#   - Go 二进制：bin/hyatlas-go-linux-amd64（构建机 /tmp/hyatlas-b2-final2 归档，
-#     go1.26.8 编译；Go 链接产物不可字节级复现，权威产物以归档为准）
+#   - Go 二进制：bin/hyatlas-go-linux-amd64（go1.26.8 编译，flags 与 4.1.1-4 一致：
+#     CGO_ENABLED=1 -trimpath GOAMD64=v1；含 L7 意图去重 + prompt 收紧）
 #   - 模型三件套（~355MB，超 GitHub 100MB 限制不入库）：按 MODEL_SRC → /tmp/b2-models
-#     → 从现有 fpk 提取 的顺序解析；sha256 断言防漂移
+#     → 从 4.1.1-4 fpk 提取的顺序解析；sha256 断言防漂移
 #
-# 用法: bash build-fpk.sh [输出路径]
+# 用法: bash build-fpk.sh [输出路径]   （默认 /vol2/1000/download/hyatlas-4.1.1-5-x86.fpk）
 #
-# 与早期一次性脚本(/tmp/build-b2-fpk.sh)的差异（不影响产物字节）：
-#   - fnpack build 校验步骤省略（fnpack 重压 app.tgz 会改字节，仅作旁路校验）
+# 与 4.1.1-2 时代的字节级等价构建差异：
+#   - 4.1.1-5 控制层与二进制均有变更，不再做 REF 产物 sha 等价断言；
+#     末尾改为结构校验（manifest 版本、shares 自愈回调在位、app payload 完整）
+#   - fnpack build 校验步骤省略（fnpack 重压 app.tgz 会改字节）
 #   - manifest checksum 占位符替换发生在 tar 组装之后，对产物无影响，此处保留
-#     占位符原件直拼，字节与已发布产物一致
+#     占位符原件直拼
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-OUT="${1:-/vol2/1000/download/hyatlas-4.1.1-2-x86.fpk}"
-REF_FPK="/vol2/1000/download/hyatlas-4.1.1-2-x86.fpk"
-EXPECT_SHA="4a5567cf837879bce94111512db567bf9995a6deef4933840b6900a9b0c8c1e0"
+OUT="${1:-/vol2/1000/download/hyatlas-4.1.1-5-x86.fpk}"
+REF_FPK="/vol2/1000/download/hyatlas-4.1.1-4-x86.fpk"
 
-SHA_BIN="f6100c564dbdc37e040c487b5beb3efa1ad20594754ba5b89c1384f0b41d2c2d"
+SHA_BIN="7e4be42b2b3c8b1f32b207b336dd21e4015a1d75dd5f10f1ecf95b943a4d41b4"
 SHA_ONNX="8a3f371a7e535e25d3d5a0ff0c0501a605ef0b62577800d2bf4b1fc76d6cbcf1"
 SHA_ORT="99458e9d185dfa1a9b5f6510790ede3bedc25dea378adb904ce292b517eeaecf"
 SHA_TOK="7dfbf1966ebf99d471c3796e9b457329d2b2182b817e144f1e904b957745c839"
@@ -78,18 +75,18 @@ import gzip, os, stat, tarfile
 # 元数据钉死自已发布产物 app.tgz（内层 tar，uid/gid=0，tar 路径带 ./ 前缀）
 INNER_PINS = {
     './app.tgz':                  {'mode': 0o644, 'mtime': 1788665563},
-    './gateway':                  {'mode': 0o755, 'mtime': 1788665562},
-    './gateway/gateway_proxy.py': {'mode': 0o644, 'mtime': 1788665562},
-    './hyatlas-go':               {'mode': 0o755, 'mtime': 1788665562},
+    './gateway':                  {'mode': 0o755, 'mtime': 1788777600},
+    './gateway/gateway_proxy.py': {'mode': 0o644, 'mtime': 1788777600},
+    './hyatlas-go':               {'mode': 0o755, 'mtime': 1788777600},
     './models':                   {'mode': 0o755, 'mtime': 1788665563},
-    './models/libonnxruntime.so': {'mode': 0o755, 'mtime': 1788665562},
+    './models/libonnxruntime.so': {'mode': 0o755, 'mtime': 1788777600},
     './models/model_int8.onnx':   {'mode': 0o644, 'mtime': 1788665563},
     './models/tokenizer.json':    {'mode': 0o644, 'mtime': 1788665563},
-    './ui':                       {'mode': 0o755, 'mtime': 1788665562},
-    './ui/config':                {'mode': 0o755, 'mtime': 1788665562},
-    './ui/images':                {'mode': 0o755, 'mtime': 1788665562},
-    './ui/images/icon-256.png':   {'mode': 0o755, 'mtime': 1788665562},
-    './ui/images/icon-64.png':    {'mode': 0o755, 'mtime': 1788665562},
+    './ui':                       {'mode': 0o755, 'mtime': 1788777600},
+    './ui/config':                {'mode': 0o755, 'mtime': 1788777600},
+    './ui/images':                {'mode': 0o755, 'mtime': 1788777600},
+    './ui/images/icon-256.png':   {'mode': 0o755, 'mtime': 1788777600},
+    './ui/images/icon-64.png':    {'mode': 0o755, 'mtime': 1788777600},
 }
 raw = gzip.GzipFile(filename='', mode='wb', compresslevel=6, mtime=0, fileobj=open('app.tgz','wb'))
 with tarfile.open(fileobj=raw, mode='w') as tf:
@@ -119,25 +116,25 @@ import gzip, os, stat, sys, tarfile
 out = sys.argv[1]
 # 外层钉死自已发布产物（uid/gid=hermes-studio 运行身份，tar 路径无 ./ 前缀）
 OUTER_PINS = {
-    'app.tgz':    {'mode': 0o644, 'mtime': 1788665580},
-    'cmd':        {'mode': 0o755, 'mtime': 1788649852},
-    'cmd/config_callback':    {'mode': 0o755, 'mtime': 1788649852},
-    'cmd/config_init':        {'mode': 0o755, 'mtime': 1788649852},
-    'cmd/install_callback':   {'mode': 0o755, 'mtime': 1788649852},
-    'cmd/install_init':       {'mode': 0o755, 'mtime': 1788649852},
-    'cmd/main':               {'mode': 0o755, 'mtime': 1788649852},
-    'cmd/uninstall_callback': {'mode': 0o755, 'mtime': 1788649852},
-    'cmd/uninstall_init':     {'mode': 0o755, 'mtime': 1788649852},
-    'cmd/upgrade_callback':   {'mode': 0o755, 'mtime': 1788649852},
-    'cmd/upgrade_init':       {'mode': 0o755, 'mtime': 1788649852},
-    'config':                 {'mode': 0o755, 'mtime': 1788649852},
-    'config/privilege':       {'mode': 0o644, 'mtime': 1788649852},
-    'config/resource':        {'mode': 0o644, 'mtime': 1788649852},
-    'ICON.PNG':               {'mode': 0o705, 'mtime': 1788665580},
-    'ICON_256.PNG':           {'mode': 0o705, 'mtime': 1788665580},
-    'manifest':               {'mode': 0o644, 'mtime': 1788665580},
-    'wizard':                 {'mode': 0o755, 'mtime': 1788649852},
-    'wizard/install':         {'mode': 0o644, 'mtime': 1788649852},
+    'app.tgz':    {'mode': 0o644, 'mtime': 1788777601},
+    'cmd':        {'mode': 0o755, 'mtime': 1788777602},
+    'cmd/config_callback':    {'mode': 0o755, 'mtime': 1788777602},
+    'cmd/config_init':        {'mode': 0o755, 'mtime': 1788777602},
+    'cmd/install_callback':   {'mode': 0o755, 'mtime': 1788777602},
+    'cmd/install_init':       {'mode': 0o755, 'mtime': 1788777602},
+    'cmd/main':               {'mode': 0o755, 'mtime': 1788777602},
+    'cmd/uninstall_callback': {'mode': 0o755, 'mtime': 1788777602},
+    'cmd/uninstall_init':     {'mode': 0o755, 'mtime': 1788777602},
+    'cmd/upgrade_callback':   {'mode': 0o755, 'mtime': 1788777602},
+    'cmd/upgrade_init':       {'mode': 0o755, 'mtime': 1788777602},
+    'config':                 {'mode': 0o755, 'mtime': 1788777602},
+    'config/privilege':       {'mode': 0o644, 'mtime': 1788777602},
+    'config/resource':        {'mode': 0o644, 'mtime': 1788777602},
+    'ICON.PNG':               {'mode': 0o705, 'mtime': 1788777601},
+    'ICON_256.PNG':           {'mode': 0o705, 'mtime': 1788777601},
+    'manifest':               {'mode': 0o644, 'mtime': 1788777601},
+    'wizard':                 {'mode': 0o755, 'mtime': 1788777602},
+    'wizard/install':         {'mode': 0o644, 'mtime': 1788777602},
 }
 import pwd, grp
 
@@ -184,13 +181,47 @@ os.replace(out + '.tmp', out)
 print('fpk assembled')
 PYEOF
 
-echo "=== 4/4 verify ==="
+echo "=== 4/4 verify (structural) ==="
 GOT_SHA=$(sha256sum "$OUT" | cut -d' ' -f1)
 GOT_SIZE=$(stat -c '%s' "$OUT")
-if [ "$GOT_SHA" = "$EXPECT_SHA" ]; then
-  echo "PASS: sha256 == $EXPECT_SHA"
-else
-  echo "FAIL: sha256 = $GOT_SHA (expected $EXPECT_SHA)" >&2
+FAIL=0
+
+# 1) gzip+tar 可解
+if ! tar -tzf "$OUT" >/dev/null 2>&1; then
+  echo "FAIL: fpk is not a valid gzip+tar" >&2; FAIL=1
+fi
+
+# 2) manifest 版本/appname
+GOT_VER=$(tar -xOf "$OUT" manifest | awk -F'= *' '$1 ~ /^version/ {print $2}' | tr -d ' ')
+GOT_APP=$(tar -xOf "$OUT" manifest | awk -F'= *' '$1 ~ /^appname/ {print $2}' | tr -d ' ')
+if [ "$GOT_VER" != "4.1.1-5" ] || [ "$GOT_APP" != "hyatlas" ]; then
+  echo "FAIL: manifest appname=$GOT_APP version=$GOT_VER (expected hyatlas 4.1.1-5)" >&2; FAIL=1
+fi
+
+# 3) shares 自愈回调在位（install/upgrade 双回调都含特征串）
+for f in install_callback upgrade_callback; do
+  if ! tar -xOf "$OUT" "cmd/$f" 2>/dev/null | grep -q 'shares is NOT a symlink'; then
+    echo "FAIL: cmd/$f missing shares-heal logic" >&2; FAIL=1
+  fi
+done
+
+# 4) app.tgz payload 完整（二进制 + 模型三件套 + 网关 + ui/config）
+tar -xf "$OUT" -O app.tgz > "$STAGING/inner.tgz"
+for p in './hyatlas-go' './models/model_int8.onnx' './models/libonnxruntime.so' './models/tokenizer.json' './gateway/gateway_proxy.py' './ui/config'; do
+  if ! tar -tzf "$STAGING/inner.tgz" "$p" >/dev/null 2>&1; then
+    echo "FAIL: app.tgz missing $p" >&2; FAIL=1
+  fi
+done
+
+# 5) 内层二进制 = 本次构建的新二进制（防旧包混入）
+INNER_BIN_SHA=$(tar -xzf "$STAGING/inner.tgz" -O ./hyatlas-go | sha256sum | cut -d' ' -f1)
+if [ "$INNER_BIN_SHA" != "$SHA_BIN" ]; then
+  echo "FAIL: inner hyatlas-go sha mismatch ($INNER_BIN_SHA != $SHA_BIN)" >&2; FAIL=1
+fi
+
+if [ "$FAIL" != "0" ]; then
+  echo "STRUCTURE CHECK FAILED" >&2
   exit 1
 fi
+echo "PASS: structure ok (manifest 4.1.1-5, shares-heal callbacks present, app payload complete)"
 echo "$OUT  $((GOT_SIZE/1024/1024))MB  sha256=$GOT_SHA"

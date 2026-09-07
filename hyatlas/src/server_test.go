@@ -12,7 +12,7 @@ func newTestServer(t *testing.T, model, base string) *Server {
 	t.Helper()
 	dir := t.TempDir()
 	em := NewLocalEmbedder(384)
-	store, err := NewMemoryStore(ctxForTest(), dir, em, filepath.Join(dir, "graph.json"))
+	store, err := NewMemoryStore(ctxForTest(), dir, em, filepath.Join(dir, "graph.json"), 384)
 	if err != nil {
 		t.Skipf("MemoryStore unavailable in test env: %v", err)
 	}

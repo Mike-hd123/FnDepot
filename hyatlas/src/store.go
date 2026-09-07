@@ -172,6 +172,36 @@ type SearchHit struct {
 	Meta    map[string]string
 }
 
+// TopL7Similar returns the best similarity score for goal text within the L7
+// intention collection, scoped to user/agent when provided. Returns
+// (score, found): found=false when the layer is empty, the scope matches
+// nothing, or the query fails — callers treat that as "no duplicate" and
+// write (fail-open, matching the pre-dedup behavior). Used by
+// promoteExtraction to skip near-identical intentions.
+func (s *MemoryStore) TopL7Similar(goal string, userID, agentID string) (float32, bool) {
+	col := s.cols[memory.L7Intention]
+	n := col.Count()
+	if n <= 0 {
+		return 0, false
+	}
+	where := map[string]string{}
+	if userID != "" {
+		where["user_id"] = userID
+	}
+	if agentID != "" {
+		where["agent_id"] = agentID
+	}
+	if len(where) == 0 {
+		where = nil
+	}
+	// chromem requires k <= n; query all L7 docs, top1 is res[0].
+	res, err := col.Query(s.ctx, goal, n, where, nil)
+	if err != nil || len(res) == 0 {
+		return 0, false
+	}
+	return res[0].Similarity, true
+}
+
 // List returns exact-match docs, optionally filtered by layer/user/agent, with pagination.
 func (s *MemoryStore) List(layer memory.Layer, userID, agentID string, limit, offset int) ([]DocIndex, int) {
 	s.mu.RLock()

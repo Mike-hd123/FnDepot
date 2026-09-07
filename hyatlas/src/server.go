@@ -84,6 +84,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// l7DedupThreshold is the minimum top-1 cosine similarity (existing L7 doc vs
+// new goal) at which a write is skipped as a near-duplicate. Empirical value
+// for bge 1024-dim Chinese embeddings: rephrasings of the same intent score
+// ~0.95+, unrelated goals stay well below 0.9.
+const l7DedupThreshold = 0.92
+
 // promoteExtraction writes one LLM extraction result to its 7 layers.
 // sourceID is the L2 raw memory id — used to anchor L5 edges back to their origin.
 func promoteExtraction(store *MemoryStore, ex *Extraction, userID, agentID, sourceID string) {
@@ -127,11 +133,20 @@ func promoteExtraction(store *MemoryStore, ex *Extraction, userID, agentID, sour
 			"context": sc.Context, "ts": now,
 		})
 	}
-	// L7 Intention
+	// L7 Intention — near-duplicate guard: skip writing when the top-1
+	// existing L7 doc for this scope scores above a similarity threshold.
+	// Threshold 0.92 is an empirical value tuned for bge 1024-dim Chinese
+	// embeddings: same intent rephrased lands ~0.95+, unrelated goals well
+	// below 0.9. Fail-open on query errors (write anyway, pre-dedup
+	// behavior). Scope note: L3/L4/L6 deliberately have NO dedup this round.
 	if ex.Intention != nil && strings.TrimSpace(ex.Intention.Goal) != "" {
-		_ = store.Add(memory.L7Intention, newID(), ex.Intention.Goal, map[string]string{
-			"user_id": userID, "agent_id": agentID, "ts": now,
-		})
+		if score, found := store.TopL7Similar(ex.Intention.Goal, userID, agentID); found && score > l7DedupThreshold {
+			log.Printf("promoteExtraction: L7 intention deduped (score=%.4f > %.2f): %q", score, l7DedupThreshold, ex.Intention.Goal)
+		} else {
+			_ = store.Add(memory.L7Intention, newID(), ex.Intention.Goal, map[string]string{
+				"user_id": userID, "agent_id": agentID, "ts": now,
+			})
+		}
 	}
 }
 

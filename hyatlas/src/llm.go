@@ -114,7 +114,7 @@ Rules:
 - summary: synthesize the ARC of this input, not just restate it.
 - knowledge: extract 0-4 entity-relation-entity triples ONLY if meaningful.
 - schemas: extract 0-2 recurring patterns ONLY if this is a repeated/structural case.
-- intention: the immediate goal, or null if none.
+- intention: ONLY standing/ongoing goals, commitments, or preferences that remain relevant beyond this conversation. If the input describes a completed one-off task, a past operation, or transient work (install/deploy/fix/push/reset/debug), output null.
 Return ONLY valid JSON, no prose, no markdown fences.`
 
 	user := "Input: " + text

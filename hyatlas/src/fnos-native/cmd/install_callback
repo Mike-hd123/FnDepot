@@ -32,6 +32,31 @@ mkdir -p "${DATA_DIR}"
 chown -R "${RUN_USER}:${RUN_GRP}" "${DATA_DIR}" 2>/dev/null || true
 echo "data dir ready: ${DATA_DIR} (owner ${RUN_USER})" >> "$LOG"
 
+# 1a) shares 实体化自愈（幂等）：
+# 安装/升级时 fnOS 安装器可能把 /var/apps/hyatlas/shares 重建为实体目录，
+# 导致应用读到的数据是空壳、真库留在 /vol1/@appshare（4.1.1-4 改名包后数据空已发生两次）。
+# 治理：真库(/vol1/@appshare/hyatlas/go-data)存在且 shares 为实体目录 → 清空壳、重建软链 shares -> /vol1/@appshare；
+#       shares 已是软链 → 跳过；全新安装(appshare 无 go-data) → 建 /vol1/@appshare/hyatlas/go-data + 软链。
+SHARES_LINK="/var/apps/hyatlas/shares"
+SHARE_SRC="/vol1/@appshare"
+if [ -L "${SHARES_LINK}" ]; then
+  echo "shares is already a symlink -> $(readlink "${SHARES_LINK}"), skip" >> "$LOG"
+else
+  echo "shares is NOT a symlink (type: $(stat -c %F "${SHARES_LINK}" 2>/dev/null || echo missing)), healing" >> "$LOG"
+  # 实体目录移开留底（不直接 rm：若实体目录内有升级间隙的新写入数据可从 bak 找回），保留最近 2 份
+  if [ -e "${SHARES_LINK}" ] && [ ! -L "${SHARES_LINK}" ]; then
+    BAK="${SHARES_LINK}.entity-bak-$(date +%Y%m%d%H%M%S)"
+    mv "${SHARES_LINK}" "${BAK}" || { echo "FATAL: cannot move entity shares dir aside" >> "$LOG"; exit 1; }
+    echo "moved entity dir aside: ${BAK} (若其中有新写入数据，从该目录找回)" >> "$LOG"
+    ls -1dt "${SHARES_LINK}".entity-bak-* 2>/dev/null | tail -n +3 | xargs -r rm -rf
+  fi
+  mkdir -p "${SHARE_SRC}/hyatlas/go-data"
+  ln -sfn "${SHARE_SRC}" "${SHARES_LINK}" || { echo "FATAL: ln -s shares failed" >> "$LOG"; exit 1; }
+  echo "healed: relinked ${SHARES_LINK} -> ${SHARE_SRC} (data dir ${SHARE_SRC}/hyatlas/go-data)" >> "$LOG"
+  # 自愈后数据属主归还运行用户
+  chown -R "${RUN_USER}:${RUN_GRP}" "${SHARE_SRC}/hyatlas" 2>/dev/null || true
+fi
+
 # 1b) 运行时目录/文件（日志、pid、HOME、TMPDIR）属主归还
 VAR_DIR="${TRIM_PKGVAR:-/vol1/@appdata/hyatlas}"
 chown -R "${RUN_USER}:${RUN_GRP}" "${VAR_DIR}" 2>/dev/null || true
