@@ -1773,6 +1773,75 @@ button {
   background: var(--wx-green, #07c160);
   color: #fff;
 }
+/* 远程页「更多 ⋮」折叠按钮：顶栏右侧，唯一入口（原平铺功能全部收进下拉） */
+.ws-more-wrap {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+}
+.ws-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 40px;
+  height: 40px;
+  justify-content: center;
+  border: none;
+  background: var(--surface);
+  color: var(--wx-green-dark);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 0 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  box-shadow: var(--crease);
+}
+.ws-more:active {
+  transform: scale(0.96);
+}
+.ws-more.on {
+  background: var(--wx-green, #07c160);
+  color: #fff;
+}
+.ws-more-caret {
+  display: inline-flex;
+  color: currentColor;
+  transition: transform 0.18s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.ws-more.on .ws-more-caret {
+  transform: rotate(180deg);
+}
+/* 「更多」下拉：右对齐悬浮层，复用 inst-menu 质感（覆盖其 absolute 定位顶栏场景） */
+.ws-more-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  left: auto;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  min-width: 196px;
+  max-width: 82vw;
+  background: var(--surface);
+  border-radius: var(--r-small);
+  box-shadow: 0 6px 22px rgba(var(--shadow) / 0.26), 0 2px 6px rgba(var(--shadow) / 0.18);
+  animation: inst-menu-in 0.16s ease;
+}
+/* 更多下拉内的开关项高亮（复用 on 语义：绿底白字） */
+.ws-more-menu .inst-menu-items .btn-text.on {
+  background: var(--wx-green, #07c160);
+  color: #fff;
+}
+.ws-more-menu .inst-menu-items .btn-text {
+  padding: 7px 12px;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+}
 .ws-page .content {
   flex: 1;
   min-height: 0;

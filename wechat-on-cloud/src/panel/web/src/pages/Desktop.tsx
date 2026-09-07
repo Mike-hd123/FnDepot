@@ -160,6 +160,14 @@ const CaretIcon = (
   </svg>
 );
 
+const MoreIcon = (
+  <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+    <circle cx="12" cy="5" r="1.7" />
+    <circle cx="12" cy="12" r="1.7" />
+    <circle cx="12" cy="19" r="1.7" />
+  </svg>
+);
+
 export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void }) {
   const { id } = useParams<{ id: string }>();
   const nav = useNavigate();
@@ -254,7 +262,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
   const [starting, setStarting] = useState(false);
   const [control, setControl] = useState<{ free: boolean; mine: boolean; holder: string | null } | null>(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [powerMenuOpen, setPowerMenuOpen] = useState(false); // 远程页「电源」下拉（重启/关机）
+  const [moreOpen, setMoreOpen] = useState(false); // 远程页「更多 ⋮」折叠菜单（全部功能收进下拉）
   const [settingsTab, setSettingsTab] = useState<'bg' | 'font'>('bg');
   const [bgList, setBgList] = useState<string[]>([]);
   const [fontList, setFontList] = useState<string[]>([]);
@@ -266,7 +274,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
   const fontInput = useRef<HTMLInputElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const frameRef = useRef<HTMLIFrameElement>(null);
-  const powerMenuRef = useRef<HTMLDivElement>(null); // 电源下拉点击外部关闭
+  const moreRef = useRef<HTMLDivElement>(null); // 「更多 ⋮」折叠菜单点击外部关闭
   const dragDepth = useRef(0);
   const lastBeat = useRef(0);
   const audioRef = useRef<VncAudio | null>(null);
@@ -292,19 +300,21 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
     setClipText('');
     setImeText('');
     setProbing(true);
-    setPowerMenuOpen(false);
+    setMoreOpen(false);
     recovering.current = false;
   }, [id]);
 
-  // 电源下拉：点击菜单外部时关闭
+  // 「更多 ⋮」折叠菜单：点击菜单外部时关闭（文件/输入/音频/桌面/电源全收在下拉内）
   useEffect(() => {
-    if (!powerMenuOpen) return;
+    if (!moreOpen) return;
     const onDocDown = (e: MouseEvent) => {
-      if (powerMenuRef.current && !powerMenuRef.current.contains(e.target as Node)) setPowerMenuOpen(false);
+      if (moreRef.current && !moreRef.current.contains(e.target as Node)) {
+        setMoreOpen(false);
+      }
     };
     document.addEventListener('mousedown', onDocDown);
     return () => document.removeEventListener('mousedown', onDocDown);
-  }, [powerMenuOpen]);
+  }, [moreOpen]);
 
   // 桌面久未加载出来 → 判为"无响应"，把无限转圈换成可操作的重试/重启，不让用户干等。
   // （实测容器跑久了会 I/O/服务 stall，进程没死、显示在线，但读不出 VNC 文件而永远连接中。）
@@ -953,87 +963,141 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
         </button>
         <span className="ws-title">{title}</span>
         {showVnc && (
-          <>
+          <div className="ws-more-wrap" ref={moreRef}>
             <button
-              className="ws-action"
-              title="文件传输"
-              onClick={() => {
-                setShowFiles((v) => !v);
-                if (!showFiles) refreshFiles();
-              }}
+              className={'ws-more' + (moreOpen ? ' on' : '')}
+              title="更多功能（文件/输入/音频/桌面/电源）"
+              aria-label="更多功能"
+              aria-expanded={moreOpen}
+              onClick={() => setMoreOpen((v) => !v)}
             >
-              文件
+              {MoreIcon}
+              <span className="ws-more-caret">{CaretIcon}</span>
             </button>
-            <button
-              className={'ws-action' + (inputMode === 'seamless' ? ' on' : '')}
-              title={
-                inputMode === 'seamless'
-                  ? '无感输入：直接在应用输入框里打中文（提交后转发，已修复混数字丢字）。点击切回「转发输入条」'
-                  : '转发输入：用底部输入条打中文，最稳。点击切到「无感输入」（直接在应用里打）'
-              }
-              onClick={() => setMode(inputMode === 'seamless' ? 'forward' : 'seamless')}
-            >
-              输入：{inputMode === 'seamless' ? '无感' : '转发'}
-            </button>
-            <button
-              className="ws-action"
-              title="把文本发送到容器剪贴板（局域网 http 下也可用）"
-              onClick={() => setShowClip((v) => !v)}
-            >
-              剪贴板
-            </button>
-            <button
-              className={'ws-action' + (soundOn ? ' on' : '')}
-              title={soundOn ? '声音已开：已连接实例音频。点击关闭（关闭可减少一条到实例的连接，更稳）' : '声音已关：默认不连音频桥（连接更稳）。点此开启以听到实例声音'}
-              onClick={toggleSound}
-            >
-              声音：{soundOn ? '开' : '关'}
-            </button>
-            {soundOn && (
-              <button
-                className={'ws-action' + (micOn ? ' on' : '')}
-                title={
-                  micOn
-                    ? '麦克风已开：占用本机麦克风（AirPods 等可能被切到低音质通话模式）。点击关闭'
-                    : '麦克风已关：不占用麦克风，AirPods 保持高音质输出。需要语音/通话时点此开启'
-                }
-                onClick={toggleMic}
-              >
-                麦克风：{micOn ? '开' : '关'}
-              </button>
-            )}
-            {isAdmin && (
-              <>
-                <button className={'ws-action' + (showSettings ? ' on' : '')} title="桌面设置（壁纸/字体）" onClick={() => { setShowSettings((v) => !v); if (!showSettings) { refreshBgList(); refreshFontList(); } }}>
-                  桌面
-                </button>
-                <div className="inst-menu-wrap" ref={powerMenuRef} style={{ display: 'inline-block' }}>
-                  <button
-                    className={'ws-action' + (powerMenuOpen ? ' on' : '')}
-                    title="电源操作（重启/关机）"
-                    onClick={() => setPowerMenuOpen((v) => !v)}
-                  >
-                    电源 <span className="inst-menu-caret" style={{ display: 'inline-flex', verticalAlign: 'middle' }}>{CaretIcon}</span>
-                  </button>
-                  {powerMenuOpen && (
-                    <div className="inst-menu" style={{ right: 0, left: 'auto', minWidth: '150px' }} onClick={() => setPowerMenuOpen(false)}>
-                      <div className="inst-menu-group">
-                        <div className="inst-menu-label">电源</div>
-                        <div className="inst-menu-items">
-                          <button className="btn-text" onClick={restartInstance} title="重启实例（修复卡死/最小化丢失，数据保留）">
-                            重启
-                          </button>
-                          <button className="btn-text danger" onClick={stopInstance} title="关机=停止容器（数据保留，可随时再启动）">
-                            关机
-                          </button>
-                        </div>
+            {moreOpen && (
+              <div className="ws-more-menu" onClick={() => setMoreOpen(false)}>
+                <div className="inst-menu-group">
+                  <div className="inst-menu-label">输入 / 传输</div>
+                  <div className="inst-menu-items">
+                    <button
+                      className={'btn-text' + (showFiles ? ' on' : '')}
+                      title="文件传输"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowFiles((v) => !v);
+                        if (!showFiles) refreshFiles();
+                      }}
+                    >
+                      文件
+                    </button>
+                    <button
+                      className={'btn-text' + (inputMode === 'seamless' ? ' on' : '')}
+                      title={
+                        inputMode === 'seamless'
+                          ? '无感输入：直接在应用输入框里打中文（提交后转发，已修复混数字丢字）。点击切回「转发输入条」'
+                          : '转发输入：用底部输入条打中文，最稳。点击切到「无感输入」（直接在应用里打）'
+                      }
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setMode(inputMode === 'seamless' ? 'forward' : 'seamless');
+                      }}
+                    >
+                      输入：{inputMode === 'seamless' ? '无感' : '转发'}
+                    </button>
+                    <button
+                      className={'btn-text' + (showClip ? ' on' : '')}
+                      title="把文本发送到容器剪贴板（局域网 http 下也可用）"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowClip((v) => !v);
+                      }}
+                    >
+                      剪贴板
+                    </button>
+                  </div>
+                </div>
+                <div className="inst-menu-group">
+                  <div className="inst-menu-label">音频</div>
+                  <div className="inst-menu-items">
+                    <button
+                      className={'btn-text' + (soundOn ? ' on' : '')}
+                      title={soundOn ? '声音已开：已连接实例音频。点击关闭（关闭可减少一条到实例的连接，更稳）' : '声音已关：默认不连音频桥（连接更稳）。点此开启以听到实例声音'}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        toggleSound();
+                      }}
+                    >
+                      声音：{soundOn ? '开' : '关'}
+                    </button>
+                    {soundOn && (
+                      <button
+                        className={'btn-text' + (micOn ? ' on' : '')}
+                        title={
+                          micOn
+                            ? '麦克风已开：占用本机麦克风（AirPods 等可能被切到低音质通话模式）。点击关闭'
+                            : '麦克风已关：不占用麦克风，AirPods 保持高音质输出。需要语音/通话时点此开启'
+                        }
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          toggleMic();
+                        }}
+                      >
+                        麦克风：{micOn ? '开' : '关'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+                {isAdmin && (
+                  <>
+                    <div className="inst-menu-group">
+                      <div className="inst-menu-label">桌面</div>
+                      <div className="inst-menu-items">
+                        <button
+                          className={'btn-text' + (showSettings ? ' on' : '')}
+                          title="桌面设置（壁纸/字体）"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setShowSettings((v) => !v);
+                            if (!showSettings) {
+                              refreshBgList();
+                              refreshFontList();
+                            }
+                          }}
+                        >
+                          桌面设置
+                        </button>
                       </div>
                     </div>
-                  )}
-                </div>
-              </>
+                    <div className="inst-menu-group inst-menu-danger">
+                      <div className="inst-menu-label">电源</div>
+                      <div className="inst-menu-items">
+                        <button
+                          className="btn-text"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            restartInstance();
+                          }}
+                          title="重启实例（修复卡死/最小化丢失，数据保留）"
+                        >
+                          重启
+                        </button>
+                        <button
+                          className="btn-text danger"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            stopInstance();
+                          }}
+                          title="关机=停止容器（数据保留，可随时再启动）"
+                        >
+                          关机
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
             )}
-          </>
+          </div>
         )}
       </header>
 

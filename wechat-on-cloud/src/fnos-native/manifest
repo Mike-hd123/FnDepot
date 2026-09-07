@@ -1,5 +1,5 @@
 appname                    = wechat-on-cloud
-version                    = 1.4.9
+version                    = 1.4.10
 display_name               = 云微
 desc                       = WeChatOnCloud 官方 Linux 微信面板（原生部署）
 platform                   = all
@@ -17,5 +17,5 @@ desktop_applaunchname      = wechat-on-cloud.panel
 disable_authorization_path = false
 ; 1.5.0 纯 ipvlan 单网卡 + 数据卷 bind 主机目录
 ; 1.4.9 跟随上游版本号；本地改动含创建实例可选数据目录 + 多实例IP自增
-changelog                  = 1.4.9 跟随上游；创建实例可选数据目录 + 多实例IP自增
-checksum                    = 6e39a6544e23546be4eba8a2c0bff415
+changelog                  = 1.4.10 远程桌面顶栏按钮折叠为「更多⋮」下拉菜单(输入传输/音频/桌面/电源四组)
+checksum                    = feac2c7847d927cfb3c4e8cc550b3d79
