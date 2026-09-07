@@ -1,7 +1,7 @@
 {
     ".url": {
         "ezbookkeeping.Application": {
-            "title": "EZBookkeeping",
+            "title": "记账",
             "icon": "images/icon-{0}.png",
             "type": "iframe",
             "protocol": "",

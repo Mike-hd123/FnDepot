@@ -1,5 +1,5 @@
 appname               = ezbookkeeping
-version               = 1.6.1-12
+version               = 1.6.1-14
 display_name          = 记账
 desc                  = 轻量自托管个人记账：多账本/报表洞察/账单批量导入(Excel·微信·支付宝·京东)/原生 MCP 与 API 接口。v12 回退 v11 index 纯跳转页(恢复上游原版 SPA 入口)；sidecar 加 desktop/mobile.html 静态兜底(内置服务器场景 UA 跳转不再 100001)；桌面/手机图标改 socket 型(/app/ezbookkeeping，经 sidecar 剥前缀反代+gzip)；install_callback 幂等兜底 enable_gzip=true。
 platform              = x86
