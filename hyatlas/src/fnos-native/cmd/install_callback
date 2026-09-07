@@ -1,8 +1,10 @@
 #!/bin/bash
+# 安装后置（v4.1.1-3 降权版）：以 root 跑（privilege run-as:root + username 声明）
+# 职责：运行用户兜底 + 数据/运行时/模型属主与可读性修复（清理 root 时代遗留）
 set -u
 LOG="${TRIM_PKGVAR:-/vol1/@appdata/hyatlas}/install.log"
 mkdir -p "${TRIM_PKGVAR:-/vol1/@appdata/hyatlas}"
-echo "===== install_callback $(date) ===== > $LOG"
+echo "===== install_callback $(date) =====" > "$LOG"
 
 APP_DIR="${TRIM_APPDEST:-/vol1/@appcenter/hyatlas}"
 APP_SHARE="${TRIM_SHARE_DIR:-}"
@@ -14,10 +16,28 @@ DATA_DIR="${SHARE_ROOT}/go-data"
 RUN_USER="${TRIM_USERNAME:-hy-memory}"
 RUN_GROUP="${TRIM_GROUPNAME:-hy-memory}"
 
-# 1) 数据目录 + 属主
+# 0) 运行用户兜底（正常路径由 fnOS 安装器按 privilege username 建户并注入 TRIM_USERNAME）
+if ! id "$RUN_USER" >/dev/null 2>&1; then
+  getent group "$RUN_GROUP" >/dev/null 2>&1 || groupadd "$RUN_GROUP" 2>/dev/null || true
+  useradd --system --no-create-home -g "$RUN_GROUP" -s /usr/sbin/nologin "$RUN_USER" 2>/dev/null || true
+fi
+if ! id "$RUN_USER" >/dev/null 2>&1; then
+  echo "FATAL: run user ${RUN_USER} missing and auto-create failed" >> "$LOG"
+  exit 1
+fi
+RUN_GRP="$(id -gn "$RUN_USER" 2>/dev/null || echo "$RUN_GROUP")"
+
+# 1) 数据目录 + 属主（历史 root 属主文件一并归还，防降权后写失败）
 mkdir -p "${DATA_DIR}"
-chown -R "${RUN_USER}:${RUN_GROUP}" "${DATA_DIR}" 2>/dev/null || true
-echo "data dir ready: ${DATA_DIR}" >> "$LOG"
+chown -R "${RUN_USER}:${RUN_GRP}" "${DATA_DIR}" 2>/dev/null || true
+echo "data dir ready: ${DATA_DIR} (owner ${RUN_USER})" >> "$LOG"
+
+# 1b) 运行时目录/文件（日志、pid、HOME、TMPDIR）属主归还
+VAR_DIR="${TRIM_PKGVAR:-/vol1/@appdata/hyatlas}"
+chown -R "${RUN_USER}:${RUN_GRP}" "${VAR_DIR}" 2>/dev/null || true
+mkdir -p "${VAR_DIR}/home" "${VAR_DIR}/tmp" 2>/dev/null || true
+chown "${RUN_USER}:${RUN_GRP}" "${VAR_DIR}/home" "${VAR_DIR}/tmp" 2>/dev/null || true
+chmod 700 "${VAR_DIR}/tmp" 2>/dev/null || true
 
 # 2) 二进制可执行
 chmod 755 "${APP_DIR}/hyatlas-go" 2>/dev/null || true
@@ -32,5 +52,15 @@ else
   echo "WARN: gateway_proxy.py missing in APPDEST" >> "$LOG"
 fi
 
-echo "===== done =====" >> "$LOG"
+# 4) B2: 内置模型目录可读 (ORT int8 bge-large-zh, 由运行用户加载)
+if [ -d "${APP_DIR}/models" ]; then
+  chmod 755 "${APP_DIR}/models" 2>/dev/null || true
+  chmod 644 "${APP_DIR}/models/model_int8.onnx" "${APP_DIR}/models/tokenizer.json" 2>/dev/null || true
+  chmod 755 "${APP_DIR}/models/libonnxruntime.so" 2>/dev/null || true
+  echo "embedded models ready: ${APP_DIR}/models" >> "$LOG"
+else
+  echo "WARN: models/ missing in APPDEST (B2 内置引擎将无法加载)" >> "$LOG"
+fi
+
+echo "===== done (run-as ${RUN_USER}) =====" >> "$LOG"
 exit 0

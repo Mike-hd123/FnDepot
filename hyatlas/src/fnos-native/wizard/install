@@ -1,11 +1,11 @@
 [
   {
-    "stepTitle": "HyAtlas v4 (Go) 安装说明",
+    "stepTitle": "HyAtlas v4.1.1-3 安装说明",
     "items": [
       {
         "type": "tips",
         "label": "",
-        "helpText": "HyAtlas v4.1.1 — Go 重写版\nupstream: tuancookiez-hub/HyAtlas-Memory (Apache-2.0)\n\n• 本包为打包验证版：现役 v3.5.0 (Python) 服务不会被停止或切换。\n• v4 监听 127.0.0.1:19528，桌面图标经 fnOS 网关 /app/hyatlas 打开面板。\n• 数据目录独立（@appdata/hyatlas/go-data），与 v3 数据互不覆盖。\n• LLM 走本机 Octopus (127.0.0.1:8081, 模型 flash, key 自动从 v3 配置迁移)；\n  Embedding 走本机 18080 (bge-large-zh)。\n• 切换 Hermes 调用端到 v4 需手动改 base_url（本包不自动切换）。"
+        "helpText": "HyAtlas v4.1.1-3 (Go)\nupstream: tuancookiez-hub/HyAtlas-Memory (Apache-2.0)\n\n• 本版起服务以专用用户 hy-memory 运行（不再 root）；安装时会自动修复数据目录属主。\n• v4 监听 127.0.0.1:19528，桌面图标经 fnOS 网关 /app/hyatlas 打开面板。\n• Embedding 走内置 ONNX Runtime int8 (bge-large-zh 1024d)，无外部依赖。\n• LLM 走本机 Octopus (127.0.0.1:8081, 模型 flash, key 自动从 v3 配置读取)。\n• 数据目录 /vol1/@appshare/hyatlas/go-data 独立持久；升级不清数据。"
       }
     ]
   }

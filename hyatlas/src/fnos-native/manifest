@@ -1,7 +1,7 @@
 appname                    = hyatlas
-version                    = 4.1.1-2
-display_name               = HyAtlas(混元记忆)
-desc                       = HyAtlas v4.1.1-2：纯 Go 单二进制 + 内置 ONNX Runtime int8 向量模型(bge-large-zh 1024d)，移除对 llama.cpp 18080 的依赖。dashboard 汉化 + 移动端响应式布局。embedding 走本机 ORT CPU EP，常驻内存~450MB。fnOS 网关 socket 入口 /app/hyatlas。
+version                    = 4.1.1-4
+display_name               = 混元记忆
+desc                       = 混元记忆 —— 7 层记忆服务：纯 Go 单二进制 + 内置 ONNX Runtime int8 向量模型(bge-large-zh 1024d)，面板汉化 + 移动端响应式布局。服务进程以专用用户 hy-memory 降权运行(不再 root)；权限/属主自愈，修复系统设置/评分页与图谱页(L5)数据展示。
 platform                   = x86
 source                     = thirdparty
 maintainer                 = tuancookiez-hub
@@ -16,5 +16,4 @@ service_port               = 19528
 desktop_uidir              = ui
 desktop_applaunchname      = hyatlas.panel
 disable_authorization_path = false
-changelog                  = 4.1.1-2：①内置 ONNX Runtime int8 向量引擎(bge-large-zh 1024d), 替换外部 llama.cpp 18080 依赖; ② dashboard 全量汉化; ③ 移动端响应式布局(汉堡菜单+抽屉侧边栏); ④ 性能: add p50 22ms, search p50 ~20ms, cos vs llama.cpp q8_0 min=0.979 mean=0.983.
-checksum                   = PLACEHOLDER_CHECKSUM
+changelog                  = 4.1.1-4：应用改名「混元记忆」(display_name/ui title/安装向导)；4.1.1-3：①服务进程降权至专用用户 hy-memory 运行(不再 root)，数据/日志属主自愈；②修复系统设置/评分页与图谱页(L5)数据展示；③保留 B2 内置 ORT int8 向量引擎与移动端响应式布局。

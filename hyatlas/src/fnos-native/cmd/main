@@ -1,6 +1,8 @@
 #!/bin/bash
-# cmd/main — HyAtlas v4 (Go) 进程管理
+# cmd/main — HyAtlas v4 (Go) 进程管理（v4.1.1-3 降权版）
 # 应用监听 TCP 19528 (loopback)；gateway sidecar 监听 APPDEST/app.sock 转 TCP（手机端 /app/hyatlas 路由）
+# v4.1.1-3: 进程以专用用户运行（privilege username=hy-memory；installer 注入 TRIM_USERNAME）。
+#           root 调用时经 setpriv 降权拉起；以运行用户身份调用时直跑。数据/日志/pid 均落在该用户可写路径。
 set -u
 
 APP_DIR="${TRIM_APPDEST:-/vol1/@appcenter/hyatlas}"
@@ -16,7 +18,50 @@ LOG_FILE="${VAR_DIR}/panel.log"
 PID_FILE="${VAR_DIR}/panel.pid"
 GW_PID_FILE="${VAR_DIR}/gateway.pid"
 
-mkdir -p "${DATA_DIR}" "${VAR_DIR}"
+# ── 运行用户（install_callback 兜底保证存在；正常路径由 installer 注入 TRIM_USERNAME）──
+RUN_USER="${TRIM_USERNAME:-hy-memory}"
+
+# ── HOME/TMPDIR: ORT 推理缓存写 $HOME/.cache，必须落 VAR_DIR（不能写 /root）──
+export HOME="${VAR_DIR}/home"
+export TMPDIR="${VAR_DIR}/tmp"
+mkdir -p "$HOME" "$TMPDIR" 2>/dev/null || true
+chmod 700 "$TMPDIR" 2>/dev/null || true
+
+# ── 可写性自愈: 历史以 root 跑时遗留的 root 属主日志/pid 会卡住降权进程。
+# 以「运行用户」身份探测可写性（root 万能写，root 自测无意义），不可写即删除重建 ──
+for f in "$LOG_FILE" "${VAR_DIR}/gateway.log" "$PID_FILE" "$GW_PID_FILE"; do
+  [ -e "$f" ] || continue
+  if [ "$(id -u)" = "0" ] && [ -n "${RUN_UID:-}" ] && [ -n "${RUN_GID:-}" ]; then
+    if ! setpriv --reuid="$RUN_UID" --regid="$RUN_GID" --init-groups test -w "$f" 2>/dev/null; then
+      rm -f "$f" 2>/dev/null || true
+    fi
+  else
+    [ -w "$f" ] || rm -f "$f" 2>/dev/null || true
+  fi
+done
+
+# ── 日志文件属主归一: root 身份下若日志不存在,重定向会以 root 建文件 → 下轮降权写不进。预先建好并归运行用户 ──
+for f in "$LOG_FILE" "${VAR_DIR}/gateway.log"; do
+  [ -e "$f" ] || : > "$f" 2>/dev/null || true
+  [ -n "${RUN_UID:-}" ] && [ -n "${RUN_GID:-}" ] && chown "${RUN_UID}:${RUN_GID}" "$f" 2>/dev/null || true
+done
+
+mkdir -p "${DATA_DIR}" "${VAR_DIR}" 2>/dev/null || true
+
+RUN_UID="$(id -u "$RUN_USER" 2>/dev/null || true)"
+RUN_GID="$(id -g "$RUN_USER" 2>/dev/null || true)"
+
+# as_user: 用 exec 保证 & 后台子 shell 直接变成目标进程（PID_FILE 记录的就是服务本身）
+as_user() {
+  if [ -n "${RUN_UID:-}" ] && [ "$(id -u)" = "$RUN_UID" ]; then
+    exec nohup "$@"
+  elif [ "$(id -u)" = "0" ] && [ -n "${RUN_UID:-}" ] && [ -n "${RUN_GID:-}" ]; then
+    exec nohup setpriv --reuid="$RUN_UID" --regid="$RUN_GID" --init-groups --inh-caps=-all "$@"
+  else
+    echo "WARN: cannot drop privileges to ${RUN_USER} (uid=${RUN_UID:-} gid=${RUN_GID:-}), starting as $(id -un)" >&2
+    exec nohup "$@"
+  fi
+}
 
 is_running() {
   if [ -f "$PID_FILE" ]; then
@@ -59,12 +104,14 @@ stop_gw() {
 case "${1:-}" in
   start)
     is_running && gw_running && exit 0
-    # ── 配置预设: embedding 走本机 18080 bge-large-zh; LLM 走本机 Octopus 8081 (key 从 v3 配置迁移) ──
+    # ── 配置预设: embedding 走内置 ORT int8 bge-large-zh (B2, 无 18080 依赖); LLM 走本机 Octopus 8081 ──
     export HYATLAS_GO_HOST="127.0.0.1"
     export HYATLAS_GO_PORT="19528"
     export HYATLAS_GO_DATA="${DATA_DIR}"
-    export HYATLAS_EMBED_BASE="http://127.0.0.1:18080/v1"
+    # B2: 内置向量引擎 — HYATLAS_EMBED_BASE=bge 触发进程内 ORT int8 推理
+    export HYATLAS_EMBED_BASE="bge"
     export HYATLAS_EMBED_MODEL="bge-large-zh"
+    export HYATLAS_MODEL_DIR="${APP_DIR}/models"
     LLM_BASE="http://127.0.0.1:8081/v1"
     LLM_KEY=""
     # 优先迁移现役 v3 的 llm.api_key；无则尝试 Octopus 通道1 key
@@ -83,7 +130,7 @@ case "${1:-}" in
     export HYATLAS_LLM_KEY="${LLM_KEY:-}"
 
     if ! is_running; then
-      nohup "${APP_DIR}/hyatlas-go" >> "$LOG_FILE" 2>&1 &
+      as_user "${APP_DIR}/hyatlas-go" >> "$LOG_FILE" 2>&1 &
       echo $! > "$PID_FILE"
       sleep 2
       if ! is_running; then
@@ -98,8 +145,7 @@ case "${1:-}" in
       GATEWAY_SOCK_PATH="${APP_DIR}/app.sock" \
       GATEWAY_BACKEND_PORT="19528" \
       GATEWAY_PID_FILE="$GW_PID_FILE" \
-      nohup python3 "${APP_DIR}/gateway/gateway_proxy.py" >> "${VAR_DIR}/gateway.log" 2>&1 &
-      echo $! > "$GW_PID_FILE"
+        as_user python3 "${APP_DIR}/gateway/gateway_proxy.py" >> "${VAR_DIR}/gateway.log" 2>&1 &
       sleep 1
       if ! gw_running || [ ! -S "${APP_DIR}/app.sock" ]; then
         echo "gateway sidecar start failed" >&2
@@ -109,7 +155,7 @@ case "${1:-}" in
       fi
     fi
 
-    echo "HyAtlas started on port 19528 (gateway socket: ${APP_DIR}/app.sock, data: ${DATA_DIR}, llm: ${LLM_BASE})"
+    echo "HyAtlas started on port 19528 (user: ${RUN_USER}, gateway socket: ${APP_DIR}/app.sock, data: ${DATA_DIR}, llm: ${LLM_BASE})"
     ;;
   stop)
     stop_gw
