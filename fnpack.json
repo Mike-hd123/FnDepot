@@ -8,7 +8,7 @@
   },
   "apps": {
     "wechat-on-cloud": {
-      "display_name": "云微(飞牛云微信)",
+      "display_name": "云微",
       "desc": "NAS 原生微信面板：Node.js 面板 + dockerode 管理微信实例容器，ipvlan 单网卡直连局域网，数据落主机目录，移动端触屏优化。上游项目：Gloridust/WechatOnCloud。",
       "platform": [
         "all"
@@ -41,7 +41,7 @@
       }
     },
     "hyatlas": {
-      "display_name": "HyAtlas(混元记忆)",
+      "display_name": "混元记忆",
       "desc": "混元记忆系统：AI 长期记忆与知识库。v4 纯 Go 单二进制，内置 ONNX Runtime int8 向量引擎(bge-large-zh 1024d)，移除 llama.cpp 18080 依赖；dashboard 全量汉化 + 移动端响应式；chromem-go 存储，fnOS 网关 socket 入口 /app/hyatlas，端口 19528。上游项目：tuancookiez-hub/HyAtlas-Memory。",
       "platform": [
         "x86"
@@ -94,7 +94,7 @@
       }
     },
     "octopus": {
-      "display_name": "Octopus",
+      "display_name": "Octopus 网关",
       "desc": "LLM API 聚合网关：Go 单二进制 + 内嵌前端 + SQLite 存储，多渠道/多模型管理，支持单渠道多 Key，原生宿主机运行，端口 8081。上游项目：bestruirui/octopus。",
       "platform": [
         "x86"
@@ -168,7 +168,7 @@
       }
     },
     "vikunja": {
-      "display_name": "待办 (Vikunja)",
+      "display_name": "待办",
       "desc": "自托管待办管理面板：Go 单二进制静态链接 + SQLite，中文 UI，CalDAV，API token 全自动读写，Hermes 提醒引擎。上游：go-vikunja/vikunja。",
       "platform": [
         "x86"
