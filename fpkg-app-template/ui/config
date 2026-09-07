@@ -1,0 +1,13 @@
+{
+  ".url": {
+    "<appname>.panel": {
+      "title": "<显示名>",
+      "icon": "images/icon-{0}.png",
+      "type": "iframe",
+      "protocol": "",
+      "port": "<PORT>",
+      "url": "/",
+      "allUsers": true
+    }
+  }
+}

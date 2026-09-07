@@ -1,0 +1,8 @@
+#!/bin/bash
+# uninstall_callback — 卸载后清理。
+# **systemd 应用必须清单元**（残留旧 unit 与新 app_id 冲突）：
+#   systemctl disable <appname>.service && rm -f /etc/systemd/system/<appname>.service && systemctl daemon-reload
+# 非 systemd 应用（PID 文件管理）：杀残留进程即可；空 exit 0 也可。
+# 注意：appcenter 卸载只删 DB 记录+应用目录，docker 容器/卷/网络不删 → Docker 应用要在此手动清，否则重装 10500。
+set -u
+exit 0

@@ -1,0 +1,3 @@
+#!/bin/bash
+# config_callback — 配置修改后。**缺此文件 → 10111**。
+exit 0

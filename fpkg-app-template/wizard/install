@@ -1,0 +1,12 @@
+[
+  {
+    "stepTitle": "<显示名> 安装说明",
+    "items": [
+      {
+        "type": "tips",
+        "label": "",
+        "helpText": "<显示名> <版本>\nupstream: <org>/<repo>\n\n• 端口 <PORT>，桌面图标经 fnOS 网关打开。\n• 数据目录独立持久，升级/重装不清数据。\n• <其它安装须知>"
+      }
+    ]
+  }
+]
