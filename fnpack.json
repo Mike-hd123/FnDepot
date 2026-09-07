@@ -147,7 +147,7 @@
     },
     "ezbookkeeping": {
       "display_name": "记账",
-      "desc": "EZBookkeeping 家庭记账：本地优先、SQLite 存储，支持多账本/预算/报表/账单导入(微信/支付宝/信用卡)，移动端触屏优化。上游项目：mengkun/ezBookkeeping。",
+      "desc": "EZBookkeeping 家庭记账：本地优先、SQLite 存储，支持多账本/预算/报表/账单导入(微信/支付宝/信用卡)，移动端触屏优化。上游项目：mayswind/ezbookkeeping。",
       "platform": [
         "x86"
       ],
