@@ -25,6 +25,7 @@ type Server struct {
 	lastExtractErr string
 	dataDir        string
 	embedDims      int
+	retries        *retryWorker
 }
 
 type Status struct {
@@ -90,6 +91,12 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 // ~0.95+, unrelated goals stay well below 0.9.
 const l7DedupThreshold = 0.92
 
+// extractMaxChars caps the text fed to the LLM. The gateway/model combo behind
+// "default" can take 80-90s+ on very long prompts; past ~2 minutes context
+// deadline the call dies and, pre-2026-09-08, the item was stranded forever
+// (no retry queue). Hard-cap instead of burning the whole timeout budget.
+const extractMaxChars = 30000
+
 // promoteExtraction writes one LLM extraction result to its 7 layers.
 // sourceID is the L2 raw memory id — used to anchor L5 edges back to their origin.
 func promoteExtraction(store *MemoryStore, ex *Extraction, userID, agentID, sourceID string) {
@@ -150,6 +157,39 @@ func promoteExtraction(store *MemoryStore, ex *Extraction, userID, agentID, sour
 	}
 }
 
+// extractItem runs one LLM extraction for an L2 doc with bounded retries and
+// backoff, promotes the result, and marks it extracted. Returns true on
+// success. Shared by handleAdd's async goroutine, the retry queue, and
+// handleReprocess so all three paths get identical semantics (retry,
+// truncation cap, SetExtracted on success).
+func (s *Server) extractItem(doc DocIndex) bool {
+	if s.llm == nil {
+		return false
+	}
+	content := doc.Content
+	if len(content) > extractMaxChars {
+		content = content[:extractMaxChars]
+	}
+	for attempt := 1; attempt <= 3; attempt++ {
+		if attempt > 1 {
+			time.Sleep(time.Duration(attempt) * 10 * time.Second)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+		ex, err := s.llm.Complete(ctx, content)
+		cancel()
+		if err != nil {
+			s.lastExtractErr = err.Error()
+			log.Printf("extract %s attempt %d/3 failed: %v", doc.ID, attempt, err)
+			continue
+		}
+		promoteExtraction(s.store, ex, doc.UserID, doc.AgentID, doc.ID)
+		_ = s.store.SetExtracted(doc.ID, true)
+		s.lastExtractErr = ""
+		return true
+	}
+	return false
+}
+
 func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Text    string            `json:"text"`
@@ -197,19 +237,13 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 	agentID := body.AgentID
 	userID := body.UserID
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
-		defer cancel()
-		if s.llm == nil {
+		if s.extractItem(DocIndex{ID: id, Content: text, UserID: userID, AgentID: agentID}) {
+			log.Printf("add %s extracted inline", id)
 			return
 		}
-		ex, err := s.llm.Complete(ctx, text)
-		if err != nil {
-			s.lastExtractErr = err.Error()
-			return
-		}
-		promoteExtraction(s.store, ex, userID, agentID, id)
-		_ = s.store.SetExtracted(id, true)
-		s.lastExtractErr = ""
+		// Inline extraction failed (transient gateway stall / timeout). Queue a
+		// bounded backoff retry instead of stranding the item forever.
+		s.retries.Enqueue(id)
 	}()
 
 	jsonResponse(w, 200, resp)
@@ -385,19 +419,28 @@ func (s *Server) handleDigest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleReprocess(w http.ResponseWriter, r *http.Request) {
-	raw, _ := s.store.List(memory.L2Raw, "", "", 200, 0)
+	// Drain ALL pending raw items, not just the newest 200: the backlog from
+	// the 09-06 migration sat at offset>200 and was unreachable via this
+	// endpoint no matter how often it was called. Page through the whole
+	// layer and retry every unextracted item (bounded loop, ~200 per reprocess
+	// call keeps a single request from running for hours).
+	const batch = 200
 	reprocessed := 0
-	for _, it := range raw {
-		if it.Extracted {
-			continue
+	for offset := 0; ; offset += batch {
+		raw, total := s.store.List(memory.L2Raw, "", "", batch, offset)
+		if len(raw) == 0 {
+			break
 		}
-		if s.llm != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
-			if ex, err := s.llm.Complete(ctx, it.Content); err == nil {
-				promoteExtraction(s.store, ex, it.UserID, it.AgentID, it.ID)
+		for _, it := range raw {
+			if it.Extracted {
+				continue
+			}
+			if s.extractItem(it) {
 				reprocessed++
 			}
-			cancel()
+		}
+		if offset+batch >= total {
+			break
 		}
 	}
 	jsonResponse(w, 200, map[string]any{"reprocessed": reprocessed})
@@ -748,6 +791,8 @@ func main() {
 	}
 	llm := NewLLMClient(llmBase, llmKey, llmModel)
 	srv := &Server{store: store, llm: llm, llmModel: llmModel, llmBase: llmBase, start: time.Now(), dataDir: dir, embedDims: embedDims}
+	srv.retries = newRetryWorker()
+	go srv.retries.Run(srv)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", srv.handleHealthz)

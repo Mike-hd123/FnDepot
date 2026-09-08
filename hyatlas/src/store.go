@@ -272,6 +272,14 @@ func (s *MemoryStore) Delete(ids []string, layer memory.Layer, userID, agentID s
 	return deleted, s.persistIndexLocked()
 }
 
+// GetDoc returns one document from the exact index.
+func (s *MemoryStore) GetDoc(id string) (DocIndex, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	d, ok := s.index[id]
+	return d, ok
+}
+
 // LayerCounts returns the number of docs per layer (exact).
 func (s *MemoryStore) LayerCounts() map[string]int {
 	s.mu.RLock()
