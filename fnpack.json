@@ -230,6 +230,17 @@
               "size": 45885849
             }
           }
+        },
+        "2.6.0-14": {
+          "changelog": "v14 修复升级路径 publicurl 仍写死内网IP致手机走域名/外网进不去：v12/v13 时代 install_callback 生成 service.publicurl=\"http://192.168.5.2:3456\"，前端 window.API_URL 被写死内网地址，手机走域名/外网时 JS 仍请求 192.168.5.2:3456 → 进不去/列表空。v14 双改：(1) install_callback 新装默认 publicurl:\"\"（空=按 Host 生成相对 /api/v1，同源自适应桌面直连与手机域名两种入口）；(2) upgrade_callback 新增已存在 config.yml 的安全复位——仅当 publicurl 非空才动（空=已目标态，跳过零扰动），先 cp 备份 .bak_日期，Python 正则只改 service 段顶层 publicurl 一行保留 YAML 格式。APPDATA 从 TRIM_PKGVAR/TRIM_APPDEST 反推空间前缀不 hardcode 卷号，随 -v N 自适应。桌面直连 200、服务 active、数据零变更（tasks=30 users=1 projects=3）验收通过。app.tgz 字节零改动，仅 cmd/upgrade_callback + manifest version/changelog。",
+          "updated_at": "2026-09-09T18:10:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/vikunja/vikunja-2.6.0-14-x86.fpk",
+              "sha256": "5f17fde34b8de0a946c8300d1168e28c62bf9ca59ca913a6bef0b4830b7c7c7e",
+              "size": 45887077
+            }
+          }
         }
       }
     }

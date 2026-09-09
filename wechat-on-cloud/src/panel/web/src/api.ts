@@ -181,6 +181,11 @@ export const api = {
     req(`/api/admin/orphan-volumes/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   listOrphanContainers: () =>
     req<{ containers: { id: string; name: string; status: string; volumeName?: string }[] }>('/api/admin/orphan-containers'),
+  // 飞牛共享授权目录（应用开放 API）：授权过的目录作为实例数据父目录候选。
+  listFnosSharedFolders: () =>
+    req<{ available: boolean; folders: string[]; reason?: string }>('/api/admin/fnos-shared-folders'),
+  deleteFnosSharedFolder: (path: string) =>
+    req<{ ok: boolean }>(`/api/admin/fnos-shared-folders?path=${encodeURIComponent(path)}`, { method: 'DELETE' }),
   deleteOrphanContainer: (idOrName: string) =>
     req(`/api/admin/orphan-containers/${encodeURIComponent(idOrName)}`, { method: 'DELETE' }),
   setInstanceIcon: (id: string, icon: string | null) =>

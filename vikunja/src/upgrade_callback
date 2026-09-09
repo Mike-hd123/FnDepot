@@ -1,7 +1,54 @@
 #!/bin/bash
-# 升级后 hook: 重启服务 + v13 桌面入口切直连端口模式
+# 升级后 hook: 重启服务 + v13 桌面入口切直连端口模式 + v14 config.yml publicurl 复位
 set -e
 systemctl restart vikunja 2>/dev/null || true
+
+# ── v14：把已存在 config.yml 的 service.publicurl 复位为空 ──
+# 背景：v12/v13 时代的 install_callback 会生成 hardcode 内网 IP 的
+#   service.publicurl: "http://192.168.5.2:3456"  → 前端 window.API_URL 被写死成
+#   内网地址，手机走域名/外网访问时 JS 拼命请求 192.168.5.2:3456 → 进不去（列表空）。
+#   v14 起 install_callback 已默认 publicurl:""（按 Host 生成相对 /api/v1，同源自适应）。
+# 升级路径的用户 config.yml 里那个写死值还在 → 这里安全复位：
+#   - 仅当 publicurl 非空才动（空 = 已是目标态，跳过，零扰动）
+#   - 先 cp 备份 .bak_日期（用户规则：改配置前先备份）
+#   - 只改 service 段顶层的 publicurl 行，不碰其它配置
+APPDATA="${TRIM_PKGVAR:-}"
+if [ -z "${APPDATA}" ] && [ -n "${TRIM_APPDEST:-}" ]; then
+  APP_VOL="$(printf '%s' "${TRIM_APPDEST}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
+  [ -n "${APP_VOL}" ] && APPDATA="${APP_VOL}/@appdata/vikunja"
+fi
+[ -z "${APPDATA}" ] && APPDATA="/vol2/@appdata/vikunja"
+CFG="${APPDATA}/config.yml"
+if [ -f "${CFG}" ]; then
+  # v14: 用 Python 一次完成「探测+备份+改写」——避开 Bash 嵌套引号陷阱
+  # 逻辑：读取 publicurl 当前值 → 非空则 cp 备份 → 仅改写 publicurl 行（保留 YAML 格式）→ 写回
+  python3 - "${CFG}" <<'PY'
+import sys, os, re, shutil, datetime
+p = sys.argv[1]
+bak_ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+bak = p + '.bak_' + bak_ts
+s = open(p, encoding='utf-8').read()
+# 提取当前 publicurl 值（仅 service 段顶层）
+m = re.search(r'^  publicurl:\s*(.+)$', s, re.M)
+if not m:
+    print('[v14][upgrade] publicurl key not found in %s — skip' % p)
+    sys.exit(0)
+raw = m.group(1).strip()
+# 去引号判空：'' "http://..." 等
+cur = raw.strip("'\"")
+print('[v14][upgrade] current publicurl=%r (raw=%r)' % (cur, raw))
+if cur:
+    # 非空：备份 + 改写
+    shutil.copy2(p, bak)
+    new = re.sub(r'^(  publicurl:\s*).+$', r'\1""', s, count=1, flags=re.M)
+    open(p, 'w', encoding='utf-8').write(new)
+    print('[v14][upgrade] publicurl reset to empty (backup: %s), was %r' % (bak, cur))
+else:
+    print('[v14][upgrade] publicurl already empty — skip')
+PY
+else
+  echo "[v14][upgrade] config.yml not found at ${CFG}, skip publicurl handle"
+fi
 
 # ── v13：把桌面入口从路径反代切到直连端口模式 ──
 # 逻辑与 install_callback 完全一致（详见该文件注释与 README.md v13 节）。

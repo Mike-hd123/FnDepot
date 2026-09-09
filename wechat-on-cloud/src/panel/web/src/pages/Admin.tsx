@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Cropper from 'react-easy-crop';
 import { api, APP_LABELS, appProfile, type PanelUser, type InstanceWithStatus, type VolEntry, type AppType, type VersionInfo } from '../api';
+import { pickSharedFolder, detectHost } from '../trim-sdk';
 import { InstanceIcon, ICON_CHOICES } from '../AppIcon';
 import { useUI, PasswordInput } from '../ui';
 import { useAuth } from '../auth';
@@ -88,6 +89,101 @@ const DIAG_RANGE_OPTIONS = [
   { key: '30d', label: '30 天' },
   { key: '1y', label: '1 年' },
 ];
+
+// 「飞牛共享授权」（仅管理员）：面板内 pickSharedFile 选目录即授权（替代去 fnOS 应用设置
+// 手动授权）。授权目录作为新建实例「数据父目录」候选。独立浏览器直连端口时无宿主桥，
+// 自动降级为「手动授权」引导文案 —— 升级不改变旧路径可用性。
+function FnosSharedSection() {
+  const { toast } = useUI();
+  const [folders, setFolders] = useState<string[]>([]);
+  const [available, setAvailable] = useState<boolean | null>(null); // null=查询中
+  const [reason, setReason] = useState('');
+  const [hostKind, setHostKind] = useState<string>('');
+  const [picking, setPicking] = useState(false);
+
+  const load = async () => {
+    try {
+      const s = await api.listFnosSharedFolders();
+      setAvailable(s.available);
+      setFolders(s.folders || []);
+      setReason(s.reason || '');
+    } catch {
+      setAvailable(false);
+      setReason('查询失败');
+    }
+  };
+
+  useEffect(() => {
+    load();
+    detectHost().then(setHostKind);
+  }, []);
+
+  const pick = async () => {
+    setPicking(true);
+    try {
+      const r = await pickSharedFolder();
+      if (r.ok) {
+        toast(`已授权 ${r.paths.join('、')}`, 'ok');
+        await load(); // 后端从系统重新拉列表
+      } else if (r.error && !/取消|cancel/i.test(r.error)) {
+        toast(r.error, 'error');
+      }
+    } finally {
+      setPicking(false);
+    }
+  };
+
+  const revoke = async (p: string) => {
+    try {
+      await api.deleteFnosSharedFolder(p);
+      toast('已取消授权', 'ok');
+      setFolders((fs) => fs.filter((f) => f !== p));
+    } catch (e: any) {
+      toast(e.message || '取消授权失败', 'error');
+    }
+  };
+
+  if (available === null) return null; // 查询中不占位
+  const inHost = hostKind === 'fnos-iframe';
+
+  return (
+    <>
+      <div className="section-row" style={{ marginTop: 22 }}>
+        <span className="section-title">飞牛共享授权</span>
+        <span className="muted small">授权目录可作为新建实例「数据目录」的候选（存储在飞牛系统里，重装面板不丢）。</span>
+      </div>
+      <div className="inst-grid">
+        <div className="inst-card">
+          <div className="inst-head">
+            <span className="inst-name">{available ? `已授权 ${folders.length} 个目录` : '开放 API 不可用'}</span>
+            <button className="btn btn-primary" disabled={picking || !inHost} onClick={pick}>
+              {picking ? '等待选择…' : '选择目录授权'}
+            </button>
+          </div>
+          {available && folders.length > 0 && (
+            <div style={{ marginTop: 8 }}>
+              {folders.map((f) => (
+                <div key={f} className="inst-sub" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontFamily: 'monospace', fontSize: 12, flex: 1, wordBreak: 'break-all' }}>{f}</span>
+                  <button className="btn-text danger" onClick={() => revoke(f)}>
+                    取消授权
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+          {!available && reason && <div className="inst-sub">{reason}</div>}
+          {available && folders.length === 0 && <div className="inst-sub">暂无授权目录，点「选择目录授权」挑选微信数据存放位置。</div>}
+          {!inHost && (
+            <div className="inst-sub muted small" style={{ marginTop: 6 }}>
+              当前不在飞牛桌面内打开（独立浏览器直连），无法弹目录选择器。请从飞牛桌面进入面板，或在 fnOS「应用设置 → 授权目录」手动授权（两种方式等效）。
+            </div>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
 
 // 「诊断与日志」（仅管理员）：单实例「日志」只记录该实例日志；这里一键打包全局——系统信息 +
 // 面板运维日志 + 全部实例容器状态/日志 + 容器清单，便于排查部署/创建卡死/黑屏不可用等问题。
@@ -707,6 +803,7 @@ export default function Admin({ onOpenMenu, onChangePassword }: { onOpenMenu: ()
 
         {isAdmin && tab === 'system' && (
           <>
+            <FnosSharedSection />
             {orphanConts.length > 0 && (
               <>
                 <div className="section-row">
@@ -1937,6 +2034,36 @@ const APP_OPTIONS: { type: AppType; desc: string; ready: boolean }[] = [
   { type: 'custom', desc: '即将支持', ready: false },
 ];
 
+// 新建实例弹窗里的「已授权目录」快捷芯片：点一下直接把该目录填进数据目录输入框。
+// 拉不到（非飞牛环境/未授权）就不渲染，不打扰。
+function FnosFolderChips({ value, onPick }: { value: string; onPick: (p: string) => void }) {
+  const [folders, setFolders] = useState<string[]>([]);
+  useEffect(() => {
+    api
+      .listFnosSharedFolders()
+      .then((s) => setFolders((s.folders || []).slice(0, 4)))
+      .catch(() => {});
+  }, []);
+  if (folders.length === 0) return null;
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+      {folders.map((f) => (
+        <button
+          key={f}
+          type="button"
+          className="btn-text"
+          style={{ fontFamily: 'monospace', fontSize: 12, opacity: value === f ? 1 : 0.75 }}
+          title={f}
+          onClick={() => onPick(f)}
+        >
+          {value === f ? '✓ ' : ''}
+          {f.length > 28 ? `…${f.slice(-27)}` : f}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function CreateInstance({ subs, onClose, onDone }: { subs: PanelUser[]; onClose: () => void; onDone: () => void }) {
   const [name, setName] = useState('');
   const [appType, setAppType] = useState<AppType>('wechat');
@@ -2010,6 +2137,7 @@ function CreateInstance({ subs, onClose, onDone }: { subs: PanelUser[]; onClose:
           value={dataDir}
           onChange={(e) => setDataDir(e.target.value)}
         />
+        <FnosFolderChips value={dataDir} onPick={(p) => setDataDir(p)} />
         <div className="muted small">填绝对路径 → 数据存到 <code>{'{目录}'}/woc-data-{'{id}'}</code> 子目录（自动创建）。留空走面板默认。</div>
         <div className="field-label">允许访问的子账号（管理员默认可访问全部）</div>
         <ChipMultiSelect

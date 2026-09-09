@@ -96,6 +96,7 @@ import {
 } from './docker.js';
 import { createSession, getSession, destroySession, destroyUserSessions, SESSION_TTL_MS } from './sessions.js';
 import { parseHost, parseAllowedHosts, isRequestHostAllowed } from './host-guard.js';
+import { trimApiAvailable, getSharedAccessibleFolders, delSharedAccessibleFolder } from './trim-api.js';
 import { CURRENT_VERSION, versionInfo, ensureChecked, checkForUpdate, startUpdateChecker } from './version.js';
 import { triggerSelfUpdate } from './self-update.js';
 import { appendInstanceLog, readInstanceLog, appendPanelLog, readPanelLog, pruneOldLogs, filterSince, rangeToMs, DIAG_RANGES } from './logs.js';
@@ -551,6 +552,42 @@ app.delete('/api/admin/orphan-volumes/:name', async (req, reply) => {
     return { ok: true };
   } catch (e: any) {
     return reply.code(500).send({ error: e?.message || '删除数据卷失败' });
+  }
+});
+
+// ---------- 飞牛共享授权目录（fnOS 应用开放 API）----------
+// 面板在 fnOS 桌面 iframe 内时，前端可用 @trimjs/web-app 的 pickSharedFile 让管理员
+// 直接选目录授权给本应用；授权结果由系统持久化，后端经 Unix socket 查询列表作为
+// 实例「数据父目录」候选。旧的手动授权（fnOS 应用设置）继续可用 —— 这里只是新增入口，
+// 环境不满足（非 fnOS 宿主 / 未注入 token / 未补组）时接口降级为 available:false，不报错。
+app.get('/api/admin/fnos-shared-folders', async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  if (!trimApiAvailable()) {
+    return { available: false, folders: [], reason: '未检测到 TRIM_API_TOKEN：请确认已通过 fnOS 应用中心启动面板（升级后需重启一次应用）' };
+  }
+  try {
+    const folders = await getSharedAccessibleFolders();
+    return { available: true, folders };
+  } catch (e: any) {
+    // 组权限/scope 不足时系统回 200003；此处不抛 500 打断面板，只报告原因
+    appendPanelLog('WARN', `读取飞牛共享授权目录失败：${e?.message || e}`);
+    return { available: false, folders: [], reason: String(e?.message || e) };
+  }
+});
+
+// 取消一条共享授权（管理员）。目录内若仍有实例数据不会被删除，仅解除对应用的访问授权。
+app.delete('/api/admin/fnos-shared-folders', async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  const p = (req.query as any)?.path;
+  if (!p || typeof p !== 'string' || !p.startsWith('/') || /(^|\/)\.\.(\/|$)/.test(p)) {
+    return reply.code(400).send({ error: 'path 需为绝对路径' });
+  }
+  if (!trimApiAvailable()) return reply.code(503).send({ error: '飞牛开放 API 不可用（缺少 TRIM_API_TOKEN）' });
+  try {
+    await delSharedAccessibleFolder(p);
+    return { ok: true };
+  } catch (e: any) {
+    return reply.code(500).send({ error: e?.message || '取消授权失败' });
   }
 });
 
