@@ -221,8 +221,8 @@
           }
         },
         "2.6.0-13": {
-          "changelog": "v13 修复 WS 426 致任务列表空：install_callback 直接把 fnOS entry 切到端口直连模式（改 ui/config 去 gatewaySocket + psql UPDATE entry.url 两次含延时 30s 对抗 appcenter 自动 start 回滚 + 重启 trim_http_cgi/trim_open_gateway）。桌面图标直连 :3456 无 nginx Upgrade 头 426 拦截，前端实时同步恢复；手机 /app/vikunja 反代仍可用（网关按 app_name 路由）。数据/配置/DB 零变更。根因：v8-v12 一直在 manifest/前端补丁层打转，真开关在 trim_sac.entry 表。",
-          "updated_at": "2026-09-09T15:50:00+08:00",
+          "changelog": "v13 修复 WS 426 致任务列表空白：桌面入口从路径反代切直连 :3456。根因（对照实验坐实）：entry.url 走路径还是端口，唯一决定字段是 target/ui/config 的 gatewaySocket/gatewayPrefix；manifest 的 micro_app/service_port 完全无效（v12 死路）。v13 双保险：(1) app.tgz 源头 ui/config 模板直接去掉 gatewaySocket，全新安装 appcenter 天生按端口建 entry（对照 hermes-studio/wechat-on-cloud 端口样本）；(2) install/upgrade_callback 兜底重写 ui/config + psql UPDATE entry 切端口并清空 gateway_socket/prefix + 延时 30s 再压一次 + 重启 trim_http_cgi/trim_open_gateway，全程不主动 appcenter-cli start。桌面直连 WS 升级 101（426 消失），手机 /app/vikunja 反代仍 200（sidecar 保留），数据零变更。全新安装实测验收通过。",
+          "updated_at": "2026-09-09T16:55:00+08:00",
           "packages": {
             "x86": {
               "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/vikunja/vikunja-2.6.0-13-x86.fpk",
