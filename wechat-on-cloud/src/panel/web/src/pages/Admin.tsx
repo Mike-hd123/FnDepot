@@ -2161,33 +2161,24 @@ function CreateInstance({ subs, onClose, onDone }: { subs: PanelUser[]; onClose:
           <div className="muted small">Chromium 浏览器随镜像就绪，创建后直接「进入实例」即可（无需下载安装）。</div>
         )}
         <div className="field-label">数据目录（可选）</div>
-        <input
-          className="input"
-          placeholder="留空=默认（面板配置或命名卷）"
-          autoCapitalize="off"
-          autoCorrect="off"
-          value={dataDir}
-          onChange={(e) => setDataDir(e.target.value)}
-        />
-        <button
-          type="button"
-          className="btn"
-          style={{ marginTop: 6, width: '100%' }}
-          onClick={pickDataDir}
-          disabled={pickingDir}
-        >
-          {pickingDir ? '正在打开目录选择器…' : '📁 选择目录'}
-        </button>
-        {pickMsg && <div className="muted small" style={{ marginTop: 4 }}>{pickMsg}</div>}
+        {/* 纯选不手输：只读展示 + 选择按钮；未选=面板默认 */}
+        <div className="dir-row">
+          <div className={'dir-display' + (dataDir ? '' : ' empty')} title={dataDir || '未选择'}>
+            {dataDir || '未选择 · 使用面板默认'}
+          </div>
+          <button type="button" className="btn dir-pick-btn" onClick={pickDataDir} disabled={pickingDir}>
+            {pickingDir ? '打开中…' : '📁 选目录'}
+          </button>
+          {dataDir && (
+            <button type="button" className="btn dir-clear-btn" title="清除，改用面板默认" onClick={() => { setDataDir(''); setPickMsg(''); }}>
+              ✕
+            </button>
+          )}
+        </div>
+        {pickMsg && <div className="muted small">{pickMsg}</div>}
         <FnosFolderChips value={dataDir} onPick={(p) => setDataDir(p)} />
         <div className="muted small">
-          <div style={{ marginBottom: 3 }}>
-            <b>选择目录</b>＝弹出飞牛选择器选目录（纯选不授权）。已授权目录在选择器里<b>无法再次被选</b>，可从下方已有目录点选。
-          </div>
-          <div style={{ marginBottom: 3 }}>
-            提交时校验授权状态；未授权的路径会被拒绝并提示去「系统 → 飞牛共享授权」手动授权。
-          </div>
-          <div>数据存到 <code>{'{目录}'}/woc-data-{'{id}'}</code> 子目录（自动创建）。留空走面板默认。</div>
+          目录只能点选、不可手输；已授权目录在选择器里无法再次被选，可从上方点选。提交时校验授权，未授权会红字提示。数据存到 <code>{'{目录}'}/woc-data-{'{id}'}</code>（自动创建）。
         </div>
         <div className="field-label">允许访问的子账号（管理员默认可访问全部）</div>
         <ChipMultiSelect
