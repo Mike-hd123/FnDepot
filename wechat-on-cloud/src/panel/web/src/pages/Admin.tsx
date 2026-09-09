@@ -2182,10 +2182,10 @@ function CreateInstance({ subs, onClose, onDone }: { subs: PanelUser[]; onClose:
         <FnosFolderChips value={dataDir} onPick={(p) => setDataDir(p)} />
         <div className="muted small">
           <div style={{ marginBottom: 3 }}>
-            <b>选择目录</b>＝弹出飞牛选择器选目录（纯选不授权，任何目录都能选）。
+            <b>选择目录</b>＝弹出飞牛选择器选目录（纯选不授权）。已授权目录在选择器里<b>无法再次被选</b>，可从下方已有目录点选。
           </div>
           <div style={{ marginBottom: 3 }}>
-            提交时会校验授权状态；未授权的路径会被拒绝并提示去「系统 → 飞牛共享授权」手动授权。
+            提交时校验授权状态；未授权的路径会被拒绝并提示去「系统 → 飞牛共享授权」手动授权。
           </div>
           <div>数据存到 <code>{'{目录}'}/woc-data-{'{id}'}</code> 子目录（自动创建）。留空走面板默认。</div>
         </div>
