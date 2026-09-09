@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Cropper from 'react-easy-crop';
 import { api, APP_LABELS, appProfile, type PanelUser, type InstanceWithStatus, type VolEntry, type AppType, type VersionInfo } from '../api';
-import { pickSharedFolder, detectHost } from '../trim-sdk';
+import { pickSharedFolder, pickAndAuthorizeSharedFolder, detectHost } from '../trim-sdk';
 import { InstanceIcon, ICON_CHOICES } from '../AppIcon';
 import { useUI, PasswordInput } from '../ui';
 import { useAuth } from '../auth';
@@ -128,6 +128,19 @@ function FnosSharedSection() {
     }
   };
 
+  // 一键授权：弹飞牛「共享目录」选择器（选+原子授权），成功→ toast+追加重定向目录，取消→静默。
+  const authorizeOne = async () => {
+    const r = await pickAndAuthorizeSharedFolder();
+    if (!r.ok) {
+      if (!r.cancelled) toast(r.error || '授权失败', 'error');
+      return;
+    }
+    if (r.path) {
+      toast(`授权成功：${r.path}`, 'ok');
+      setFolders((fs) => (fs.includes(r.path!) ? fs : [...fs, r.path!]));
+    }
+  };
+
   if (available === null) return null; // 查询中不占位
   const inHost = hostKind === 'fnos-iframe';
 
@@ -143,6 +156,19 @@ function FnosSharedSection() {
           {available ? `已授权 ${folders.length} 个目录` : '开放 API 不可用'}
           {inHost ? '' : ' · 非桌面宿主'}
         </span>
+        <button
+          type="button"
+          className="btn"
+          disabled={!inHost}
+          title={inHost ? '选择共享目录并授权给云微' : '需在飞牛桌面内打开才能一键授权'}
+          style={{ padding: '2px 10px', fontSize: 13, marginLeft: 'auto' }}
+          onClick={(e) => {
+            e.stopPropagation();
+            authorizeOne();
+          }}
+        >
+          📁 一键授权目录
+        </button>
         {open ? CaretIcon : <span style={{ transform: 'rotate(-90deg)', display: 'inline-flex' }}>{CaretIcon}</span>}
       </div>
       {open && (

@@ -89,3 +89,48 @@ export async function authorizeSharedFolder(path: string): Promise<{ ok: boolean
     return { ok: false, error: String(e?.message || e) };
   }
 }
+
+export interface PickAndAuthorizeSharedResult {
+  ok: boolean;
+  /** 授权成功的目录路径（只取第一个，本场景单选） */
+  path?: string;
+  /** 用户在目录选择器里点了取消/关闭 —— 不是错误，别当失败提示 */
+  cancelled?: boolean;
+  error?: string;
+}
+
+/**
+ * 打开飞牛「共享目录」选择器，并把选中的目录**一次性原子授权**给本应用（pickSharedFile =
+ * 选 + 授权，跟 pickFile 的纯选不同）。这是 1.4.9-3「一键授权目录」按钮的选目录动作。
+ *
+ * - 只用于 fnOS 桌面 iframe 宿主内；独立浏览器直连时不可用。
+ * - 用户点取消/关闭 → { ok:false, cancelled:true }，调用方静默处理即可。
+ * - 授权失败（如 ACL 写入失败）→ { ok:false, error }，调用方弹红色 toast。
+ * - pickSharedFile 的 directory 行为由宿主决定（签名已去掉 directory 字段），它天然按目录授权。
+ */
+export async function pickAndAuthorizeSharedFolder(): Promise<PickAndAuthorizeSharedResult> {
+  const kind = await detectHost();
+  if (kind !== 'fnos-iframe' || !app) {
+    return { ok: false, error: '需要在飞牛桌面内打开才能一键授权' };
+  }
+  try {
+    const resp = await app.pickSharedFile({ title: '选择要授权给云微的共享目录' });
+    if (!resp) return { ok: false, error: '未获得宿主响应' };
+    // pickSharedFile 返回 AppBridgeResponse<{code,msg,data:string[]}>；个别宿主可能直接回 string[]，做防御解析。
+    const raw: any = resp as any;
+    const paths: string[] = Array.isArray(raw)
+      ? raw
+      : Array.isArray(raw?.data)
+        ? raw.data
+        : [];
+    if (typeof raw?.code === 'number' && raw.code !== 0) {
+      return { ok: false, error: raw.msg || '授权失败' };
+    }
+    if (paths.length === 0) {
+      return { ok: false, cancelled: true, error: '已取消或未选中目录' };
+    }
+    return { ok: true, path: paths[0] };
+  } catch (e: any) {
+    return { ok: false, error: String(e?.message || e) };
+  }
+}
