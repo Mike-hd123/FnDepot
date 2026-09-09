@@ -1,5 +1,5 @@
 appname                    = wechat-on-cloud
-version                    = 1.4.11
+version                    = 1.4.12
 display_name               = 云微
 desc                       = WeChatOnCloud 官方 Linux 微信面板（原生部署）
 platform                   = all
@@ -18,5 +18,5 @@ desktop_applaunchname      = wechat-on-cloud.panel
 disable_authorization_path = false
 ; 1.5.0 纯 ipvlan 单网卡 + 数据卷 bind 主机目录
 ; 1.4.9 跟随上游版本号；本地改动含创建实例可选数据目录 + 多实例IP自增
-changelog                  = 1.4.11 接入飞牛开放API：面板内pickSharedFile目录授权+后端共享目录列表；install/upgrade自动加TrimApiUsers组
-checksum                    = 2a1dfb73b69b36329ee6e4560e9e8eb9
+changelog                  = 1.4.12 新建实例支持直接弹飞牛目录选择器（pickSharedFile），一步选目录+授权，不必先去管理页
+checksum                    = d9588cd254d7301d03b3e19d509f2434

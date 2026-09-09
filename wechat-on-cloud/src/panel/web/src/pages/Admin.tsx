@@ -2076,6 +2076,28 @@ function CreateInstance({ subs, onClose, onDone }: { subs: PanelUser[]; onClose:
   // 可选「数据父目录」：留空走面板默认（env WOC_DATA_DIR 或 docker 命名卷）；
   // 填写绝对路径 → 数据 bind 挂载到 <dataDir>/woc-data-<id> 子目录（自动创建）。
   const [dataDir, setDataDir] = useState('');
+  // 一键选择：直接调 fnOS 系统目录选择器（无需先去管理页授权）。
+  const [pickingDir, setPickingDir] = useState(false);
+  const [pickMsg, setPickMsg] = useState('');
+
+  const pickDataDir = async () => {
+    if (pickingDir) return;
+    setPickMsg('');
+    setPickingDir(true);
+    try {
+      const r = await pickSharedFolder();
+      if (r.ok && r.paths[0]) {
+        setDataDir(r.paths[0]);
+        setPickMsg('✓ 已填入并授权');
+      } else {
+        setPickMsg(r.error || '未选择目录');
+      }
+    } catch (e: any) {
+      setPickMsg(`选择失败：${e?.message || '未知错误'}`);
+    } finally {
+      setPickingDir(false);
+    }
+  };
 
   useEffect(() => {
     let alive = true;
@@ -2137,8 +2159,18 @@ function CreateInstance({ subs, onClose, onDone }: { subs: PanelUser[]; onClose:
           value={dataDir}
           onChange={(e) => setDataDir(e.target.value)}
         />
+        <button
+          type="button"
+          className="btn"
+          style={{ marginTop: 6, width: '100%' }}
+          onClick={pickDataDir}
+          disabled={pickingDir}
+        >
+          {pickingDir ? '正在打开目录选择器…' : '📁 选择目录'}
+        </button>
+        {pickMsg && <div className="muted small" style={{ marginTop: 4 }}>{pickMsg}</div>}
         <FnosFolderChips value={dataDir} onPick={(p) => setDataDir(p)} />
-        <div className="muted small">填绝对路径 → 数据存到 <code>{'{目录}'}/woc-data-{'{id}'}</code> 子目录（自动创建）。留空走面板默认。</div>
+        <div className="muted small">点「📁 选择目录」弹出飞牛系统选择器（自动授权），或手填绝对路径 → 数据存到 <code>{'{目录}'}/woc-data-{'{id}'}</code> 子目录（自动创建）。留空走面板默认。</div>
         <div className="field-label">允许访问的子账号（管理员默认可访问全部）</div>
         <ChipMultiSelect
           options={subs.map((u) => ({ id: u.id, label: u.username }))}
