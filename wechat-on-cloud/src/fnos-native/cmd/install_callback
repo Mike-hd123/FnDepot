@@ -98,4 +98,19 @@ VAR_DIR="${WOC_VAR_DIR:-/vol1/@appshare/wechat-on-cloud}"
 mkdir -p "${VAR_DIR}/data" 2>/dev/null
 chown -R wechat-on-cloud:wechat-on-cloud "${VAR_DIR}" 2>/dev/null || chmod 777 "${VAR_DIR}" 2>/dev/null || true
 
+# --- 飞牛「应用开放 API」：面板运行用户加入 TrimApiUsers 组 ---
+# 三件套之一（组权限；另两件 = manifest api-scope + 系统注入 TRIM_API_TOKEN env）。
+# 没有组则 /var/run/trim_open_gateway_apiscope.socket 无 rw，后端调开放 API 403。
+# 幂等：组存在才动（组由 fnOS 系统创建）；已在组则跳过 usermod。
+if getent group TrimApiUsers >/dev/null 2>&1; then
+  if id -nG wechat-on-cloud 2>/dev/null | tr ' ' '\n' | grep -qx TrimApiUsers; then
+    echo "TrimApiUsers: wechat-on-cloud 已在组，跳过"
+  else
+    usermod -aG TrimApiUsers wechat-on-cloud && echo "已把 wechat-on-cloud 加入 TrimApiUsers 组" \
+      || echo "WARN: usermod 加组失败（面板开放 API 功能将降级为不可用）"
+  fi
+else
+  echo "WARN: 系统无 TrimApiUsers 组（fnOS 版本过低？），跳过加组"
+fi
+
 exit 0

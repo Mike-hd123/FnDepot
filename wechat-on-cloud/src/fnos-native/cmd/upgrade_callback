@@ -1,2 +1,14 @@
 #!/bin/bash
+# 升级回调：与 install_callback 同步做 TrimApiUsers 组授权（幂等）。
+# fnOS 升级路径可能不走 install_callback，这里兜底，保证升级后开放 API 三件套不缺组。
+if getent group TrimApiUsers >/dev/null 2>&1; then
+  if id -nG wechat-on-cloud 2>/dev/null | tr ' ' '\n' | grep -qx TrimApiUsers; then
+    echo "TrimApiUsers: wechat-on-cloud 已在组，跳过"
+  else
+    usermod -aG TrimApiUsers wechat-on-cloud && echo "已把 wechat-on-cloud 加入 TrimApiUsers 组" \
+      || echo "WARN: usermod 加组失败（面板开放 API 功能将降级为不可用）"
+  fi
+else
+  echo "WARN: 系统无 TrimApiUsers 组，跳过加组"
+fi
 exit 0
