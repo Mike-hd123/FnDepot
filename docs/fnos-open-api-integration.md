@@ -135,6 +135,22 @@
 - 工作量：面板前端一个新设置模块 + 后端一个封装；风险：中低（只影响「授权数据目录」入口，不碰备份/容器核心逻辑，也不动 dockerode 实例管理）。
 - **WOC 特有注意**：面板自身有 host-guard Host 白名单，`pickSharedFile` 在面板 iframe 内走网关/直连端口，需确保浏览器会话能过 fnOS 会话 cookie（已登录 web-ui 即放行）。
 
+### 实施状态（2026-09-09 t_85cd1111 实测）
+
+**P0 已打通（fygo-browser 对照组实证结论，修正 §5 两条原始假设）**：
+- 第 2 条「进程 env 无 TRIM_API_TOKEN」**已过时**：实测 fygo-browser 进程 env 有 `TRIM_API_TOKEN`（`/proc/<pid>/environ` 检出 1），`trim_app_center` 注入偏好已覆盖本机 1.2.0602。**但 WOC 当前进程无 token**（cmd/main 直跑,注册表无此应用）→ 装机/升级后 panel 以 appcenter 拉起才有 token。
+- 第 3 条验证应用「调 `trim.system.getPlatformConfig` code 0」**只对 fygo 有效**（其 scope 恰好未含 system scope，调它必然 403=200003，不应拿它当验收判据）。真实验收 = 调**应用实际拥有的 scope**（fygo=`trim.file.getSharedAccessibleFolders` → code 0 ✅）。
+- **三件套逐层实证**：组用户+合法 token 调 sharedAccess scope → code 0；非组用户(root) 连 socket → EACCES(文件系统层拒绝)；token 合法但 appName 伪造(≠ token 签发 app) → 200003 Forbidden **实测不会对非本人应用放行** —— 打消「root 运行用户 + 他 app 的 token = socket 层即可调用一切」疑虑。**应用注册表 + auth token + 进程用户 + scope 四者绑定**。
+- **授权路径实测**：`trim.file.delSharedAccessibleFolder` 存在（文档未列），响应带 `paths` 数组；WOC `POST /api/v1/trimapp` body 复用文档附录 A `{reqId,req,appName,data}` 格式正确（实测响应一致）。
+
+**P1 已完成（代码+fpk 就绪，待装机）**：
+- `wechat-on-cloud` manifest 1.4.11 + `micro_app=true` + config/resource `api-scope:[trim.file.sharedAccess]`
+- `cmd/install_callback` + `upgrade_callback`：幂等把运行用户加入 TrimApiUsers 组（getent 判组存在→id -nG 判已在组→才 usermod；缺组仅 WARN 不阻断）
+- 后端 `server/src/trim-api.ts`（`trimApi(req,data)` 最小封装：http.request+socketPath+Bearer 每次现读 env，禁落盘）+ `index.ts` 的 `GET/DELETE /api/admin/fnos-shared-folders`（无 token 降级 `available:false` 不报错）
+- 前端 `Admin.tsx` 的 `FnosSharedSection`：fnOS iframe 内经 `@trimjs/web-app` 的 `pickSharedFile` 选目录即授权（新实例「数据父目录」候选）；浏览器直连端口/独立宿主无桥时 detectHost 降级为手动授权引导文案
+- 产物：`/vol2/1000/download/wechat-on-cloud_1.4.11.fpk`（sha256 39733178...4379a）
+- **装机后验证清单**：新进程 env 有 TRIM_API_TOKEN；`getent group TrimApiUsers` 含 wechat-on-cloud；`appcenter.app_auth` 有 WOC 行 scope Status=1；面板「飞牛共享授权」区块可用
+
 ### P2 — hyatlas（知识库根目录授权 + ACL 收敛）
 - **目标**：`pickSharedFile` 让管理员选 1 个知识库根目录做共享授权 + 后端 `getSharedAccessibleFolders`/`checkUserACL` 收敛之前要 root 访问用户存储的写法。
 - 改：纯 Go 单二进制后端 + dashboard 前端。前端（dashboard Web 界面）加「知识库文件授权」引导（`pickSharedFile`）；后端加一个消费 `api-scope` 的轻端（`trim.system.getPlatformConfig` / `getSharedAccessibleFolders`）。
