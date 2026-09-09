@@ -120,4 +120,94 @@ fi
 
 # 数据目录属主（服务以 hermes-studio 跑）
 chown -R hermes-studio:hermes-studio "${APPDATA}" 2>/dev/null || true
+
+# ── v13：把桌面入口从路径反代切到直连端口模式 ──
+# 根因（v13 实测确认，对照实验坐实）：
+#   1. entry.url 走路径反代还是端口直连，唯一决定字段 = target/ui/config 里的
+#      gatewaySocket / gatewayPrefix —— appcenter **每次** start/reinstall 都会重读
+#      这个文件重建 entry（对照实验：ui/config 已是端口版 + entry 手动 UPDATE 成端口
+#      之后，再 appcenter-cli stop && start，url 和 gateway_socket 都保持端口不回滚，
+#      仅 entry.micro_app 列被翻回 t 但**不影响 URL**）。
+#   2. 之前"appcenter 只在首装读一次"的假设不精确——它其实每次 start 都读；只是首次
+#      安装时 callback 早于 appcenter 建 entry，所以 callback 得**主动 UPDATE SQL 兜底**
+#      让首装当次立刻是端口模式，之后每次 start 由 ui/config 保证持久。
+#   3. hermes-studio / wechat-on-cloud 端口模式，正是因为它们 target/ui/config 里没有
+#      gatewaySocket 字段（首装即端口）。对照：hyatlas/octopus 的 ui/config 有 socket。
+#   4. 单纯改 manifest（micro_app/service_port/desktop_uidir）无效（v12 已证死路）。
+#
+# 对策（v13 实测验证过的组合拳，双保险）：
+#   a) 重写 target/ui/config 去 gatewaySocket —— **持久机制**：appcenter 每次 start 读
+#      它重建 entry，所以这一改让端口模式跨 start/重启都稳定。app.tgz 源头模板已同步
+#      改端口版（见 src/ui-config.json），双保险。
+#   b) 立即 UPDATE entry 表 SQL —— **首装当次兜底**：appcenter 建 entry 早于 callback
+#      运行，SQL 强制把这条记录切成端口。
+#   c) 后台延时 30s 再 UPDATE 一次 —— 防御性双保险：覆盖 appcenter 在 callback 返回后
+#      可能自动 start（此时它读的是新 ui/config，理论不回滚，但多压一次不亏）。
+#   d) 重启 trim_http_cgi + trim_open_gateway —— nginx 反代/网关缓存失效。
+#   e) 不主动 appcenter-cli start —— 让 appcenter 自己走完启动流程。
+#
+# 手机端 /app/vikunja 反代依然可用（sidecar 保留 + gateway 按 app_name 路由），
+# 桌面图标从反代 /app/vikunja 切到直连 :3456 端口。
+# 实际布局：app.tgz 解到 target/（软链到 @appcenter/<app>），ui/config 在 target 下
+UI_CONFIG="${APP_DIR}/target/ui/config"
+[ -f "${UI_CONFIG}" ] || UI_CONFIG="${APP_DIR}/ui/config"
+if [ -f "${UI_CONFIG}" ]; then
+  echo "[v13] rewriting ${UI_CONFIG} — removing gatewaySocket/gatewayPrefix for direct-port mode"
+  cp -f "${UI_CONFIG}" "${UI_CONFIG}.bak_$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
+  cat > "${UI_CONFIG}" <<JSONEOF
+{
+  ".url": {
+    "vikunja.panel": {
+      "title": "待办",
+      "icon": "images/icon-{0}.png",
+      "type": "iframe",
+      "protocol": "",
+      "port": ${PORT},
+      "url": "/",
+      "allUsers": true
+    }
+  }
+}
+JSONEOF
+  chmod 644 "${UI_CONFIG}"
+  chown root:root "${UI_CONFIG}" 2>/dev/null || true
+fi
+
+# entry 表 SQL 改写函数（幂等）
+_update_entry_url() {
+  local port="$1"
+  sudo -u postgres psql -d trim_sac -v ON_ERROR_STOP=1 -Atc \
+    "UPDATE entry SET url='{\"port\":\"${port}\",\"path\":\"/\"}', gateway_socket='', gateway_prefix='' WHERE app_name='vikunja' AND service_name='vikunja.panel';" \
+    >/dev/null 2>&1
+}
+
+if command -v psql >/dev/null 2>&1 && [ -S /var/run/postgresql/.s.PGSQL.5432 ]; then
+  # a) 立即改一次
+  if _update_entry_url "${PORT}"; then
+    echo "[v13] entry.url switched to direct-port mode (port=${PORT})"
+  else
+    echo "[v13][WARN] initial entry.url UPDATE failed"
+  fi
+
+  # b) 后台延时 30s 再改一次，覆盖 appcenter start 触发的回滚
+  # 30s 是 appcenter start + 应用起来 + entry 刷新 的保守窗口
+  (
+    sleep 30
+    if command -v psql >/dev/null 2>&1 && [ -S /var/run/postgresql/.s.PGSQL.5432 ]; then
+      _update_entry_url "${PORT}" && echo "[v13] delayed entry.url UPDATE ok" \
+        || echo "[v13][WARN] delayed entry.url UPDATE failed"
+    fi
+  ) &
+  disown 2>/dev/null || true
+else
+  echo "[v13][WARN] psql or postgresql socket missing — skipping entry.url switch"
+fi
+
+# c) 三服务重启（反代 reload / 网关路由刷新）—— 应用本体不在此重启，
+#    让 appcenter 自然完成启动流程
+for svc in trim_http_cgi trim_open_gateway; do
+  systemctl restart "${svc}" >/dev/null 2>&1 && echo "[v13] restarted ${svc}" \
+    || echo "[v13][WARN] restart ${svc} failed"
+done
+
 echo "vikunja install_callback done (APPDEST=${APP_DIR}, APPDATA=${APPDATA}, PORT=${PORT})"

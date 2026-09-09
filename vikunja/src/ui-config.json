@@ -5,9 +5,8 @@
       "icon": "images/icon-{0}.png",
       "type": "iframe",
       "protocol": "",
-      "gatewayPrefix": "/app/vikunja",
-      "gatewaySocket": "app.sock",
-      "url": "/app/vikunja",
+      "port": 3456,
+      "url": "/",
       "allUsers": true
     }
   }

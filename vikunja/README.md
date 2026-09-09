@@ -88,3 +88,43 @@ cd project && fnpack build -d .
   3. 保留 v9 的 router base 改写。
 - **验证（CDP 真实登录 + JWT 注入，全部通过）**：首页海报 200→首页渲染（项目/任务/概览）→ SPA 深路由 `/tasks/3` 详情→ 编辑→ Tiptap 富文本编辑器（标题/粗体/斜体/表格工具栏）→ 深路由硬刷新不掉根、零 404、零 JS 异常。直连 3456 桌面模式 preload 仍 `return`/`+e`、CSS 未打前缀。
 - **skill 已加**：vite 动态 chunk 网关前缀丢失专节 + JWT HS256 会话自签登录法（见 fnos-app-package）。
+
+## v12 变更（2026-09-09，t_68437863 —— 失败实验，回退）
+
+- 尝试通过 manifest 改 `micro_app=true→false` + 删 sidecar 单元 + 移除 cmd_main 里的 sidecar 启动逻辑，让 fnOS 自动生成端口模式 entry。
+- **实测结论**：装完 `trim_sac.entry.url` 仍是 `{"path":"/app/vikunja"}` + `gateway_socket=/var/apps/vikunja/target/app.sock`（指向已删的 sidecar → 反代 502 Bad Gateway）。
+- **v12 假设错误的地方**：以为改 manifest 字段（micro_app/service_port）能影响 entry 生成。实测这些字段与 URL 模式无关。
+- **代码改动**：仅 v12 fpk 内（scratch 临时改，未落 FnDepot 源码），本 v13 直接跳过此尝试。
+
+## v13 变更（2026-09-09，t_c99a3b7a）
+
+**真正的根因（v13 逆向 + 实测确认）**：
+
+1. entry.url 走「路径反代」还是「端口直连」，决定字段是 **`target/ui/config` 文件里的 `gatewaySocket` / `gatewayPrefix`**。appcenter 首次安装时读它，写进 `trim_sac.entry` 表。
+   - 对比实测：`hermes-studio`、`wechat-on-cloud` 的 `ui/` 里**没有 config 文件**（或无 gatewaySocket 字段）→ entry 天生端口模式；`hyatlas`、`vikunja` 的 `ui/config` 里有 `gatewaySocket:"app.sock"` → entry 路径反代。
+   - `micro_app` / `service_port` / `desktop_uidir` 等 manifest 字段**与 URL 模式无关**（v12 的死路由此解释）。
+2. **但**：appcenter 只在**首次安装**时读 ui/config 一次。之后 `appcenter-cli start/stop` 会用它**内部缓存**（entry 表 + appcenter 状态）重生成 entry——即便 ui/config 已改、SQL 已 UPDATE，`appcenter-cli start` 也会把 entry 覆盖回路径模式。**这就是为什么单纯装完改 SQL 不持久。**
+3. **唯一稳定保持端口模式的组合拳**：
+   - 立即 `psql UPDATE` 把 `entry.url` 改成 `{"port":"3456","path":"/"}` + `gateway_socket=''` + `gateway_prefix=''`
+   - **延时 30s 再 UPDATE 一次**（覆盖 appcenter 在 callback 完成后自动 `appcenter-cli start` 触发的回滚）
+   - 重启 `trim_http_cgi` + `trim_open_gateway` 让反代/网关缓存失效
+   - **callback 内绝不主动 `appcenter-cli start`**（那只会触发回滚）
+
+**v13 实现**（`src/install_callback` 末尾 v13 段落）：
+
+- **a) 改 ui/config**：重写 `${APP_DIR}/ui/config`，去掉 `gatewaySocket` / `gatewayPrefix`，把 `url` 改成端口根路径 `"/"` + `port:3456`。防御性——若日后走全新安装流程，appcenter 首次读到的就是端口模式，不再需要 SQL 兜底。
+- **b) 立即 SQL UPDATE** + **c) 后台 `( sleep 30; UPDATE ) &` 延时 UPDATE** 两次，用 `_update_entry_url` 函数（幂等，按 `app_name='vikunja' AND service_name='vikunja.panel'` 定位，不硬编码 id）。
+- **d) 三服务重启**：仅 `trim_http_cgi` + `trim_open_gateway`（应用本体不重启，避免 appcenter 覆盖）。
+- **降级**：`psql` / PostgreSQL socket 缺失 → 打印 `[WARN]` 不中断安装，ui/config 改写仍生效，用户可后续手动 SQL 改。
+
+**实测验证（本任务会话内）**：
+- 恢复路径模式 → v13 立即 UPDATE → `entry.url = {"port":"3456","path":"/"}` ✅
+- 触发 `appcenter-cli start` 模拟回滚 → entry 被打回路径模式（证实回滚机制）→ 延时 UPDATE 救回端口模式 ✅
+- 双端连通：直连 `http://192.168.5.2:3456/` = **200**，反代 `http://192.168.5.2/app/vikunja/` = **200**（sidecar inactive 也能通——网关按 app_name 直接路由到 3456，不依赖 socket）✅
+- WS 握手：直连 3456 无 nginx `safe_code_access.conf` 的 426 拦截 → 前端 WS 不再断 ✅
+
+**manifest**：`version=2.6.0-13`，`micro_app=true` / `service_port=3456` 保持不变（cmd_main 里 sidecar 启动逻辑保留作为 socket 兜底，inactive 也不影响端口直连）。手机端 `/app/vikunja` 反代路径继续可用（网关 app_name 路由，不依赖 sidecar）。
+
+**产物**：`vikunja-2.6.0-13-x86.fpk`（sha256 `1a8c2ea270ce8d8d173c120659580044f27e519a0f89794f9d181d2e1bcad1d9`，45885108 B，staging 打包，app.tgz/ICON 等 v11 复用——本次仅改 install_callback + manifest version）。
+
+**参考**：`skills/fnos-app-admin/references/entry-direct-port-migration.md`——该文档「从 manifest 预测 URL 模式 = 死路」结论方向正确，但「唯一可靠路径 = SQL + 三服务重启」不完整（缺延时 UPDATE 对抗 appcenter 自动 start 回滚这一步）。v13 实测补充见上。

@@ -1,0 +1,69 @@
+#!/bin/bash
+# 升级后 hook: 重启服务 + v13 桌面入口切直连端口模式
+set -e
+systemctl restart vikunja 2>/dev/null || true
+
+# ── v13：把桌面入口从路径反代切到直连端口模式 ──
+# 逻辑与 install_callback 完全一致（详见该文件注释与 README.md v13 节）。
+# 升级时 appcenter 会用新包重建 target/ 并重读 ui/config，entry 必然回滚成
+# 路径模式，所以这里同样要：改 ui/config + 立即 UPDATE + 延时 30s 再 UPDATE +
+# 重启反代/网关。绝不 appcenter-cli start（会覆盖 entry）。
+PORT="${TRIM_SERVICE_PORT:-3456}"
+APP_DIR="${TRIM_APPDEST:-/var/apps/vikunja}"
+# app.tgz 解到 target/（软链 @appcenter/<app>），ui/config 在 target 下
+UI_CONFIG="${APP_DIR}/target/ui/config"
+[ -f "${UI_CONFIG}" ] || UI_CONFIG="${APP_DIR}/ui/config"
+
+if [ -f "${UI_CONFIG}" ]; then
+  echo "[v13][upgrade] rewriting ${UI_CONFIG} — removing gatewaySocket/gatewayPrefix"
+  cp -f "${UI_CONFIG}" "${UI_CONFIG}.bak_$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
+  cat > "${UI_CONFIG}" <<JSONEOF
+{
+  ".url": {
+    "vikunja.panel": {
+      "title": "待办",
+      "icon": "images/icon-{0}.png",
+      "type": "iframe",
+      "protocol": "",
+      "port": ${PORT},
+      "url": "/",
+      "allUsers": true
+    }
+  }
+}
+JSONEOF
+  chmod 644 "${UI_CONFIG}"
+  chown root:root "${UI_CONFIG}" 2>/dev/null || true
+fi
+
+_update_entry_url() {
+  local port="$1"
+  sudo -u postgres psql -d trim_sac -v ON_ERROR_STOP=1 -Atc \
+    "UPDATE entry SET url='{\"port\":\"${port}\",\"path\":\"/\"}', gateway_socket='', gateway_prefix='' WHERE app_name='vikunja' AND service_name='vikunja.panel';" \
+    >/dev/null 2>&1
+}
+
+if command -v psql >/dev/null 2>&1 && [ -S /var/run/postgresql/.s.PGSQL.5432 ]; then
+  if _update_entry_url "${PORT}"; then
+    echo "[v13][upgrade] entry.url switched to direct-port mode (port=${PORT})"
+  else
+    echo "[v13][upgrade][WARN] initial entry.url UPDATE failed"
+  fi
+  (
+    sleep 30
+    if command -v psql >/dev/null 2>&1 && [ -S /var/run/postgresql/.s.PGSQL.5432 ]; then
+      _update_entry_url "${PORT}" && echo "[v13][upgrade] delayed entry.url UPDATE ok" \
+        || echo "[v13][upgrade][WARN] delayed entry.url UPDATE failed"
+    fi
+  ) &
+  disown 2>/dev/null || true
+else
+  echo "[v13][upgrade][WARN] psql or postgresql socket missing — skipping"
+fi
+
+for svc in trim_http_cgi trim_open_gateway; do
+  systemctl restart "${svc}" >/dev/null 2>&1 && echo "[v13][upgrade] restarted ${svc}" \
+    || echo "[v13][upgrade][WARN] restart ${svc} failed"
+done
+
+echo "vikunja upgrade_callback done (APPDEST=${APP_DIR}, PORT=${PORT})"

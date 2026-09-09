@@ -169,7 +169,7 @@
     },
     "vikunja": {
       "display_name": "待办",
-      "desc": "自托管待办管理面板：Go 单二进制静态链接 + SQLite，中文 UI，CalDAV，API token 全自动读写，Hermes 提醒引擎。上游：go-vikunja/vikunja。",
+      "desc": "自托管待办管理面板 —— Vikunja v2.6.0，Go 单二进制静态链接，SQLite 存储，原生宿主机运行。桌面/手机统一走端口直连 :3456（v13 起 install_callback 自动把 fnOS entry 切到端口模式，无 /app 路径前缀，无 WS 426）。Hermes 全自动读写（API token）。",
       "platform": [
         "x86"
       ],
@@ -206,6 +206,28 @@
               "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/vikunja/vikunja-2.6.0-11-x86.fpk",
               "sha256": "732fe406ef9c3d61dcae54de5f69e1feca73ee7f903dcd87497392cfecc50d90",
               "size": 45883617
+            }
+          }
+        },
+        "2.6.0-12": {
+          "changelog": "【失败实验】v12 试图通过 manifest 切端口模式（micro_app=true→false + 删 sidecar）。实测失败：fnOS entry.url 生成只读 target/ui/config 的 gatewaySocket 字段，manifest 字段无效，装完仍是路径反代。v13 用正确方法修复，请升级到 2.6.0-13。",
+          "updated_at": "2026-09-09T14:30:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/vikunja/vikunja-2.6.0-12-x86.fpk",
+              "sha256": "9aed3f370ac2531ed6df10082e3cf7d3f1c47e6dfecd0064977943ea25e099be",
+              "size": 45883824
+            }
+          }
+        },
+        "2.6.0-13": {
+          "changelog": "v13 修复 WS 426 致任务列表空：install_callback 直接把 fnOS entry 切到端口直连模式（改 ui/config 去 gatewaySocket + psql UPDATE entry.url 两次含延时 30s 对抗 appcenter 自动 start 回滚 + 重启 trim_http_cgi/trim_open_gateway）。桌面图标直连 :3456 无 nginx Upgrade 头 426 拦截，前端实时同步恢复；手机 /app/vikunja 反代仍可用（网关按 app_name 路由）。数据/配置/DB 零变更。根因：v8-v12 一直在 manifest/前端补丁层打转，真开关在 trim_sac.entry 表。",
+          "updated_at": "2026-09-09T15:50:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/vikunja/vikunja-2.6.0-13-x86.fpk",
+              "sha256": "f8843db5e672e034bdb2ff37530b6c54b62aea423dc88ca9688d8a69f2843011",
+              "size": 45885849
             }
           }
         }
