@@ -95,7 +95,7 @@
     },
     "octopus": {
       "display_name": "Octopus 网关",
-      "desc": "LLM API 聚合网关：Go 单二进制 + 内嵌前端 + SQLite 存储，多渠道/多模型管理，支持单渠道多 Key，原生宿主机运行，端口 8081。上游项目：bestruirui/octopus。",
+      "desc": "LLM API 聚合网关：Go 单二进制 + 内嵌前端 + SQLite 存储，多渠道/多模型管理，支持单渠道多 Key，原生宿主机运行，端口 8081。上游项目：bestruirui/octopus（v0.13.4）。",
       "platform": [
         "x86"
       ],
@@ -111,14 +111,14 @@
       "is_docker": false,
       "service_port": "8081",
       "releases": {
-        "0.13.2-5": {
-          "changelog": "v5：gateway sidecar 由裸 TCP 盲转发升级为剥前缀 HTTP 反代（含 SSE 流式透传 + POST Content-Length 透传），修复手机端 /app/octopus 404；桌面 iframe 直连 8081 不变，系统层零改动。",
-          "updated_at": "2026-09-05T14:00:00+08:00",
+        "0.13.4-1": {
+          "changelog": "v1（2026-09-10）：同步上游 v0.13.4（请求头新增 client_header、渠道禁用 disable channel、前端日志 UI 优化），保留本地 gateway sidecar v8 补丁（剥前缀 HTTP 反代 + SSE 流式透传 + JS chunk 同版本参数单模块图单实例，修复手机端 404 与桌面白屏）。上游大版本升级，本地补丁版本号重置为 1。",
+          "updated_at": "2026-09-10T11:41:00+08:00",
           "packages": {
             "all": {
               "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/octopus/octopus.fpk",
-              "sha256": "547587509f5f7d4ffa70f22894e878f98745de1d942432571f85c8947e0963eb",
-              "size": 22608923
+              "sha256": "09504336c70127b1e88bd5f08570ece30e4a49da215cf857d0e842922f83709d",
+              "size": 22643123
             }
           }
         }
