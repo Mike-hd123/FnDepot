@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"log"
 	"sync"
 	"sync/atomic"
 
@@ -173,16 +174,20 @@ type SearchHit struct {
 }
 
 // TopL7Similar returns the best similarity score for goal text within the L7
-// intention collection, scoped to user/agent when provided. Returns
-// (score, found): found=false when the layer is empty, the scope matches
-// nothing, or the query fails — callers treat that as "no duplicate" and
-// write (fail-open, matching the pre-dedup behavior). Used by
-// promoteExtraction to skip near-identical intentions.
-func (s *MemoryStore) TopL7Similar(goal string, userID, agentID string) (float32, bool) {
+// intention collection (top-N match, N capped at min(N, doc count), scoped to
+// user/agent when provided). Returns (score, found): found=false when the
+// layer is empty, the scope matches nothing, or the query fails — callers
+// treat that as "no duplicate" and write (fail-open, matching the
+// pre-dedup behavior). Used by promoteExtraction to skip near-identical
+// intentions.
+func (s *MemoryStore) TopL7Similar(goal string, userID, agentID string, topN int) (float32, bool) {
 	col := s.cols[memory.L7Intention]
 	n := col.Count()
 	if n <= 0 {
 		return 0, false
+	}
+	if topN <= 0 || topN > n {
+		topN = n
 	}
 	where := map[string]string{}
 	if userID != "" {
@@ -194,12 +199,62 @@ func (s *MemoryStore) TopL7Similar(goal string, userID, agentID string) (float32
 	if len(where) == 0 {
 		where = nil
 	}
-	// chromem requires k <= n; query all L7 docs, top1 is res[0].
-	res, err := col.Query(s.ctx, goal, n, where, nil)
+	// chromem requires k <= total doc count; request only the top-N docs
+	// (cheaper) and take the best within the scope-filtered results.
+	res, err := col.Query(s.ctx, goal, topN, where, nil)
 	if err != nil || len(res) == 0 {
 		return 0, false
 	}
 	return res[0].Similarity, true
+}
+
+// EnsureL7Max enforces a hard cap on the L7 intention layer: when the active
+// doc count (scoped to user/agent, or global when both are empty) exceeds
+// max, the OLDEST docs (by ts metadata, ties broken by id) are deleted until
+// the count fits. The incoming goal is not yet written at call time, so the
+// caller counts against (max-1) if it wants a hard guarantee including the
+// new write; we use max as the ceiling. Returns the number of docs evicted.
+// LRU semantics keep the most recent intentions (they encode the user's
+// current standing goals; stale ones from weeks ago are the bloat source).
+func (s *MemoryStore) EnsureL7Max(goal, userID, agentID string, max int) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var inScope []DocIndex
+	for _, d := range s.index {
+		if d.Layer != string(memory.L7Intention) {
+			continue
+		}
+		if userID != "" && d.UserID != userID {
+			continue
+		}
+		if agentID != "" && d.AgentID != agentID {
+			continue
+		}
+		inScope = append(inScope, d)
+	}
+	if len(inScope) <= max {
+		return 0
+	}
+	sort.Slice(inScope, func(i, j int) bool {
+		// oldest first (ts asc, id asc as tiebreak)
+		if inScope[i].Ts != inScope[j].Ts {
+			return inScope[i].Ts < inScope[j].Ts
+		}
+		return inScope[i].ID < inScope[j].ID
+	})
+	over := len(inScope) - max
+	deleted := 0
+	for i := 0; i < over; i++ {
+		d := inScope[i]
+		if col, ok := s.cols[memory.L7Intention]; ok {
+			_ = col.Delete(s.ctx, nil, nil, d.ID)
+		}
+		delete(s.index, d.ID)
+		deleted++
+		log.Printf("EnsureL7Max: evicted old L7 intention %s ts=%s (%d/%d over cap %d)",
+			d.ID, d.Ts, i+1, over, max)
+	}
+	return deleted
 }
 
 // List returns exact-match docs, optionally filtered by layer/user/agent, with pagination.

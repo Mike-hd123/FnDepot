@@ -146,15 +146,41 @@ func promoteExtraction(store *MemoryStore, ex *Extraction, userID, agentID, sour
 	// embeddings: same intent rephrased lands ~0.95+, unrelated goals well
 	// below 0.9. Fail-open on query errors (write anyway, pre-dedup
 	// behavior). Scope note: L3/L4/L6 deliberately have NO dedup this round.
+	// 09-14 (t_b148ef18): threshold + max size made env-tunable to stop the
+	// L7 intention layer bloat (526 docs, ~5/day): top-N (N=8) match at a
+	// lower threshold plus a hard cap with LRU eviction of the oldest
+	// intentions. Overridable via HYATLAS_L7_DEDUP_THRESHOLD / HYATLAS_L7_MAX.
 	if ex.Intention != nil && strings.TrimSpace(ex.Intention.Goal) != "" {
-		if score, found := store.TopL7Similar(ex.Intention.Goal, userID, agentID); found && score > l7DedupThreshold {
-			log.Printf("promoteExtraction: L7 intention deduped (score=%.4f > %.2f): %q", score, l7DedupThreshold, ex.Intention.Goal)
-		} else {
-			_ = store.Add(memory.L7Intention, newID(), ex.Intention.Goal, map[string]string{
+		goal := strings.TrimSpace(ex.Intention.Goal)
+		thresh := envOr("HYATLAS_L7_DEDUP_THRESHOLD", "0.80")
+		maxL7 := atoi(envOr("HYATLAS_L7_MAX", "100"), 100)
+		evict := 0
+		if maxL7 > 0 {
+			evict = store.EnsureL7Max(goal, userID, agentID, maxL7)
+		}
+		duped := false
+		if s, found := store.TopL7Similar(goal, userID, agentID, 8); found && float64(s) > parseFloatDefault(thresh, 0.80) {
+			log.Printf("promoteExtraction: L7 intention deduped (score=%.4f > %s): %q", s, thresh, goal)
+			duped = true
+		}
+		if !duped {
+			_ = store.Add(memory.L7Intention, newID(), goal, map[string]string{
 				"user_id": userID, "agent_id": agentID, "ts": now,
 			})
 		}
+		if evict > 0 {
+			log.Printf("promoteExtraction: L7 cap enforced, evicted %d oldest intention(s)", evict)
+		}
 	}
+}
+
+// parseFloatDefault parses s as a float64, falling back to def on error.
+func parseFloatDefault(s string, def float64) float64 {
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return def
+	}
+	return f
 }
 
 // extractItem runs one LLM extraction for an L2 doc with bounded retries and
@@ -388,12 +414,24 @@ func atoi(s string, def int) int {
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
+	// Safety guard (09-14): a delete with NO explicit id is a bulk delete
+	// (whole layer / whole store — see the 09-07 incident that wiped 12259
+	// rows via this endpoint). Bulk delete is disabled; only explicit-id
+	// deletion is allowed. To delete many items, pass a comma-separated id
+	// list via the id param (still bounded and auditable).
 	layer := q.Get("layer")
 	userID := q.Get("user_id")
 	agentID := q.Get("agent_id")
 	ids := []string{}
 	if idStr := q.Get("id"); idStr != "" {
-		ids = append(ids, idStr)
+		ids = strings.Split(idStr, ",")
+	}
+	if len(ids) == 0 {
+		jsonResponse(w, 400, map[string]any{
+			"error":       "bulk delete_all is disabled (09-07 incident guard); pass ?id=<memory_id[,memory_id...]> to delete specific items",
+			"deleted_count": 0,
+		})
+		return
 	}
 	deleted, err := s.store.Delete(ids, memory.Layer(layer), userID, agentID)
 	jsonResponse(w, 200, map[string]any{"deleted_count": deleted, "error": errStr(err)})
