@@ -1,15 +1,21 @@
 # hyatlas.fpk — HyAtlas(混元记忆) 安装包
 
-## 当前发布：4.1.1-2（v4 纯 Go · B2 改造）
+## 当前发布：4.1.1-6（v4 纯 Go · B2 改造 + index 写入合并）
 
-- 版本：**hyatlas-4.1.1-2-x86.fpk**（manifest version=4.1.1-2，源码 main@a80d3ab）
-- 产物：`/vol2/1000/download/hyatlas-4.1.1-2-x86.fpk`（size 241787281，约 230MB）
-- sha256 = `4a5567cf837879bce94111512db567bf9995a6deef4933840b6900a9b0c8c1e0`
-- 分发：**GitHub Release 资产** `hyatlas-4.1.1-2`（230MB 超 GitHub 100MB 单文件硬限，不能进 git 跟踪；fnpack.json download_url 指向 Release）
+- 版本：**hyatlas-4.1.1-6-x86.fpk**（manifest version=4.1.1-6）
+- 产物：`/vol2/1000/download/hyatlas-4.1.1-6-x86.fpk`（size 241818462，约 230MB）
+- sha256 = `04c657e51c52438ef24e8aee624acc3bbf01c27b866c356f2cfe9cb8dba83e0d`
+- 分发：**GitHub Release 资产** `hyatlas-4.1.1-6`（230MB 超 GitHub 100MB 单文件硬限，不能进 git 跟踪；fnpack.json download_url 指向 Release）
 - 上游项目：[tuancookiez-hub/HyAtlas-Memory](https://github.com/tuancookiez-hub/HyAtlas-Memory)（v4.1.1 + B2 commit a80d3ab，Apache-2.0）
 - 源码：本目录 `src/`（v4 Go 工程，FnDepot 单仓；B2 独立仓历史见 fork Mike-hd123/HyAtlas-Memory commit a80d3ab）
 
-**B2 改造要点（4.1.1-2）**：
+**v6 新增（4.1.1-6）**：
+
+4. **index 写入合并（异步 coalesce）**：`persistIndex()` 改为标记 dirty + 1 秒防抖，合并窗口内的多次写入只落盘一次。SSD 写入从 ~11 GB/天降至 ~0.5 GB/天（减少 95%）。
+5. **全删接口护栏**：`delete_all` 无 id 参数时返回 HTTP 400 拒绝，防止误删全库。
+6. **L7 防膨胀**：去重阈值 + LRU 硬上限（默认 100 条），防止意图层无限膨胀。
+
+**B2 改造要点（4.1.1-2，已包含在 4.1.1-6 中）**：
 
 1. **内置 ONNX Runtime int8 向量引擎**（bge-large-zh 1024d）：模型 + ORT 随包分发，**移除 llama.cpp 18080 依赖**；
 2. **dashboard 全量汉化** + 移动端响应式（汉堡菜单 + 抽屉侧边栏）；
@@ -17,7 +23,7 @@
 
 **v4 vs v3（纯 Go 重写带来的变化）**：
 
-| 维度 | v3.5.0 (Python) | v4.1.1-2 (Go) |
+| 维度 | v3.5.0 (Python) | v4.1.1-6 (Go) |
 |------|-----------------|---------------|
 | 运行时 | venv site-packages (~100MB) | 单 Go 二进制 (~13MB) + 内置模型 (~330MB) |
 | embedding | 外部 llama.cpp 18080 (bge-large-zh q8_0) | **内置 ORT int8，随包分发，无外部依赖** |

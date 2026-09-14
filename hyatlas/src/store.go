@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"log"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/philippgille/chromem-go"
 	"github.com/tuancookiez-hub/hyatlas-v4/graph"
@@ -55,7 +57,20 @@ type MemoryStore struct {
 	searches   atomic.Uint64
 	countsPath string
 	// embed dimension (384 en / 1024 zh), set at open time
-	dims int
+	dims       int
+
+	// --- index write coalescing (reduces SSD writes from ~11 GB/day to ~0.5 GB/day) ---
+	// Each persistIndex() call marks dirty + schedules a debounced flush. Rapid
+	// writes within HYATLAS_INDEX_FLUSH_SEC (default 1s) collapse into ONE disk write.
+	// The on-disk index may lag up to that many seconds; crash within that window
+	// loses only the in-flight batch (chromem is the source of truth; rebuildIndex
+	// restores the exact index on next startup).
+	// See: 2026-09-14 SSD write analysis (t_d079e5f5).
+	indexFlushMu sync.Mutex
+	indexDirty   bool
+	indexTimer   *time.Timer
+	indexFlushCh chan struct{} // closed once; drains pending flush before Close()
+	indexFlushed bool
 }
 
 // NewMemoryStore opens (or creates) the persistent layer DB + graph + doc index.
@@ -75,7 +90,8 @@ func NewMemoryStore(ctx context.Context, dir string, embed Embedder, graphPath s
 		cols: map[memory.Layer]*chromem.Collection{}, index: map[string]DocIndex{},
 		indexPath:  filepath.Join(dir, "doc_index.json"),
 		countsPath: filepath.Join(dir, "usage.json"),
-		dims:       dims}
+		dims:       dims,
+		indexFlushCh: make(chan struct{})}
 	// load persisted counters before rebuildIndex so writes/searches survive restart.
 	s.loadUsage()
 	for _, l := range memory.All() {
@@ -417,6 +433,27 @@ func (s *MemoryStore) persistUsageAsync() {
 // Close drains any pending async persistence before the store is discarded.
 // Safe to call multiple times.
 func (s *MemoryStore) Close() {
+	// Stop accepting deferred flushes so persistIndex falls back to sync writes.
+	s.indexFlushMu.Lock()
+	if !s.indexFlushed {
+		s.indexFlushed = true
+		close(s.indexFlushCh)
+	}
+	if s.indexTimer != nil {
+		s.indexTimer.Stop()
+		s.indexTimer = nil
+	}
+	dirty := s.indexDirty
+	s.indexDirty = false
+	s.indexFlushMu.Unlock()
+	// If there was an unflushed dirty batch, drain it now before we tear down.
+	if dirty {
+		s.mu.RLock()
+		if err := s.persistIndexLocked(); err != nil {
+			log.Printf("hyatlas: final index flush failed: %v", err)
+		}
+		s.mu.RUnlock()
+	}
 	s.persistUsage() // sync; wait for any in-flight goroutine
 }
 
@@ -454,9 +491,63 @@ func docIndexFrom(id, layer, content string, meta map[string]string) DocIndex {
 }
 
 func (s *MemoryStore) persistIndex() error {
+	// Defer to scheduleIndexFlush if the flush channel is still open (i.e. the
+	// store isn't shutting down). Otherwise fall through to a direct write.
+	select {
+	case <-s.indexFlushCh:
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		return s.persistIndexLocked()
+	default:
+	}
+	return s.scheduleIndexFlush()
+}
+
+// scheduleIndexFlush marks the index dirty and resets a debounced timer. Every
+// call within the flush interval collapses into a single disk write — this is
+// the whole point of the coalescing.
+func (s *MemoryStore) scheduleIndexFlush() error {
+	s.indexFlushMu.Lock()
+	s.indexDirty = true
+	if s.indexTimer != nil {
+		s.indexTimer.Stop()
+	}
+	s.indexTimer = time.AfterFunc(s.indexFlushInterval(), func() {
+		s.flushIndex()
+	})
+	s.indexFlushMu.Unlock()
+	return nil
+}
+
+// indexFlushInterval returns the coalescing window from HYATLAS_INDEX_FLUSH_SEC.
+// Defaults to 1s; set 0 (or negative) to disable coalescing (legacy sync mode).
+func (s *MemoryStore) indexFlushInterval() time.Duration {
+	if v := os.Getenv("HYATLAS_INDEX_FLUSH_SEC"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return time.Duration(n) * time.Second
+		}
+	}
+	return time.Second
+}
+
+// flushIndex performs the actual disk write if dirty, then clears the dirty flag.
+func (s *MemoryStore) flushIndex() {
+	s.indexFlushMu.Lock()
+	dirty := s.indexDirty
+	s.indexDirty = false
+	s.indexTimer = nil
+	s.indexFlushMu.Unlock()
+	if !dirty {
+		return
+	}
+	// Hold the read lock during the actual write so the map we serialize is a
+	// consistent snapshot. Writes take the write lock and go through the
+	// schedule path, so no race here.
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.persistIndexLocked()
+	if err := s.persistIndexLocked(); err != nil {
+		log.Printf("hyatlas: index flush failed: %v", err)
+	}
 }
 
 // persistIndexLocked writes the index assuming the caller already holds s.mu.

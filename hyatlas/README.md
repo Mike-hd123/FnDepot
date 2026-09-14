@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| 当前发布 | **4.1.1-2**（v4 纯 Go · B2 改造） |
+| 当前发布 | **4.1.1-6**（v4 纯 Go · B2 改造 + index 写入合并） |
 | 市场条目 | `fnpack.json` → `apps.hyatlas.releases` |
 | 包说明 | [README.v4.1.1.md](./README.v4.1.1.md) |
 | 源码 | `src/`（v4 Go 工程 + `src/fnos-native/` 打包层） |

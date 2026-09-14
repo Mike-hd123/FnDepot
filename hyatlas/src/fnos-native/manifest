@@ -1,5 +1,5 @@
 appname                    = hyatlas
-version                    = 4.1.1-5
+version                    = 4.1.1-6
 display_name               = 混元记忆
 desc                       = 混元记忆 —— 7 层记忆服务：纯 Go 单二进制 + 内置 ONNX Runtime int8 向量模型(bge-large-zh 1024d)，面板汉化 + 移动端响应式布局。服务进程以专用用户 hy-memory 降权运行(不再 root)；权限/属主自愈，修复系统设置/评分页与图谱页(L5)数据展示。
 platform                   = x86
