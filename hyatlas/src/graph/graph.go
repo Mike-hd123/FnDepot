@@ -138,6 +138,37 @@ func (s *Store) AddEdgeWithSource(fromLabel, rel, toLabel, sourceID string) erro
 	return s.persistLocked()
 }
 
+// SupersedeEdges is the bitemporal close (write) entry for edges anchored to a
+// memory (P1.5, impl-spec §2#7). When a source doc is superseded, every still
+// ongoing edge whose Source == sourceID gets ValidTo/InvalidatedAt = at, so
+// SnapshotAsOf can reconstruct the world before the correction. Edges already
+// closed (ValidTo != 0) are left untouched — the first supersede wins, and
+// re-running a patch never moves the anchor. Returns the number of edges
+// closed; persistence happens only when something changed.
+//
+// This is deliberately inert outside the supersede path: nothing else in the
+// codebase writes ValidTo/InvalidatedAt (the read side SnapshotAsOf has always
+// been there; until P1.5 the write side had zero writers).
+func (s *Store) SupersedeEdges(sourceID string, at int64) (int, error) {
+	if sourceID == "" || at <= 0 {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	closed := 0
+	for i := range s.edges {
+		if s.edges[i].Source == sourceID && s.edges[i].ValidTo == 0 {
+			s.edges[i].ValidTo = at
+			s.edges[i].InvalidatedAt = at
+			closed++
+		}
+	}
+	if closed == 0 {
+		return 0, nil
+	}
+	return closed, s.persistLocked()
+}
+
 // AddEdge adds a directed relation between two node labels (auto-creating nodes).
 func (s *Store) AddEdge(fromLabel, rel, toLabel string) error {
 	s.mu.Lock()

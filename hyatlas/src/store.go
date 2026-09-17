@@ -682,13 +682,30 @@ func (s *MemoryStore) persistUsageInner(force bool) error {
 
 func docIndexFrom(id, layer, content string, meta map[string]string) DocIndex {
 	d := DocIndex{ID: id, Layer: layer, Content: content}
-	if meta != nil {
-		d.UserID = meta["user_id"]
-		d.AgentID = meta["agent_id"]
-		d.Ts = meta["ts"]
-		d.Extracted = meta["extracted"] == "true"
-		d.Meta = meta
+	if meta == nil {
+		// Preserve the old contract: a nil bag stays a nil Meta (consumers
+		// branch on it.Meta != nil). Add() writes the true chromem doc with a
+		// non-nil bag anyway, so this only covers direct index construction.
+		return d
 	}
+	d.UserID = meta["user_id"]
+	d.AgentID = meta["agent_id"]
+	d.Ts = meta["ts"]
+	d.Extracted = meta["extracted"] == "true"
+	// P1.5 L2 layer-label self-heal (impl-spec §5.2#1): the collection prefix
+	// is the ground truth for a doc's layer; doc_index.json consumers (the
+	// Python promote filter meta.layer=="l2_raw", /list, /patch reads) had no
+	// guarantee the label existed — docs written straight into chromem (v3
+	// legacy / shadow pipeline) came back from rebuildIndex with no meta.layer
+	// at all (shadow 09-05: 256/269 l2_raw docs missing the label), and a bad
+	// or missing label silently misroutes them through the layer gates. Every
+	// construction path — Add and rebuildIndex on each startup — funnels here,
+	// so persisting a corrected label heals old files on the next restart
+	// without a migration.
+	if meta["layer"] != layer {
+		meta["layer"] = layer
+	}
+	d.Meta = meta
 	return d
 }
 

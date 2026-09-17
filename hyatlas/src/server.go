@@ -108,9 +108,14 @@ func promoteExtraction(store *MemoryStore, ex *Extraction, userID, agentID, sour
 		if f.Data == "" {
 			continue
 		}
+		// source_id anchors the fact back to the L2 raw memory it was
+		// extracted from — audit join key (provenance: fact ← raw).
+		// NOTE: the P1.5 edge-close hook in handlePatch deliberately keys
+		// on Source==victim-id only and does NOT fan out through this key
+		// (one raw doc backs many sibling facts; over-closing is wrong).
 		_ = store.Add(memory.L3Fact, newID(), f.Data, map[string]string{
 			"user_id": userID, "agent_id": agentID,
-			"source_layer_label": f.Layer, "ts": now,
+			"source_layer_label": f.Layer, "ts": now, "source_id": sourceID,
 		})
 		// L1 Profile mirror REMOVED (plan v2 §3④'): user_preferences facts
 		// stay in L3 tagged source_kind=agent_extract. Rationale: this async
@@ -464,7 +469,26 @@ func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, 404, map[string]any{"error": "id not found", "id": body.ID})
 		return
 	}
-	jsonResponse(w, 200, map[string]any{"success": true, "id": body.ID, "previous": old})
+	// P1.5 bitemporal close: when a patch marks a doc as superseded (the
+	// agent-side adjudicator writes superseded_by/valid_until — see
+	// plugins/hy_memory/adjudicate.py), every graph edge that CITES THIS DOC
+	// as its L2 source (Edge.Source == id) stops being true from now. This
+	// is the ONLY ValidTo/InvalidatedAt writer in the codebase (impl-spec
+	// §2#7: the fields and SnapshotAsOf existed since day one but had zero
+	// writers). Strictly Source==id: one L2 doc can back many facts/edges,
+	// and superseding one victim must not over-close its siblings' edges —
+	// hence edges anchored to a *parent* raw memory are NOT fanned out.
+	// Monotonic on purpose: retracting superseded_by never re-opens edges.
+	// Failure is logged, never fatal: the metadata patch is the durable part.
+	edgesClosed := 0
+	if _, superseded := body.Set["superseded_by"]; superseded || body.Set["valid_until"] != "" {
+		if closed, err := s.store.Graph().SupersedeEdges(body.ID, time.Now().Unix()); err != nil {
+			log.Printf("patch %s: supersede graph edges failed: %v", body.ID, err)
+		} else {
+			edgesClosed = closed
+		}
+	}
+	jsonResponse(w, 200, map[string]any{"success": true, "id": body.ID, "previous": old, "graph_edges_closed": edgesClosed})
 }
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
