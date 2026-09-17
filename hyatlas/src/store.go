@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -71,6 +74,15 @@ type MemoryStore struct {
 	indexTimer   *time.Timer
 	indexFlushCh chan struct{} // closed once; drains pending flush before Close()
 	indexFlushed bool
+	// closedFlag flips in Close(). After that, persistIndex/persistUsageAsync/
+	// flushIndex refuse to touch the disk: the final drain in Close() already
+	// wrote everything. Without this guard the debounced timer AND the
+	// persistUsageAsync goroutine (whose "wait for in-flight" comment was
+	// never backed by a lock) can recreate a just-removed temp dir — the
+	// proven flake behind `t.TempDir cleanup: directory not empty`
+	// (see metadata tests, 2026-09-17).
+	closedFlag   atomic.Bool
+	usageWriteMu sync.Mutex // serialises counters writes vs Close's final drain
 }
 
 // NewMemoryStore opens (or creates) the persistent layer DB + graph + doc index.
@@ -129,8 +141,11 @@ func (s *MemoryStore) Add(layer memory.Layer, id, content string, meta map[strin
 	return s.persistIndex()
 }
 
-// Search does vector search, scoped to user/agent when provided.
-func (s *MemoryStore) Search(query string, limit int, layer memory.Layer, userID, agentID string) ([]SearchHit, error) {
+// Search does vector search, scoped to user/agent when provided. Expired
+// docs (valid_until in the past, see validUntilExpired) are filtered out —
+// pass true to include them (e.g. for the supersede "neighbors" lookup and
+// audit/dream tooling).
+func (s *MemoryStore) Search(query string, limit int, layer memory.Layer, userID, agentID string, includeExpired bool) ([]SearchHit, error) {
 	if limit <= 0 {
 		limit = 5
 	}
@@ -167,6 +182,9 @@ func (s *MemoryStore) Search(query string, limit int, layer memory.Layer, userID
 			return nil, err
 		}
 		for _, r := range res {
+			if !includeExpired && validUntilExpired(r.Metadata["valid_until"]) {
+				continue
+			}
 			hits = append(hits, SearchHit{ID: r.ID, Content: r.Content,
 				Score: r.Similarity, Layer: memory.Layer(l), Meta: r.Metadata})
 		}
@@ -351,6 +369,168 @@ func (s *MemoryStore) GetDoc(id string) (DocIndex, bool) {
 	return d, ok
 }
 
+// ---------------------------------------------------------------------------
+// Metadata layer (memory-optimization plan v2 §3 ①②③)
+//
+// Truth source is the chromem document metadata: rebuildIndex() overwrites
+// the derived doc index from chromem on every startup, so any field that
+// must survive a restart has to live in chromem. Every mutation below
+// therefore double-writes: chromem AddDocument (same-ID upsert) + s.index.
+//
+// chromem@v0.7.0 semantics relied on here (verified against module source):
+//   - GetByID returns a CLONE including the stored Embedding
+//   - AddDocument with an existing ID replaces the map entry in place and,
+//     for persistent collections, rewrites only that document's file
+//   - AddDocument skips (re-)embedding entirely when Embedding is non-empty
+//     => metadata updates never touch the embedder (no onnx / network cost).
+// ---------------------------------------------------------------------------
+
+// TouchIDs records a retrieval hit for the given ids: last_hit_at=now (RFC3339
+// UTC) and hit_count+1. Returns the number of docs updated. Unknown ids are
+// skipped silently (they may have been deleted concurrently).
+func (s *MemoryStore) TouchIDs(ids []string) (int, error) {
+	now := time.Now().UTC().Format(time.RFC3339)
+	touched := 0
+	for _, id := range ids {
+		d, ok := s.GetDoc(id)
+		if !ok {
+			continue
+		}
+		col, ok := s.cols[memory.Layer(d.Layer)]
+		if !ok {
+			continue
+		}
+		doc, err := col.GetByID(s.ctx, id)
+		if err != nil {
+			continue
+		}
+		if doc.Metadata == nil {
+			doc.Metadata = map[string]string{}
+		}
+		doc.Metadata["last_hit_at"] = now
+		doc.Metadata["hit_count"] = strconv.FormatInt(parseMetaInt(doc.Metadata["hit_count"])+1, 10)
+		if err := col.AddDocument(s.ctx, doc); err != nil {
+			return touched, err
+		}
+		s.applyMetaToIndex(id, map[string]string{
+			"last_hit_at": doc.Metadata["last_hit_at"],
+			"hit_count":   doc.Metadata["hit_count"],
+		}, nil)
+		touched++
+	}
+	if touched > 0 {
+		if err := s.persistIndex(); err != nil {
+			return touched, err
+		}
+	}
+	return touched, nil
+}
+
+// PatchMeta applies a neutral key/value metadata patch to one doc: set wins
+// over clear for the same key. layer/ts/user_id/agent_id are immutable.
+// Returns ErrNotFound when the id is not indexed, and (found, oldValues) for
+// every requested key so callers can roll back.
+func (s *MemoryStore) PatchMeta(id string, set map[string]string, clear []string) (bool, map[string]string, error) {
+	d, ok := s.GetDoc(id)
+	if !ok {
+		return false, nil, errNotFound
+	}
+	col, ok := s.cols[memory.Layer(d.Layer)]
+	if !ok {
+		return false, nil, fmt.Errorf("no collection for layer %q", d.Layer)
+	}
+	doc, err := col.GetByID(s.ctx, id)
+	if err != nil {
+		return false, nil, fmt.Errorf("doc %s not found in store: %w", id, err)
+	}
+	if doc.Metadata == nil {
+		doc.Metadata = map[string]string{}
+	}
+	old := map[string]string{}
+	for k, v := range set {
+		if metaImmutable[k] {
+			continue
+		}
+		old[k] = doc.Metadata[k]
+		doc.Metadata[k] = v
+	}
+	for _, k := range clear {
+		if metaImmutable[k] {
+			continue
+		}
+		if _, done := old[k]; !done {
+			old[k] = doc.Metadata[k]
+		}
+		delete(doc.Metadata, k)
+	}
+	if err := col.AddDocument(s.ctx, doc); err != nil {
+		return false, nil, err
+	}
+	s.applyMetaToIndex(id, set, clear)
+	return true, old, s.persistIndex()
+}
+
+var errNotFound = errors.New("not found")
+
+// metaImmutable keys are owned by the write path and the index projection;
+// /patch must never rewrite them (the derived DocIndex fields would drift).
+var metaImmutable = map[string]bool{"layer": true, "ts": true, "user_id": true, "agent_id": true}
+
+// applyMetaToIndex mirrors a metadata change onto the derived doc index. Takes
+// the write lock; callers must not hold s.mu.
+func (s *MemoryStore) applyMetaToIndex(id string, set map[string]string, clear []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	d, ok := s.index[id]
+	if !ok {
+		return
+	}
+	meta := make(map[string]string, len(d.Meta)+len(set))
+	for k, v := range d.Meta {
+		meta[k] = v
+	}
+	for _, k := range clear {
+		if !metaImmutable[k] {
+			delete(meta, k)
+		}
+	}
+	for k, v := range set {
+		if !metaImmutable[k] {
+			meta[k] = v
+		}
+	}
+	d.Meta = meta
+	s.index[id] = d
+}
+
+// validUntilExpired reports whether an RFC3339 valid_until is in the past.
+// A "!force" suffix (set by /patch ?force=1 when lowering valid_until below
+// gmt_created) always returns false — forced values must never hide content.
+// Empty string or unparsable value also return false — fail-open, mirroring
+// the L7 dedup error style.
+func validUntilExpired(s string) bool {
+	if strings.HasSuffix(s, "!force") {
+		return false
+	}
+	if s == "" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return false
+	}
+	return t.Before(time.Now())
+}
+
+func parseMetaInt(s string) int64 {
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil || n < 0 {
+		return 0
+	}
+	return n
+}
+
+
 // LayerCounts returns the number of docs per layer (exact).
 func (s *MemoryStore) LayerCounts() map[string]int {
 	s.mu.RLock()
@@ -420,7 +600,8 @@ func (s *MemoryStore) loadUsage() {
 }
 
 // persistUsageAsync writes the counters without blocking the request path.
-// One pending write at a time; the latest call's snapshot wins.
+// One pending write at a time; the latest call's snapshot wins. After Close()
+// it is a no-op (guarded by closedFlag under usageWriteMu, see persistUsage).
 func (s *MemoryStore) persistUsageAsync() {
 	if s.countsPath == "" {
 		return
@@ -433,6 +614,13 @@ func (s *MemoryStore) persistUsageAsync() {
 // Close drains any pending async persistence before the store is discarded.
 // Safe to call multiple times.
 func (s *MemoryStore) Close() {
+	// Flip the stop flag under usageWriteMu so any in-flight persistUsageAsync
+	// goroutine either finished before us or sees closedFlag and no-ops. The
+	// old code only called persistUsage() once at the end and never actually
+	// waited — a late goroutine could recreate a t.TempDir already cleaned up.
+	s.usageWriteMu.Lock()
+	s.closedFlag.Store(true)
+	s.usageWriteMu.Unlock()
 	// Stop accepting deferred flushes so persistIndex falls back to sync writes.
 	s.indexFlushMu.Lock()
 	if !s.indexFlushed {
@@ -447,17 +635,32 @@ func (s *MemoryStore) Close() {
 	s.indexDirty = false
 	s.indexFlushMu.Unlock()
 	// If there was an unflushed dirty batch, drain it now before we tear down.
+	// Write-lock (not RLock): this also waits for any in-flight flushIndex()
+	// that passed its first closedFlag check but is still holding RLock, so
+	// the final on-disk state is a superset of anything it could have written.
 	if dirty {
-		s.mu.RLock()
+		s.mu.Lock()
 		if err := s.persistIndexLocked(); err != nil {
 			log.Printf("hyatlas: final index flush failed: %v", err)
 		}
-		s.mu.RUnlock()
+		s.mu.Unlock()
 	}
-	s.persistUsage() // sync; wait for any in-flight goroutine
+	s.persistUsageInner(true) // force final counters write despite closedFlag
 }
 
 func (s *MemoryStore) persistUsage() error {
+	return s.persistUsageInner(false)
+}
+
+// persistUsageInner writes the counters while holding usageWriteMu. Unless
+// force is set (Close's final drain), it no-ops after Close so a late
+// async caller cannot recreate an already-removed data dir.
+func (s *MemoryStore) persistUsageInner(force bool) error {
+	s.usageWriteMu.Lock()
+	defer s.usageWriteMu.Unlock()
+	if !force && s.closedFlag.Load() {
+		return nil
+	}
 	if s.countsPath == "" {
 		return nil
 	}
@@ -491,6 +694,12 @@ func docIndexFrom(id, layer, content string, meta map[string]string) DocIndex {
 }
 
 func (s *MemoryStore) persistIndex() error {
+	// After Close(), doc_index.json writes are dropped: chromem is the source
+	// of truth and rebuildIndex restores the exact index on next startup, so
+	// a late async caller must not recreate an already-removed data dir.
+	if s.closedFlag.Load() {
+		return nil
+	}
 	// Defer to scheduleIndexFlush if the flush channel is still open (i.e. the
 	// store isn't shutting down). Otherwise fall through to a direct write.
 	select {
@@ -537,7 +746,7 @@ func (s *MemoryStore) flushIndex() {
 	s.indexDirty = false
 	s.indexTimer = nil
 	s.indexFlushMu.Unlock()
-	if !dirty {
+	if !dirty || s.closedFlag.Load() {
 		return
 	}
 	// Hold the read lock during the actual write so the map we serialize is a
@@ -545,6 +754,12 @@ func (s *MemoryStore) flushIndex() {
 	// schedule path, so no race here.
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	// Re-check under the lock: Close()'s s.mu.Lock() drain guarantees that
+	// once we hold RLock here and the flag is still clear, Close hasn't
+	// started its final flush — otherwise it wins and we must not write.
+	if s.closedFlag.Load() {
+		return
+	}
 	if err := s.persistIndexLocked(); err != nil {
 		log.Printf("hyatlas: index flush failed: %v", err)
 	}
