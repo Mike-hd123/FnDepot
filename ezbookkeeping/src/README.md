@@ -3,7 +3,7 @@ EZBookkeeping fnOS 打包说明（fpk-src 构建模板）
 
 上级项目: mayswind/ezbookkeeping (https://github.com/mayswind/ezbookkeeping)
 打包发布者: Mike (https://github.com/Mike-hd123)
-上游版本: v1.6.1 (官方 linux-amd64 release 原样打包, 不重编译)
+上游版本: v2.0.0 (官方 linux-amd64 release 原样打包, 不重编译)
 
 目录结构
 --------
@@ -45,5 +45,5 @@ server/           # 【构建时生成】官方二进制 + public/ + conf/ + tem
 
 构建
 ----
-./build.sh 1.6.1 5 x86     # VERSION REL ARCH
-产物: ezbookkeeping-1.6.1-5-x86.fpk
+./build.sh 2.0.0 1 x86     # VERSION REL ARCH
+产物: ezbookkeeping-2.0.0-1-x86.fpk

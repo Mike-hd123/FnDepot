@@ -1,7 +1,7 @@
 #!/bin/bash
 # build.sh — 从官方 release 组装 EZBookkeeping fnOS fpk（原生应用，参照 9router 标准打法）
 #
-# 用法: ./build.sh [VERSION] [REL] [ARCH]   默认 VERSION=1.6.1 REL=5 ARCH=x86
+# 用法: ./build.sh [VERSION] [REL] [ARCH]   默认 VERSION=2.0.0 REL=1 ARCH=x86
 #   REL=微版本后缀(如 5),用于本地再打包迭代; 上游 tarball 始终用纯 VERSION。
 # 依赖: curl, tar, sed, fnpack (https://static2.fnnas.com/fnpack/fnpack-1.2.1-linux-amd64)
 # 产物: ezbookkeeping-<VERSION>-<REL>-<ARCH>.fpk
@@ -13,8 +13,8 @@
 
 set -euo pipefail
 
-VERSION="${1:-1.6.1}"
-REL="${2:-5}"
+VERSION="${1:-2.0.0}"
+REL="${2:-1}"
 ARCH="${3:-x86}"
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="/tmp/build-ezbookkeeping-fpk-$$"
@@ -106,7 +106,7 @@ cat > "${BUILD_DIR}/manifest" <<EOF
 appname               = ezbookkeeping
 version               = ${FULL_VERSION}
 display_name          = 记账
-desc                  = 轻量自托管个人记账：多账本/报表洞察/账单批量导入(Excel·微信·支付宝·京东)/原生 MCP 与 API 接口。v12 回退 v11 index 纯跳转页(恢复上游原版 SPA 入口)；sidecar 加 desktop/mobile.html 静态兜底(内置服务器场景 UA 跳转不再 100001)；桌面/手机图标改 socket 型(/app/ezbookkeeping，经 sidecar 剥前缀反代+gzip)；install_callback 幂等兜底 enable_gzip=true。
+desc                  = 轻量自托管个人记账：多账本/报表洞察/账单批量导入(Excel·微信·支付宝·京东)/原生 MCP 与 API 接口。上游 v2.0.0（1.x→2.x 大版本升级：Monaco 编辑器/洞察报表自定义图表/信用卡额度/S3 对象存储/全新仪表盘）；延续 v1.6.1-14 本地定制：index 纯跳转页(恢复上游原版 SPA 入口)、sidecar desktop/mobile.html 静态兜底 + 剥前缀反代 + gzip、端口 8580、数据目录钉死 @appdata/ezbookkeeping。
 platform              = ${ARCH}
 source                = thirdparty
 maintainer            = MaysWind
