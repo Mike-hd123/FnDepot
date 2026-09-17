@@ -138,6 +138,30 @@ class HyatlasClient:
             body["metadata"] = metadata
         return self._post("/api/v1/add", body)
 
+    def patch(
+        self,
+        memory_id: str,
+        set_meta: Optional[Dict[str, str]] = None,
+        clear: Optional[List[str]] = None,
+        force: bool = False,
+    ) -> Dict[str, Any]:
+        """POST /api/v1/patch — neutral metadata patch primitive (P0-a).
+
+        Supersede semantics live in the fields the caller sets
+        (valid_until / superseded_by / supersede_ids); Go only stores.
+        """
+        body: Dict[str, Any] = {"id": memory_id}
+        if set_meta:
+            body["set"] = set_meta
+        if clear:
+            body["clear"] = clear
+        path = "/api/v1/patch" + ("?force=1" if force else "")
+        return self._post(path, body)
+
+    def touch(self, memory_ids: List[str], source: str = "") -> Dict[str, Any]:
+        """POST /api/v1/touch — explicit recall telemetry entry."""
+        return self._post("/api/v1/touch", {"ids": memory_ids, "source": source})
+
     def search(
         self,
         query: str,
@@ -145,6 +169,7 @@ class HyatlasClient:
         agent_id: str = "",
         layer: str = "",
         limit: int = 10,
+        include_expired: bool = False,
     ) -> Dict[str, Any]:
         body: Dict[str, Any] = {
             "query": query,
@@ -154,6 +179,8 @@ class HyatlasClient:
         }
         if layer:
             body["layer"] = layer
+        if include_expired:
+            body["include_expired"] = True
         return self._post("/api/v1/search", body)
 
     def list_memories(

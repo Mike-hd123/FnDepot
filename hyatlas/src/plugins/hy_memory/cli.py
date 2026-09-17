@@ -97,11 +97,21 @@ def _cmd_add(args: argparse.Namespace) -> int:
     try:
         client = _client_from_args(args)
         provider = plugin_root.HyatlasMemoryProvider()
-        resp = client.add(
-            text=args.text,
-            user_id=args.user_id or provider._user_id,
-            agent_id=args.agent_id or provider._agent_id,
-        )
+        adj = provider._ensure_adjudicator()
+        if adj is not None:
+            # P0-b §4.1 first trigger point: CLI writes go through the
+            # same adjudication pipeline as the plugin tool.
+            resp = adj.wrap_add(
+                text=args.text,
+                user_id=args.user_id or "default",
+                agent_id=args.agent_id or "default",
+            )
+        else:
+            resp = client.add(
+                text=args.text,
+                user_id=args.user_id or provider._user_id,
+                agent_id=args.agent_id or provider._agent_id,
+            )
         _print(resp)
         return 0
     except (HyatlasClientError, HyatlasUnreachable) as e:

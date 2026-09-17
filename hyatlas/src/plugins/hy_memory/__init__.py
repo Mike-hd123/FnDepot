@@ -47,6 +47,21 @@ from .schemas import (  # noqa: E402
     HYATLAS_ADD_SCHEMA,
 )
 
+# P0-b source_kind whitelist (卡面问题3 / impl-spec §4.1c):
+# kinds an entry must carry to be rendered without a quarantine flag.
+# Empty/missing source_kind = legacy row pre-dating the field — trusted
+# but Dream may rewrite them. Anything else (agent_extract from web/mail
+# content, peer echoes) is untrusted: dropped from the profile channel,
+# flagged inline elsewhere. L1 mirror reroute (Go ④') closes the write
+# side; this closes the read side.
+TRUSTED_SOURCE_KINDS = frozenset({
+    "",  # legacy rows, no field yet
+    "agent_write",     # explicit /add via plugin or CLI
+    "user_direct",     # hermes memory tool mirror (user-profile block)
+    "backfill",        # P0-b runbook winners
+    "dream",           # cron consolidation products
+})
+
 
 # =============================================================================
 # Configuration
@@ -144,6 +159,7 @@ class HyatlasMemoryProvider(MemoryProvider):
         self._agent_id: str = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_result: str = ""
+        self._adjudicator: Optional[Any] = None  # lazy P0-b conflict wrapper
         self._process: Optional[Any] = None  # lazy import to keep _load_config cheap
         self._version = "4.0.1"
 
@@ -272,13 +288,24 @@ class HyatlasMemoryProvider(MemoryProvider):
                 )
                 return json.dumps(items)
             if tool_name == "hyatlas_add":
-                resp = self._client.add(
-                    text=args.get("text", ""),
-                    user_id=args.get("user_id", self._user_id) or self._user_id,
-                    agent_id=args.get("agent_id", self._agent_id) or self._agent_id,
-                    session_id=args.get("session_id", "") or "",
-                )
-                return json.dumps(resp)
+                uid = args.get("user_id", self._user_id) or self._user_id
+                aid = args.get("agent_id", self._agent_id) or self._agent_id
+                adj = self._ensure_adjudicator()
+                if adj is not None:
+                    # P0-b §4.1: neighbours -> LLM four-way verdict ->
+                    # supersede patches ride on metadata fields only.
+                    resp = adj.wrap_add(
+                        text=args.get("text", ""),
+                        user_id=uid, agent_id=aid,
+                    )
+                else:
+                    resp = self._client.add(
+                        text=args.get("text", ""),
+                        user_id=uid,
+                        agent_id=aid,
+                        session_id=args.get("session_id", "") or "",
+                    )
+                return json.dumps(resp, ensure_ascii=False, default=str)
             return json.dumps({"error": f"unknown tool: {tool_name}"})
         except HyatlasClientError as e:
             return json.dumps({"error": str(e)})
@@ -413,6 +440,18 @@ class HyatlasMemoryProvider(MemoryProvider):
         meta.setdefault("write_origin", "memory_tool")
         meta.setdefault("target", target)
         try:
+            adj = self._ensure_adjudicator()
+            if adj is not None:
+                # P0-b §4.1: agent-chosen atomic facts are exactly where
+                # contradiction pairs were born (充电器/NeoHorse) — route
+                # them through the adjudicator before storing.
+                adj.wrap_add(
+                    text=content,
+                    user_id=self._user_id,
+                    agent_id=self._agent_id,
+                    metadata=dict(meta, session_id=meta.get("session_id", "") or ""),
+                )
+                return
             self._client.add(
                 text=content,
                 user_id=self._user_id,
@@ -506,6 +545,24 @@ class HyatlasMemoryProvider(MemoryProvider):
             )
         return self._client
 
+    def _ensure_adjudicator(self):
+        """P0-b §4.1 conflict-adjudication wrapper around client.add().
+
+        Returns None when the module or its LLM config is unavailable —
+        callers then degrade to plain add (fail-open, facts must never
+        be lost because adjudication broke).
+        """
+        if self._adjudicator is None:
+            try:
+                from .adjudicate import Adjudicator
+                cfg = self._config.get("adjudicate") or {}
+                adj = Adjudicator(self._ensure_client(), cfg)
+                self._adjudicator = adj if adj.active() else False
+            except Exception as e:
+                logger.debug("adjudicator unavailable: %s", e)
+                self._adjudicator = False
+        return self._adjudicator or None
+
     def _resolve_user_id(self, kwargs: Dict[str, Any]) -> str:
         return (
             os.environ.get("HYATLAS_USER_ID", "").strip()
@@ -553,7 +610,15 @@ class HyatlasMemoryProvider(MemoryProvider):
         return "\n\n".join(parts)
 
     def _format_prefetch(self, results: Dict[str, Any], query: str) -> str:
-        """Format v4's 3-channel search result into a prompt block."""
+        """Format v4's 3-channel search result into a prompt block.
+
+        P0-b whitelist rule (impl-spec §4.1c / 卡面问题3): entries whose
+        metadata.source_kind is NOT in TRUSTED_SOURCE_KINDS are passive
+        extractor products (web/mail content can steer them — the charger
+        contradiction pair's real source). They are dropped from the
+        profile channel entirely and flagged [untrusted:<kind>] elsewhere,
+        so the model can cite them but never treats them as identity facts.
+        """
         memories = results.get("memories", {})
         channels = []
         for channel_name in ("profile", "proactive", "normal"):
@@ -565,10 +630,17 @@ class HyatlasMemoryProvider(MemoryProvider):
                 content = m.get("content", "")
                 layer = m.get("layer", "")
                 score = m.get("score", 0.0)
+                kind = str((m.get("metadata") or {}).get("source_kind", "") or "")
+                if kind and kind not in TRUSTED_SOURCE_KINDS:
+                    if channel_name == "profile":
+                        continue  # never launder untrusted content into L1-identity channel
+                    tag = f", untrusted:{kind}"
+                else:
+                    tag = ""
                 if content:
                     snippet = content[:300]
                     channel_lines.append(
-                        f"- ({layer}, score {score:.2f}) {snippet}"
+                        f"- ({layer}, score {score:.2f}{tag}) {snippet}"
                     )
             if len(channel_lines) > 1:
                 channels.append("\n".join(channel_lines))
@@ -656,9 +728,14 @@ def _slash_hyatlas(raw_args: str) -> str:
                                         agent_id=provider._agent_id, limit=10)
             return json.dumps(items)
         if cmd == "add":
-            resp = client.add(text=rest, user_id=provider._user_id,
-                              agent_id=provider._agent_id)
-            return json.dumps(resp)
+            adj = provider._ensure_adjudicator()
+            if adj is not None:
+                resp = adj.wrap_add(text=rest, user_id=provider._user_id,
+                                    agent_id=provider._agent_id)
+            else:
+                resp = client.add(text=rest, user_id=provider._user_id,
+                                  agent_id=provider._agent_id)
+            return json.dumps(resp, ensure_ascii=False, default=str)
         if cmd == "start":
             from . import process as process_mod
             process = process_mod.HyatlasProcess(provider._config)
