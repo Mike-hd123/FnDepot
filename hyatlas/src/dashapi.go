@@ -573,7 +573,7 @@ func (s *Server) handleDashSearch(w http.ResponseWriter, r *http.Request) {
 	if len(body.AgentIDs) > 0 {
 		agentID = body.AgentIDs[0]
 	}
-	res, err := s.store.Search(body.Query, limit, "", userID, agentID)
+	res, err := s.store.Search(body.Query, limit, "", userID, agentID, false)
 	if err != nil {
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return

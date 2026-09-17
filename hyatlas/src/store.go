@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
-	"log"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -529,7 +529,6 @@ func parseMetaInt(s string) int64 {
 	}
 	return n
 }
-
 
 // LayerCounts returns the number of docs per layer (exact).
 func (s *MemoryStore) LayerCounts() map[string]int {

@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -110,10 +112,16 @@ func promoteExtraction(store *MemoryStore, ex *Extraction, userID, agentID, sour
 			"user_id": userID, "agent_id": agentID,
 			"source_layer_label": f.Layer, "ts": now,
 		})
-		// L1 Profile: user_preferences are stable identity — mirror to profile layer.
+		// L1 Profile mirror REMOVED (plan v2 §3④'): user_preferences facts
+		// stay in L3 tagged source_kind=agent_extract. Rationale: this async
+		// mirror was the only automated write path into L1 (external content →
+		// extractor → profile, the charger-contradiction source). L1 is now
+		// writable only through explicit /add and /patch. Adjudication stays
+		// agent-side; the derived L3 copy keeps the info retrievable.
 		if f.Layer == "user_preferences" {
-			_ = store.Add(memory.L1Profile, newID(), f.Data, map[string]string{
+			_ = store.Add(memory.L3Fact, newID(), f.Data, map[string]string{
 				"user_id": userID, "agent_id": agentID, "ts": now,
+				"source_kind": "agent_extract",
 			})
 		}
 	}
@@ -277,11 +285,12 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Query    string   `json:"query"`
-		Limit    int      `json:"limit"`
-		Layer    string   `json:"layer"`     // optional: filter to one memory layer
-		UserIDs  []string `json:"user_ids"`  // optional: restrict to these users
-		AgentIDs []string `json:"agent_ids"` // optional: restrict to these agents
+		Query          string   `json:"query"`
+		Limit          int      `json:"limit"`
+		Layer          string   `json:"layer"`           // optional: filter to one memory layer
+		UserIDs        []string `json:"user_ids"`        // optional: restrict to these users
+		AgentIDs       []string `json:"agent_ids"`       // optional: restrict to these agents
+		IncludeExpired bool     `json:"include_expired"` // default false: drop docs past valid_until
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonResponse(w, 400, map[string]any{"error": "bad body"})
@@ -298,19 +307,20 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if len(body.AgentIDs) > 0 {
 		agentID = body.AgentIDs[0]
 	}
-	res, err := s.store.Search(body.Query, body.Limit, memory.Layer(body.Layer), userID, agentID)
+	res, err := s.store.Search(body.Query, body.Limit, memory.Layer(body.Layer), userID, agentID, body.IncludeExpired)
 	if err != nil {
 		jsonResponse(w, 500, map[string]any{"error": err.Error()})
 		return
 	}
 	type hit struct {
-		MemoryID   string  `json:"memory_id"`
-		Content    string  `json:"content"`
-		Score      float64 `json:"score"`
-		Layer      string  `json:"layer"`
-		GmtCreated int64   `json:"gmt_created"`
-		UserID     string  `json:"user_id,omitempty"`
-		AgentID    string  `json:"agent_id,omitempty"`
+		MemoryID   string            `json:"memory_id"`
+		Content    string            `json:"content"`
+		Score      float64           `json:"score"`
+		Layer      string            `json:"layer"`
+		GmtCreated int64             `json:"gmt_created"`
+		UserID     string            `json:"user_id,omitempty"`
+		AgentID    string            `json:"agent_id,omitempty"`
+		Meta       map[string]string `json:"metadata,omitempty"`
 	}
 	profileHits := []hit{}
 	proactiveHits := []hit{}
@@ -318,7 +328,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	for _, h := range res {
 		it := hit{MemoryID: h.ID, Content: h.Content, Score: float64(h.Score),
 			Layer: string(h.Layer), GmtCreated: gmtCreated(h.Meta["ts"]),
-			UserID: h.Meta["user_id"], AgentID: h.Meta["agent_id"]}
+			UserID: h.Meta["user_id"], AgentID: h.Meta["agent_id"], Meta: h.Meta}
 		switch h.Layer {
 		case memory.L1Profile, memory.L6Schema:
 			profileHits = append(profileHits, it)
@@ -328,10 +338,133 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			normalHits = append(normalHits, it)
 		}
 	}
+	// Async retrieval telemetry (plan v2 §3②): touch top-3 hits scoring at
+	// or above HYATLAS_TOUCH_MIN_SCORE (default 0.72; 0 disables touching
+	// entirely — the fallback switch). Never blocks the response; failures
+	// are log-only. Threshold rationale: measured noise top1 was 0.6834,
+	// real hits land 0.80+.
+	if ids := touchCandidates(res); len(ids) > 0 {
+		go func() {
+			if n, err := s.store.TouchIDs(ids); err != nil {
+				log.Printf("touch: %d/%d ids failed: %v", n, len(ids), err)
+			}
+		}()
+	}
 	// plugin channel order: profile -> proactive -> normal
 	jsonResponse(w, 200, map[string]any{"memories": map[string]any{
 		"profile": profileHits, "proactive": proactiveHits, "normal": normalHits,
 	}})
+}
+
+// touchCandidates picks the ids eligible for hit telemetry from a ranked
+// search result: rank <= 3 (res is already sorted desc) and score >= gate
+// (env HYATLAS_TOUCH_MIN_SCORE, default 0.72; <=0 disables).
+func touchCandidates(res []SearchHit) []string {
+	gate := parseFloatDefault(envOr("HYATLAS_TOUCH_MIN_SCORE", "0.72"), 0.72)
+	if gate <= 0 {
+		return nil
+	}
+	var ids []string
+	for i, h := range res {
+		if i >= 3 {
+			break
+		}
+		if float64(h.Score) >= gate {
+			ids = append(ids, h.ID)
+		}
+	}
+	return ids
+}
+
+func (s *Server) handleTouch(w http.ResponseWriter, r *http.Request) {
+	// POST /api/v1/touch {ids:[...], source:"search"} — explicit telemetry
+	// entry point for callers that know a doc was useful (the search path
+	// touches automatically behind the score gate).
+	var body struct {
+		IDs    []string `json:"ids"`
+		Source string   `json:"source"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonResponse(w, 400, map[string]any{"error": "bad body"})
+		return
+	}
+	if len(body.IDs) == 0 {
+		jsonResponse(w, 400, map[string]any{"error": "ids required"})
+		return
+	}
+	n, err := s.store.TouchIDs(body.IDs)
+	if err != nil {
+		jsonResponse(w, 500, map[string]any{"error": err.Error(), "touched": n})
+		return
+	}
+	jsonResponse(w, 200, map[string]any{"touched": n, "source": body.Source})
+}
+
+func (s *Server) handlePatch(w http.ResponseWriter, r *http.Request) {
+	// POST /api/v1/patch {id, set:{k:v}, clear:[k]} — neutral metadata
+	// primitive. Supersede = patch(old id, set={valid_until, superseded_by})
+	// + add(new doc, metadata={supersede_ids,...}); the adjudication lives on
+	// the agent side, Go only stores. Guardrails (plan v2 §3③): non-empty
+	// keys; valid_until / ttl_until must parse as RFC3339 (or "" to unset)
+	// unless ?force=1; lowering valid_until below gmt_created requires
+	// force and gets a "!force" suffix so validUntilExpired keeps it visible
+	// (locked content never disappears — plan §3.3 边界); unknown id -> 404.
+	var body struct {
+		ID    string            `json:"id"`
+		Set   map[string]string `json:"set"`
+		Clear []string          `json:"clear"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		jsonResponse(w, 400, map[string]any{"error": "bad body"})
+		return
+	}
+	if body.ID == "" {
+		jsonResponse(w, 400, map[string]any{"error": "id required"})
+		return
+	}
+	force := r.URL.Query().Get("force") == "1"
+	for k := range body.Set {
+		if strings.TrimSpace(k) == "" {
+			jsonResponse(w, 400, map[string]any{"error": "empty metadata key"})
+			return
+		}
+	}
+	for _, k := range []string{"valid_until", "ttl_until"} {
+		if v, ok := body.Set[k]; ok && v != "" {
+			t, err := time.Parse(time.RFC3339, v)
+			if err != nil {
+				jsonResponse(w, 400, map[string]any{
+					"error": fmt.Sprintf("%s must be RFC3339 (got %q)", k, v)})
+				return
+			}
+			if !force {
+				if d, ok := s.store.GetDoc(body.ID); ok {
+					gmt := gmtCreated(d.Meta["ts"])
+					if k == "valid_until" && gmt > 0 && t.Unix() < int64(gmt) {
+						jsonResponse(w, 400, map[string]any{"error": fmt.Sprintf(
+							"valid_until %q is before gmt_created %d — locked content would vanish; use ?force=1", v, gmt)})
+						return
+					}
+				}
+			} else if k == "valid_until" {
+				body.Set[k] = v + "!force"
+			}
+		}
+	}
+	found, old, err := s.store.PatchMeta(body.ID, body.Set, body.Clear)
+	if err != nil {
+		if errors.Is(err, errNotFound) {
+			jsonResponse(w, 404, map[string]any{"error": "id not found", "id": body.ID})
+			return
+		}
+		jsonResponse(w, 500, map[string]any{"error": err.Error()})
+		return
+	}
+	if !found {
+		jsonResponse(w, 404, map[string]any{"error": "id not found", "id": body.ID})
+		return
+	}
+	jsonResponse(w, 200, map[string]any{"success": true, "id": body.ID, "previous": old})
 }
 
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
@@ -428,7 +561,7 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(ids) == 0 {
 		jsonResponse(w, 400, map[string]any{
-			"error":       "bulk delete_all is disabled (09-07 incident guard); pass ?id=<memory_id[,memory_id...]> to delete specific items",
+			"error":         "bulk delete_all is disabled (09-07 incident guard); pass ?id=<memory_id[,memory_id...]> to delete specific items",
 			"deleted_count": 0,
 		})
 		return
@@ -593,7 +726,7 @@ func (s *Server) handleStarmapGraph(w http.ResponseWriter, r *http.Request) {
 		if semCount >= maxSem {
 			break
 		}
-		hits, err := s.store.Search(it.Content, kSem+1, "", "", "")
+		hits, err := s.store.Search(it.Content, kSem+1, "", "", "", false)
 		if err != nil {
 			continue
 		}
@@ -711,7 +844,7 @@ func (s *Server) handleGraphEdges(w http.ResponseWriter, r *http.Request) {
 		if semCount >= maxSem {
 			break
 		}
-		hits, err := s.store.Search(it.Content, semanticK+1, "", "", "")
+		hits, err := s.store.Search(it.Content, semanticK+1, "", "", "", false)
 		if err != nil {
 			continue
 		}
@@ -837,6 +970,8 @@ func main() {
 	mux.HandleFunc("/api/v1/status", srv.handleStatus)
 	mux.HandleFunc("/api/v1/add", srv.handleAdd)
 	mux.HandleFunc("/api/v1/search", srv.handleSearch)
+	mux.HandleFunc("/api/v1/touch", srv.handleTouch)
+	mux.HandleFunc("/api/v1/patch", srv.handlePatch)
 	mux.HandleFunc("/api/v1/list", srv.handleList)
 	mux.HandleFunc("/api/v1/graph", srv.handleGraph)
 	mux.HandleFunc("/api/v1/graph-as-of", srv.handleGraphAsOf)
