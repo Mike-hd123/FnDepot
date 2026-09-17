@@ -209,13 +209,40 @@ class HyatlasClient:
         agent_id: str = "",
         layer: str = "",
     ) -> Dict[str, Any]:
-        body: Dict[str, Any] = {
-            "user_id": user_id,
-            "agent_id": agent_id,
-        }
-        if layer:
-            body["layer"] = layer
-        return self._post("/api/v1/delete_all", body)
+        """Delete every record in the given scope.
+
+        v4.1+ servers forbid id-less bulk deletes (09-07 incident guard),
+        so this honours the same caller contract guard-compliantly: list
+        the scope's memory ids, then DELETE them in explicit-id batches.
+        An explicit scope (user_id / agent_id / layer) is REQUIRED —
+        refusing to enumerate the entire store is the point of the guard.
+        """
+        if not (user_id or agent_id or layer):
+            raise ValueError(
+                "delete_all requires an explicit scope "
+                "(user_id/agent_id/layer); whole-store wipes are disabled"
+            )
+        ids: List[str] = []
+        page_size = 500
+        offset = 0
+        while True:
+            page = self.list_memories(
+                user_id=user_id, agent_id=agent_id, layer=layer,
+                limit=page_size, offset=offset, include_raw=True,
+            )
+            for m in page.get("memories", []):
+                mid = m.get("memory_id")
+                if mid:
+                    ids.append(mid)
+            offset += page_size
+            if offset >= int(page.get("total", 0)) or offset > 100000:
+                break
+        deleted = 0
+        for i in range(0, len(ids), 100):
+            chunk = urllib.parse.quote(",".join(ids[i:i + 100]))
+            resp = self._delete("/api/v1/delete_all?id=" + chunk, {})
+            deleted += int(resp.get("deleted_count", 0) or 0)
+        return {"success": True, "deleted_count": deleted, "requested": len(ids)}
 
     def graph(self, node: str = "", user_id: str = "") -> Dict[str, Any]:
         path = "/api/v1/graph"
