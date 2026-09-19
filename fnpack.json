@@ -95,7 +95,7 @@
     },
     "octopus": {
       "display_name": "Octopus 网关",
-      "desc": "LLM API 聚合网关：Go 单二进制 + 内嵌前端 + SQLite 存储，多渠道/多模型管理，支持单渠道多 Key，原生宿主机运行，端口 8081。上游项目：bestruirui/octopus（v0.13.4）。",
+      "desc": "LLM API 聚合网关：Go 单二进制 + 内嵌前端 + SQLite 存储，多渠道/多模型管理，支持单渠道多 Key，原生宿主机运行，端口 8081。上游项目：bestruirui/octopus（v0.13.5）。",
       "platform": [
         "x86"
       ],
@@ -111,14 +111,14 @@
       "is_docker": false,
       "service_port": "8081",
       "releases": {
-        "0.13.4-1": {
-          "changelog": "v1（2026-09-10）：同步上游 v0.13.4（请求头新增 client_header、渠道禁用 disable channel、前端日志 UI 优化），保留本地 gateway sidecar v8 补丁（剥前缀 HTTP 反代 + SSE 流式透传 + JS chunk 同版本参数单模块图单实例，修复手机端 404 与桌面白屏）。上游大版本升级，本地补丁版本号重置为 1。",
-          "updated_at": "2026-09-10T11:41:00+08:00",
+        "0.13.5-1": {
+          "changelog": "v1（2026-09-19）：同步上游 v0.13.5（commit 6f330f5：首字延迟/实时词元速度/缓存率面板、手动取消请求、token 速度展示、全局模型过滤、新 Logo），保留本地 gateway sidecar v8 补丁（剥前缀 HTTP 反代 + SSE 透传 + JS chunk 同版本参数单模块图单实例，手机端/桌面双端渲染正常）。上游大版本升级，本地补丁版本号重置为 1。",
+          "updated_at": "2026-09-19T18:32:00+08:00",
           "packages": {
             "all": {
               "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/octopus/octopus.fpk",
-              "sha256": "09504336c70127b1e88bd5f08570ece30e4a49da215cf857d0e842922f83709d",
-              "size": 22643123
+              "sha256": "70cab405bd3e5be0d3b9fd8e7bc3a2a96fcba22a11c42dbc08de317d665f2420",
+              "size": 22643278
             }
           }
         }

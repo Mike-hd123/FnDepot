@@ -1,11 +1,11 @@
 import { memo, useEffect, useMemo, useState, type CSSProperties } from 'react';
-import { AlertCircle, ArrowDownToLine, ArrowRight, ArrowUpFromLine, Clock, Cpu, Database, DollarSign, Loader2, Square } from 'lucide-react';
+import { AlertCircle, ArrowDownToLine, ArrowRight, ArrowUpFromLine, Clock, Cpu, Database, DollarSign, Gauge, KeyRound, Loader2, Square, Timer } from 'lucide-react';
 import { useTranslations } from 'use-intl';
 import JsonView from '@uiw/react-json-view';
 import { githubDarkTheme } from '@uiw/react-json-view/githubDark';
 import { githubLightTheme } from '@uiw/react-json-view/githubLight';
 import { useTheme } from '@/provider/theme';
-import { type RelayLogOverview, useLogRequestBody, useLogResponseBody, useStopRound } from '@/api/log';
+import { type RelayLogOverview, useLogRequestBody, useLogResponseBody, useStopRequest } from '@/api/log';
 import { useGroup, useUpdateGroup } from '@/api/group';
 import { Protocol } from '@/api/channel';
 import { getModelIcon } from '@/lib/model-icons';
@@ -38,11 +38,21 @@ function formatTime(value: string) {
     });
 }
 
-// formatMilliseconds 将毫秒转换为紧凑耗时文本。
+// formatMilliseconds 将毫秒转换为以秒为单位的耗时文本。
 function formatMilliseconds(value: number) {
-    const milliseconds = Math.max(0, value);
-    if (milliseconds < 1000) return `${Math.round(milliseconds)}ms`;
-    return `${(milliseconds / 1000).toFixed(2)}s`;
+    return `${(Math.max(0, value) / 1000).toFixed(2)}s`;
+}
+
+// formatRoundStartedAt 将服务端轮次开始时间格式化为本地时分秒.毫秒, 各部分固定补零。
+function formatRoundStartedAt(value: string) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime()) || date.getUTCFullYear() === 1) return '--:--:--.---';
+    return `${date.toLocaleTimeString(undefined, {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+    })}.${String(date.getMilliseconds()).padStart(3, '0')}`;
 }
 
 // PROTOCOL_LABELS 是协议位值对应的界面标识, 与渠道页和分组页的授权标签同一套词。
@@ -53,27 +63,45 @@ const PROTOCOL_LABELS: Record<number, string> = {
     [Protocol.AnthropicMessage]: 'Message',
 };
 
-// LogMetrics 渲染耗时, 费用和 Token 指标; card 变体用于卡片栅格, footer 变体用于弹窗底部。
+// LogMetrics 渲染时间、API Key、耗时、费用和 Token 指标; card 变体用于卡片栅格, footer 变体用于弹窗底部。
 function LogMetrics({ log, now, brandColor, variant }: { log: RelayLogOverview; now: number; brandColor: string; variant: 'card' | 'footer' }) {
     const cachedTokens = log.usage.prompt_tokens_details?.cached_tokens ?? 0;
-    // 进行中的请求按共享时钟推算耗时, 结束后改用后端记录的最终耗时。
-    const duration = log.status === 'running' || log.status === 'committed'
-        ? formatMilliseconds(now - new Date(log.started_at).getTime())
-        : formatMilliseconds(log.duration / 1_000_000);
+    // 缓存率取输入缓存占全部输入 Token 的比例, 无输入时为零。
+    const cacheRate = log.usage.prompt_tokens > 0 ? Math.round((cachedTokens / log.usage.prompt_tokens) * 100) : 0;
+    // 请求进行中显示实时总耗时; 结束后只显示实际响应阶段耗时, 提交前结束时回退到总耗时。
+    const requestActive = log.status === 'running' || log.status === 'committed';
+    const elapsedMs = requestActive
+        ? now - new Date(log.started_at).getTime()
+        : log.duration / 1_000_000;
+    const responseMs = (log.stream_duration || log.response_duration) / 1_000_000;
+    const duration = formatMilliseconds(!requestActive && responseMs > 0 ? responseMs : elapsedMs);
+    // 首字时间仅流式响应存在, 非流式或尚未提交时留空。
+    const firstToken = log.first_token_duration > 0 ? formatMilliseconds(log.first_token_duration / 1_000_000) : '-';
+    // 请求进行中使用同一份服务端快照中的字符数和流式传输时长, 结束后改用最终 Token 数。
+    const outputCount = requestActive ? log.output_chars : log.usage.completion_tokens;
+    const outputSpeed = responseMs > 0 ? outputCount / (responseMs / 1000) : 0;
+    const outputSpeedUnit = requestActive ? 'c/s' : 't/s';
     const metrics = [
-        { key: 'time', Icon: Clock, iconClassName: 'size-3.5 shrink-0', iconStyle: { color: brandColor } as CSSProperties, value: formatTime(log.started_at), valueClassName: 'tabular-nums', cellClassName: 'col-span-4 whitespace-nowrap md:col-span-1' },
-        { key: 'duration', Icon: Cpu, iconClassName: 'size-3.5 shrink-0 text-blue-500', value: duration, cellClassName: 'col-span-4 md:col-span-1' },
-        { key: 'cost', Icon: DollarSign, iconClassName: 'size-3.5 shrink-0 text-emerald-500', value: log.cost.toFixed(6), valueClassName: 'font-medium text-emerald-600 dark:text-emerald-400', cellClassName: 'col-span-4 md:col-span-1' },
-        { key: 'prompt', Icon: ArrowDownToLine, iconClassName: 'size-3.5 shrink-0 text-green-500', value: (log.usage.prompt_tokens - cachedTokens).toLocaleString(), cellClassName: 'col-span-3 md:col-span-1' },
-        { key: 'cached', Icon: Database, iconClassName: 'size-3.5 shrink-0 text-cyan-500', value: cachedTokens.toLocaleString(), cellClassName: 'col-span-3 md:col-span-1' },
-        { key: 'completion', Icon: ArrowUpFromLine, iconClassName: 'size-3.5 shrink-0 text-purple-500', value: log.usage.completion_tokens.toLocaleString(), cellClassName: 'col-span-3 md:col-span-1' },
-        { key: 'cacheWrite', Icon: Database, iconClassName: 'size-3.5 shrink-0 text-orange-500', value: (log.usage.prompt_tokens_details?.write_cached_tokens ?? 0).toLocaleString(), cellClassName: 'col-span-3 md:col-span-1' },
+        { key: 'time', Icon: Clock, iconClassName: 'size-3.5 shrink-0', iconStyle: { color: brandColor } as CSSProperties, value: formatTime(log.started_at), cellClassName: 'whitespace-nowrap col-span-4 md:col-span-1' },
+        { key: 'apiKey', Icon: KeyRound, iconClassName: 'size-3.5 shrink-0 text-orange-500', value: log.api_key_name || '-', cellClassName: 'whitespace-nowrap col-span-4 md:col-span-1' },
+        { key: 'firstToken', Icon: Timer, iconClassName: 'size-3.5 shrink-0 text-amber-500', value: firstToken, cellClassName: 'whitespace-nowrap col-span-4 md:col-span-1' },
+        { key: 'duration', Icon: Cpu, iconClassName: 'size-3.5 shrink-0 text-blue-500', value: duration, cellClassName: 'whitespace-nowrap col-span-4 md:col-span-1' },
+        { key: 'cost', Icon: DollarSign, iconClassName: 'size-3.5 shrink-0 text-emerald-500', value: log.cost.toFixed(6), cellClassName: 'whitespace-nowrap col-span-4 md:col-span-1' },
+        { key: 'prompt', Icon: ArrowDownToLine, iconClassName: 'size-3.5 shrink-0 text-green-500', value: (log.usage.prompt_tokens - cachedTokens).toLocaleString(), cellClassName: 'whitespace-nowrap col-span-4 md:col-span-1' },
+        { key: 'cached', Icon: Database, iconClassName: 'size-3.5 shrink-0 text-cyan-500', value: `${cachedTokens.toLocaleString()} (${cacheRate}%)`, cellClassName: 'whitespace-nowrap col-span-4 md:col-span-1' },
+        { key: 'completion', Icon: ArrowUpFromLine, iconClassName: 'size-3.5 shrink-0 text-purple-500', value: (requestActive ? log.output_chars.toLocaleString() : log.usage.completion_tokens.toLocaleString()), cellClassName: 'col-span-4 md:col-span-1' },
+        { key: 'cacheWrite', Icon: Database, iconClassName: 'size-3.5 shrink-0 text-orange-500', value: (log.usage.prompt_tokens_details?.write_cached_tokens ?? 0).toLocaleString(), cellClassName: 'whitespace-nowrap col-span-4 md:col-span-1' },
+        { key: 'speed', Icon: Gauge, iconClassName: 'size-3.5 shrink-0 text-sky-500', value: outputSpeed > 0 ? `${outputSpeed.toFixed(0)}${outputSpeedUnit}` : '-', cellClassName: 'whitespace-nowrap col-span-4 md:col-span-1' },
     ];
 
     return metrics.map((metric) => (
-        <div key={metric.key} className={cn('flex items-center gap-1.5', variant === 'card' && metric.cellClassName)}>
+        <div
+            key={metric.key}
+            title={metric.key === 'apiKey' ? log.api_key_name : undefined}
+            className={cn('flex min-w-0 items-center gap-1.5', variant === 'card' && metric.cellClassName)}
+        >
             <metric.Icon className={metric.iconClassName} style={metric.iconStyle} />
-            <span className={metric.valueClassName}>{metric.value}</span>
+            <span>{metric.value}</span>
         </div>
     ));
 }
@@ -84,6 +112,7 @@ interface ObservedRound {
     channel: string; // 本轮实际请求的渠道名称。
     error: string; // 本轮最近一次上游错误。
     sending: boolean; // 本轮是否仍在等待上游响应。
+    startedAt: string; // 服务端记录的本轮开始时间。
 }
 
 // JsonContent 渲染请求或响应正文, 能解析为 JSON 时使用折叠视图, 否则按纯文本展示。
@@ -147,12 +176,13 @@ function LogDetail({ log, now }: { log: RelayLogOverview; now: number }) {
     const responseBody = useLogResponseBody(log.id, log.started_at, detailReady && log.status === 'success');
     const { data: activeGroup } = useGroup(log.group_id, detailReady, detailReady);
     const updateActiveItem = useUpdateGroup();
-    const stopRound = useStopRound();
+    const stopRequest = useStopRequest();
     const actualModel = log.target_model || log.model;
     const { Icon, className: iconClassName, color: brandColor } = getModelIcon(actualModel);
     const errorText = log.error ?? '';
     const requestFailed = log.status === 'failed' || log.status === 'canceled';
     const responseCommitted = log.status === 'committed';
+    const requestActive = log.status === 'running' || responseCommitted;
     const showRounds = log.status === 'running' || (requestFailed && rounds.length > 0);
     const isWaitingForSelection = log.status === 'running' && !log.sending && activeGroup?.mode === 'manual' && activeGroup.runtime.current_item_id === 0; // isWaitingForSelection 表示手动模式请求正等待选择渠道。
 
@@ -169,8 +199,16 @@ function LogDetail({ log, now }: { log: RelayLogOverview; now: number }) {
         setObservedRoundKey(roundKey);
         setRounds((current) => {
             if (!log.sending && current.every((item) => item.round !== log.round)) return current;
+            const previous = current.find((item) => item.round === log.round);
+            const startedAt = previous?.startedAt ?? log.round_started_at;
             return [
-                { round: log.round, channel: log.target_channel, error: errorText, sending: log.sending },
+                {
+                    round: log.round,
+                    channel: log.target_channel,
+                    error: errorText,
+                    sending: log.sending,
+                    startedAt,
+                },
                 ...current.filter((item) => item.round !== log.round),
             ];
         });
@@ -179,22 +217,26 @@ function LogDetail({ log, now }: { log: RelayLogOverview; now: number }) {
     return (
         <MorphingDialogContent className="relative w-[calc(100vw-2rem)] md:w-[80vw] bg-card text-card-foreground px-6 py-4 rounded-3xl h-[calc(100vh-2rem)] flex flex-col overflow-hidden">
             <MorphingDialogClose className="top-4 right-5 text-muted-foreground hover:text-foreground transition-colors" />
-            <MorphingDialogTitle className="flex items-center gap-2 mb-3 text-sm">
-                <Icon aria-hidden="true" className={iconClassName} width={28} height={28} />
-                <span className="text-xs text-muted-foreground/70">{PROTOCOL_LABELS[log.protocol] ?? '-'}</span>
-                <span className="font-semibold text-card-foreground">{log.model || t('unknownModel')}</span>
-                {log.status === 'running' || responseCommitted
-                    ? <Loader2 className="size-3.5 animate-spin text-muted-foreground/50" />
-                    : <ArrowRight className="size-3.5 text-muted-foreground/50" />}
-                <span className="text-xs text-muted-foreground/70">{PROTOCOL_LABELS[log.target_protocol] ?? '-'}</span>
-                <Badge
-                    variant="secondary"
-                    className="text-xs px-1.5 py-0"
-                    style={{ backgroundColor: `${brandColor}15`, color: brandColor }}
-                >
-                    {log.target_channel || '-'}
-                </Badge>
-                <span className="text-muted-foreground">{actualModel}</span>
+            <MorphingDialogTitle className="flex flex-wrap items-center gap-2 mb-3 text-sm">
+                <span className="flex items-center gap-2 w-full md:w-auto">
+                    <Icon aria-hidden="true" className={iconClassName} width={28} height={28} />
+                    <span className="text-xs text-muted-foreground/70">{PROTOCOL_LABELS[log.protocol] ?? '-'}</span>
+                    <span className="font-semibold text-card-foreground">{log.model || t('unknownModel')}</span>
+                    {log.status === 'running' || responseCommitted
+                        ? <Loader2 className={cn('size-3.5 animate-spin', log.status === 'committed' ? 'text-green-500' : log.round > 1 ? 'text-red-500' : 'text-muted-foreground/50')} />
+                        : <ArrowRight className="size-3.5 text-muted-foreground/50" />}
+                </span>
+                <span className="flex items-center gap-2 w-full md:w-auto">
+                    <span className="text-xs text-muted-foreground/70">{PROTOCOL_LABELS[log.target_protocol] ?? '-'}</span>
+                    <Badge
+                        variant="secondary"
+                        className="text-xs px-1.5 py-0"
+                        style={{ backgroundColor: `${brandColor}15`, color: brandColor }}
+                    >
+                        {log.target_channel || '-'}
+                    </Badge>
+                    <span className="text-muted-foreground">{actualModel}</span>
+                </span>
             </MorphingDialogTitle>
 
             <MorphingDialogDescription className="flex-1 min-h-0">
@@ -256,7 +298,7 @@ function LogDetail({ log, now }: { log: RelayLogOverview; now: number }) {
                                                 key={item.id}
                                                 type="button"
                                                 aria-pressed={itemCurrent}
-                                                disabled={activeGroup.mode === 'failover' || switchingItemId !== null || stopRound.isPending}
+                                                disabled={activeGroup.mode === 'failover' || switchingItemId !== null || stopRequest.isPending}
                                                 onClick={async () => {
                                                     if (activeGroup.mode === 'failover') return;
                                                     setSwitchingItemId(item.id);
@@ -264,7 +306,7 @@ function LogDetail({ log, now }: { log: RelayLogOverview; now: number }) {
                                                     try {
                                                         await updateActiveItem.mutateAsync({ id: activeGroup.id, active_item_id: isCurrent ? 0 : item.id });
                                                         if (log.sending) {
-                                                            await stopRound.mutateAsync({ requestId: log.id, round: log.round });
+                                                            await stopRequest.mutateAsync({ requestId: log.id, round: log.round });
                                                         }
                                                         toast.success(isCurrent ? t('channelCleared') : t('channelChanged'));
                                                     } catch (cause) {
@@ -298,29 +340,49 @@ function LogDetail({ log, now }: { log: RelayLogOverview; now: number }) {
                             <span className="text-sm font-medium text-card-foreground">
                                 {isWaitingForSelection ? t('waitingChannelSelection') : showRounds ? t('retryDetails') : requestFailed ? t('errorInfo') : t('responseContent')}
                             </span>
-                            {log.status === 'running' && log.sending && activeGroup?.mode === 'manual' ? (
-                                <button
-                                    type="button"
-                                    disabled={stopRound.isPending}
-                                    onClick={async () => {
-                                        try {
-                                            await stopRound.mutateAsync({ requestId: log.id, round: log.round });
-                                        } catch (cause) {
-                                            toast.error(t('stopFailed'), { description: cause instanceof Error ? cause.message : undefined });
-                                        }
-                                    }}
-                                    className="ml-auto flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50"
-                                >
-                                    {stopRound.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <Square className="size-3.5" />}
-                                    {t('stopRound')}
-                                </button>
-                            ) : !requestFailed && (
-                                <Badge variant="secondary" className="ml-auto text-xs">
-                                    {responseCommitted
-                                        ? statusT('committed')
-                                        : `${log.usage.completion_tokens.toLocaleString()} ${t('tokens')}`}
-                                </Badge>
-                            )}
+                            <div className="ml-auto flex items-center gap-2">
+                                {log.status === 'running' && log.sending && activeGroup?.mode === 'manual' && (
+                                    <button
+                                        type="button"
+                                        disabled={stopRequest.isPending}
+                                        onClick={async () => {
+                                            try {
+                                                await stopRequest.mutateAsync({ requestId: log.id, round: log.round });
+                                            } catch (cause) {
+                                                toast.error(t('stopFailed'), { description: cause instanceof Error ? cause.message : undefined });
+                                            }
+                                        }}
+                                        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50"
+                                    >
+                                        {stopRequest.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <Square className="size-3.5" />}
+                                        {t('stopRound')}
+                                    </button>
+                                )}
+                                {requestActive && (
+                                    <button
+                                        type="button"
+                                        disabled={stopRequest.isPending}
+                                        onClick={async () => {
+                                            try {
+                                                await stopRequest.mutateAsync({ requestId: log.id });
+                                            } catch (cause) {
+                                                toast.error(t('cancelFailed'), { description: cause instanceof Error ? cause.message : undefined });
+                                            }
+                                        }}
+                                        className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50"
+                                    >
+                                        {stopRequest.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <Square className="size-3.5" />}
+                                        {t('cancelRequest')}
+                                    </button>
+                                )}
+                                {!requestFailed && !(log.status === 'running' && log.sending && activeGroup?.mode === 'manual') && (
+                                    <Badge variant="secondary" className="text-xs">
+                                        {responseCommitted
+                                            ? statusT('committed')
+                                            : `${log.usage.completion_tokens.toLocaleString()} ${t('tokens')}`}
+                                    </Badge>
+                                )}
+                            </div>
                         </div>
                         <div className="min-h-0 flex-1 overflow-auto">
                             {!detailReady ? (
@@ -338,8 +400,9 @@ function LogDetail({ log, now }: { log: RelayLogOverview; now: number }) {
                                         {rounds.map((round) => (
                                             <div key={round.round} className="flex flex-col gap-1.5 px-3 py-2.5 text-xs">
                                                 <div className="flex items-center gap-2">
-                                                    <span className="text-muted-foreground">{t('retryIndex', { index: round.round })}</span>
-                                                    <span className="font-semibold text-foreground">{round.channel || '-'}</span>
+                                                    <span className="shrink-0 tabular-nums text-muted-foreground">{formatRoundStartedAt(round.startedAt)}</span>
+                                                    <span className="shrink-0 text-muted-foreground">{t('retryIndex', { index: round.round })}</span>
+                                                    <span className="shrink-0 font-semibold text-foreground">{round.channel || '-'}</span>
                                                     {round.sending ? (
                                                         <Loader2 className="ml-auto size-3.5 animate-spin text-muted-foreground" />
                                                     ) : round.error ? (
@@ -407,10 +470,10 @@ function LogCardBody({ log }: { log: RelayLogOverview }) {
     const requestFailed = log.status === 'failed' || log.status === 'canceled';
     const errorText = log.error ?? '';
 
-    // 仅在请求进行中或弹窗打开时走秒级刷新, 避免已完成日志持续触发重渲染。
+    // 仅在请求进行中或弹窗打开时按 500ms 刷新, 避免已完成日志持续触发重渲染。
     useEffect(() => {
         if (!requestRunning && !isOpen) return;
-        const timer = window.setInterval(() => setNow(Date.now()), 1000);
+        const timer = window.setInterval(() => setNow(Date.now()), 500);
         return () => window.clearInterval(timer);
     }, [isOpen, requestRunning]);
 
@@ -423,17 +486,17 @@ function LogCardBody({ log }: { log: RelayLogOverview }) {
                 )}
             >
                 <div className={cn("p-4 grid grid-cols-[auto_1fr] gap-4", requestFailed ? "items-start" : "items-center")}>
-                    <Icon aria-hidden="true" className={iconClassName} width={40} height={40} />
-                    <div className="min-w-0 flex flex-col gap-3">
+                    <Icon aria-hidden="true" className={cn('hidden md:block', iconClassName)} width={40} height={40} />
+                    <div className="min-w-0 flex flex-col gap-3 col-span-2 md:col-span-1">
                         <div className="flex items-center gap-2 min-w-0 text-sm">
-                            <span className="shrink-0 text-xs text-muted-foreground/70">{PROTOCOL_LABELS[log.protocol] ?? '-'}</span>
+                            <span className="shrink-0 text-xs text-muted-foreground/70"><span className="md:hidden">{PROTOCOL_LABELS[log.protocol]?.charAt(0) ?? '-'}</span><span className="hidden md:inline">{PROTOCOL_LABELS[log.protocol] ?? '-'}</span></span>
                             <span className="font-semibold text-card-foreground truncate">
                                 {log.model || t('unknownModel')}
                             </span>
                             {requestRunning
-                                ? <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground/50" />
+                                ? <Loader2 className={cn('size-3.5 shrink-0 animate-spin', log.status === 'committed' ? 'text-green-500' : log.round > 1 ? 'text-red-500' : 'text-muted-foreground/50')} />
                                 : <ArrowRight className="size-3.5 shrink-0 text-muted-foreground/50" />}
-                            <span className="shrink-0 text-xs text-muted-foreground/70">{PROTOCOL_LABELS[log.target_protocol] ?? '-'}</span>
+                            <span className="shrink-0 text-xs text-muted-foreground/70"><span className="md:hidden">{PROTOCOL_LABELS[log.target_protocol]?.charAt(0) ?? '-'}</span><span className="hidden md:inline">{PROTOCOL_LABELS[log.target_protocol] ?? '-'}</span></span>
                             <Badge
                                 variant="secondary"
                                 className="shrink-0 text-xs px-1.5 py-0"
@@ -445,7 +508,7 @@ function LogCardBody({ log }: { log: RelayLogOverview }) {
                                 {actualModel}
                             </span>
                         </div>
-                        <div className="grid grid-cols-12 gap-x-4 gap-y-2 text-xs tabular-nums text-muted-foreground md:grid-cols-7">
+                        <div className="grid grid-cols-20 gap-x-4 gap-y-2 text-xs tabular-nums text-muted-foreground md:grid-cols-10">
                             <LogMetrics log={log} now={now} brandColor={brandColor} variant="card" />
                         </div>
                         {requestFailed && errorText && (
