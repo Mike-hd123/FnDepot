@@ -1,0 +1,98 @@
+#!/bin/bash
+# cmd/main — Fluxor 进程管理（systemd 单元托管，对齐 FnDepot vikunja 模式）
+# 应用 = systemd unit fluxor（原生二进制，root）
+# 兜底：systemd 不可用时退回 nohup + PID 文件
+set -u
+
+SERVICE="fluxor"
+APP_DIR="${TRIM_APPDEST:-}"
+if [ -z "${APP_DIR}" ]; then
+  for v in /vol1 /vol2 /vol3 /vol4; do
+    [ -f "${v}/@appcenter/fluxor/fluxor" ] && APP_DIR="${v}/@appcenter/fluxor" && break
+  done
+  [ -n "${APP_DIR}" ] || APP_DIR="/vol2/@appcenter/fluxor"
+fi
+DATA_DIR="${TRIM_PKGVAR:-}"
+if [ -z "${DATA_DIR}" ]; then
+  APP_VOL="$(printf '%s' "${APP_DIR}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
+  if [ -n "${APP_VOL}" ]; then
+    DATA_DIR="${APP_VOL}/@appdata/fluxor"
+  else
+    DATA_DIR="/var/apps/fluxor/var"
+  fi
+fi
+PORT="${TRIM_SERVICE_PORT:-18099}"
+BOOT_LOG="${DATA_DIR}/boot.log"
+PID_FILE="${DATA_DIR}/fluxor.nohup.pid"
+
+mkdir -p "${DATA_DIR}" 2>/dev/null || true
+log() { echo "[$(date '+%F %T')] $* >> ${BOOT_LOG}" 2>/dev/null; echo "[$(date '+%F %T')] $*" >> "${BOOT_LOG}" 2>/dev/null || true; }
+
+port_ready() {
+  curl -s --max-time 2 "http://127.0.0.1:${PORT}/version" >/dev/null 2>&1
+}
+
+env_file_exists() { [ -f "${DATA_DIR}/fluxor.env" ]; }
+
+start_nohup() {
+  # 兜底路径：无 systemd 时 nohup + env 文件
+  # shellcheck disable=SC1090
+  set -a; [ -f "${DATA_DIR}/fluxor.env" ] && . "${DATA_DIR}/fluxor.env"; set +a
+  nohup "${APP_DIR}/fluxor" -f >> "${DATA_DIR}/fluxor.nohup.log" 2>&1 &
+  echo $! > "${PID_FILE}"
+}
+
+is_running_nohup() {
+  [ -f "${PID_FILE}" ] || return 1
+  local pid; pid=$(cat "${PID_FILE}" 2>/dev/null)
+  [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null
+}
+
+case "${1:-}" in
+  start)
+    if systemctl is-active --quiet "${SERVICE}" 2>/dev/null; then
+      log "app already running (systemd)"
+      exit 0
+    fi
+    if port_ready; then
+      log "port ${PORT} already serving (external instance?), skip"
+      exit 0
+    fi
+    if systemctl cat "${SERVICE}" >/dev/null 2>&1; then
+      log "starting systemd unit ${SERVICE}"
+      systemctl start "${SERVICE}" || true
+    else
+      log "systemd unit missing, fallback to nohup"
+      start_nohup
+    fi
+    ok=0
+    for i in $(seq 1 20); do
+      if port_ready; then ok=1; break; fi
+      sleep 1
+    done
+    if [ "${ok}" != "1" ]; then
+      log "ERROR: fluxor failed to start on port ${PORT}"
+      [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "Fluxor 启动失败，查看日志：journalctl -u ${SERVICE} -n 50 或 ${DATA_DIR}/fluxor.nohup.log" > "${TRIM_TEMP_LOGFILE}"
+      exit 1
+    fi
+    log "app started on port ${PORT}"
+    ;;
+  stop)
+    systemctl stop "${SERVICE}" 2>/dev/null || true
+    if is_running_nohup; then
+      kill "$(cat "${PID_FILE}")" 2>/dev/null
+      sleep 3
+      is_running_nohup && kill -9 "$(cat "${PID_FILE}")" 2>/dev/null || true
+      rm -f "${PID_FILE}"
+    fi
+    log "app stopped"
+    ;;
+  status)
+    systemctl is-active --quiet "${SERVICE}" 2>/dev/null && exit 0
+    is_running_nohup && exit 0
+    exit 3
+    ;;
+  *)
+    exit 0
+    ;;
+esac

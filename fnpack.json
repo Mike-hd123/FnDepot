@@ -243,6 +243,39 @@
           }
         }
       }
+    },
+    "fluxor": {
+      "display_name": "Fluxor 智能面板",
+      "desc": "Mihomo/Clash 面板重写版（Vue3+Go 单体，fork 自 shuangji66/fluxor），默认捆绑 vernesong alpha-smart 智能内核 + LightGBM 模型，地区策略组（港台日新美）默认 smart 类型 ML 选路；smart 内核专用升级通道 + /upgrade 降级闸门；端口 18099(面板)/17890(代理)/17898(透明,默认关)/19090(controller)/19053(DNS) 全量避让 ClashLite，可并存；原生 systemd 运行。",
+      "platform": [
+        "x86"
+      ],
+      "categories": [
+        "网络工具",
+        "系统工具"
+      ],
+      "icon_url": "./fluxor/ICON.PNG",
+      "maintainer": "shuangji66",
+      "maintainer_url": "https://github.com/shuangji66/fluxor",
+      "distributor": "Mike",
+      "distributor_url": "https://github.com/Mike-hd123",
+      "run_as": "root",
+      "install_type": "root",
+      "is_docker": false,
+      "service_port": "18099",
+      "releases": {
+        "1.3.13-1": {
+          "changelog": "fork 首版（上游 1.3.13）：捆绑 vernesong alpha-smart-4bc3d49 内核+Model.bin；groups_full 地区组 smart 化(uselightgbm/collectdata/include-all/prefer-asn)+smart-collector-size；修复 alpha-smart 哈希比较死循环；新增 /core/smart-update 升级通道（代理+gh-proxy 回退下载/自检/备份/原子替换/换进程）+/upgrade 降级闸门；修复模板 external-controller-unix 硬编码不随 CORE_SOCKET；端口避让 ClashLite；订阅更新全量重写后 smart 组存活已实测。",
+          "updated_at": "2026-09-18T01:30:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/fluxor/fluxor-1.3.13-1-x86.fpk",
+              "sha256": "86f36c58117c7fa449c398306db3ee7954a6788b56febc4ed4618b4e1e9d659b",
+              "size": 27975617
+            }
+          }
+        }
+      }
     }
   }
 }

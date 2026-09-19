@@ -1,0 +1,12 @@
+[
+  {
+    "stepTitle": "fluxor 安装说明",
+    "items": [
+      {
+        "type": "tips",
+        "label": "",
+        "helpText": "Fluxor 1.3.13-2\nupstream: shuangji66/fluxor（fork: Mike-hd123/fluxor）\n\n• 默认捆绑 vernesong alpha-smart 智能内核（LightGBM ML 选路），地区策略组默认 smart 类型。\n• 面板端口 18099，HTTP 代理 17890，内核 controller 19090，DNS 19053 —— 与 ClashLite(7890/7898/9090/1053) 完全错开，可并存。\n• 透明代理默认关闭，接管全屋流量前请在面板手动开启并自行评估。\n• 数据目录 @appdata/fluxor，升级/重装不清数据；内核自更新已锁定 smart 通道，不会被降级回裸 alpha。\n• 首次使用：打开面板 → 订阅中心添加机场 → 保存并生成配置 → 内核自动重载。"
+      }
+    ]
+  }
+]

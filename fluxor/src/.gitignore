@@ -1,0 +1,14 @@
+node_modules
+dist
+frontend/dist
+backend/dist
+build
+fluxor
+upx-ucl
+.npm-*
+.gomod
+.gopath
+.gocache
+
+# Makefile 增量构建标记
+.fluxor.target*

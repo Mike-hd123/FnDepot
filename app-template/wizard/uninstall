@@ -1,0 +1,22 @@
+[
+  {
+    "stepTitle": "卸载应用",
+    "items": [
+      {
+        "type": "tips",
+        "label": "",
+        "helpText": "保留或删除应用数据。\n\n数据目录：@appdata/<appname>\n包含：配置文件、用户数据、日志。\n\n默认保留，可随时重装恢复。"
+      },
+      {
+        "type": "radio",
+        "field": "wizard_delete_data",
+        "label": "仅卸载，保留现有数据以备将来重新安装。",
+        "initValue": "false",
+        "options": [
+          { "label": "保留现有数据", "value": "false" },
+          { "label": "清除所有应用数据文件（不可恢复）！！！", "value": "true" }
+        ]
+      }
+    ]
+  }
+]

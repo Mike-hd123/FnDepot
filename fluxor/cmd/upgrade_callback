@@ -1,0 +1,91 @@
+#!/bin/bash
+# upgrade_callback — 升级后：重写 systemd unit + env（路径可能随卷漂移），只覆盖程序不动数据
+# 数据在 ${APPDATA}（fluxor.json / shares/config.yaml / Model.bin / proxies/）全部保留
+set -u
+LOG=/tmp/fluxor_upgrade.log
+exec >> "$LOG" 2>&1
+echo "==================== upgrade_callback $(date '+%F %T') ===================="
+SERVICE="fluxor"
+APP_DIR="${TRIM_APPDEST:-}"
+if [ -z "${APP_DIR}" ]; then
+  for v in /vol1 /vol2 /vol3 /vol4; do
+    [ -f "${v}/@appcenter/fluxor/fluxor" ] && APP_DIR="${v}/@appcenter/fluxor" && break
+  done
+  [ -n "${APP_DIR}" ] || APP_DIR="/vol2/@appcenter/fluxor"
+fi
+APPDATA="${TRIM_PKGVAR:-}"
+if [ -z "${APPDATA}" ]; then
+  APP_VOL="$(printf '%s' "${APP_DIR}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
+  if [ -n "${APP_VOL}" ]; then APPDATA="${APP_VOL}/@appdata/fluxor"; else APPDATA="/var/apps/fluxor/var"; fi
+fi
+SHARE_DIR="${APPDATA}/shares"
+PORT="${TRIM_SERVICE_PORT:-18099}"
+
+systemctl stop "${SERVICE}" 2>/dev/null || true
+mkdir -p "${APPDATA}" "${SHARE_DIR}/ui/meta" "${SHARE_DIR}/proxies" "${APP_DIR}/fluxor-backup"
+chmod 755 "${APP_DIR}/fluxor" "${APP_DIR}/mihomo" 2>/dev/null || true
+
+# Model.bin 缺失才补（不覆盖内核跑出来的更新模型）
+if [ ! -f "${SHARE_DIR}/Model.bin" ] && [ -f "${APP_DIR}/Model.bin" ]; then
+  cp -p "${APP_DIR}/Model.bin" "${SHARE_DIR}/Model.bin"
+fi
+
+# Geo/ASN 数据库缺失才补（1.4.0-3 事故根因：升级路径连 geo 复制都没有，
+# shares/ASN.mmdb 缺失 → smart 内核 fatal "Can't load ASN" → 断网）
+for g in geosite.dat geoip.metadb ASN.mmdb; do
+  if [ ! -f "${SHARE_DIR}/${g}" ] && [ -f "${APP_DIR}/${g}" ]; then
+    cp -p "${APP_DIR}/${g}" "${SHARE_DIR}/${g}"
+  fi
+done
+
+# env 重写（保持路径与实际安装卷一致；面板 app.sock 在 @appcenter，见 install_callback 注释）
+rm -f "${APPDATA}/app.sock"
+cat > "${APPDATA}/fluxor.env" <<EOS
+SOCKET_PATH=${APP_DIR}/app.sock
+BASE_URL=/
+FLUXOR_ADDR=0.0.0.0:${PORT}
+FLUXOR_PID_FILE=${APPDATA}/fluxor.pid
+FLUXOR_BIN_DIR=${APP_DIR}/
+CORE_PID_FILE=${APPDATA}/core.pid
+CORE_BIN=${APP_DIR}/mihomo
+CORE_SOCKET=${APPDATA}/core.sock
+META_DIR=${SHARE_DIR}/ui/meta
+ZASH_DIR=${SHARE_DIR}/ui/zash
+FLUXOR_CONFIG_FILE=${APPDATA}/fluxor.json
+CONFIG_TARGET=${SHARE_DIR}/config.yaml
+INFO_LOG_FILE=${SHARE_DIR}/info.log
+CORE_WORK_DIR=${SHARE_DIR}
+EOS
+
+# unit 重写（同 install_callback）
+UNIT="/etc/systemd/system/${SERVICE}.service"
+if [ -f "${UNIT}" ]; then
+  cat > "${UNIT}" <<EOS
+[Unit]
+Description=fluxor (mihomo smart core panel, fork of shuangji66/fluxor)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# root 是刻意设计：TProxy 需 nft/策略路由权限；1.4.0-3 前 User=nobody 误落在 [Install] 段被 systemd 忽略（Unknown key），1.4.0-4 起显式声明
+User=root
+EnvironmentFile=${APPDATA}/fluxor.env
+ExecStart=${APP_DIR}/fluxor -f
+WorkingDirectory=${APPDATA}
+Restart=on-failure
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=15
+StandardOutput=append:${APPDATA}/fluxor.log
+StandardError=append:${APPDATA}/fluxor.log
+
+[Install]
+WantedBy=multi-user.target
+EOS
+  chmod 644 "${UNIT}"
+  systemctl daemon-reload
+fi
+chmod -R a+rX "${SHARE_DIR}" 2>/dev/null || true
+echo "===== done ====="
+exit 0

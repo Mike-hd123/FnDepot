@@ -1,0 +1,1036 @@
+/* Tailwind CSS v4 入口。
+   v4 采用 CSS-first 配置，原 tailwind.config.js / postcss.config.js 已移除，
+   相关定制（content 扫描范围、暗色模式变体、语义色、尺寸档位）全部在本文件声明。 */
+@import "tailwindcss" source(none);
+
+/* 等价于 v3 tailwind.config.js 的 content 配置。
+   显式声明扫描范围并关闭自动探测，避免顺带扫描 node_modules 等目录导致产物膨胀。 */
+@source "../index.html";
+@source "./**/*.{vue,ts,js,jsx,tsx}";
+
+/* 等价于 v3 的 darkMode: ['class', '[data-theme="dark"]']。
+   v3 对该配置生成的暗色选择器为 `:is([data-theme="dark"] *)`，此处保持一致。 */
+@custom-variant dark (&:is([data-theme="dark"] *));
+
+/* 语义色：映射到下方各主题定义的 CSS 变量。
+   必须使用 `inline`，否则 v4 无法为 `var(--accent)` 这类非静态颜色生成
+   `bg-accent/10`、`ring-accent/30`、`shadow-accent/15` 等透明度修饰符。 */
+@theme inline {
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-success: var(--success);
+  --color-danger: var(--danger);
+  --color-warning: var(--warning);
+
+  /* 对齐 v3 的尺寸档位，保持原有视觉不变。
+     v4 的档位整体上移了一级（v4 的 shadow-sm 等同于 v3 的 shadow，
+     v4 的 rounded-sm 等同于 v3 的 rounded），此处覆盖回 v3 取值，
+     使站点无需改动任何类名即可维持原有效果。 */
+  --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+  --radius-sm: 0.125rem;
+}
+
+/* v4 的 preflight 不再为按钮设置手型光标（v3 有 `button,[role=button]{cursor:pointer}`），
+   会导致全站按钮鼠标形态由手型退化为默认箭头，此处补回。 */
+@layer base {
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+}
+
+/* 还原 v3 的 space-y / space-x 语义。
+   v3 生成 `.space-y-3>:not([hidden])~:not([hidden])`（带类选择器，具备特异性），
+   v4 改为 `:where(.space-y-3>:not(:last-child))` 并对子元素设置 margin-block。
+   两者的两点差异会改变实际布局：
+     1) `:where()` 特异性为 0，导致子元素自身的 `my-*` 等外边距反过来覆盖 space-y
+        （如 Overview 卡片中 `my-2.5` 分隔线，实测使卡片高度少 2px）；
+     2) v4 给子元素加的是 margin-bottom，会与子元素已有的 margin-top 叠加。
+   此处按 v3 的形式重写，使间距与折叠行为完全一致。 */
+@utility space-y-* {
+  > :not([hidden]) ~ :not([hidden]) {
+    margin-top: calc(var(--spacing) * --value(number));
+    margin-bottom: 0;
+  }
+}
+
+@utility space-x-* {
+  > :not([hidden]) ~ :not([hidden]) {
+    margin-left: calc(var(--spacing) * --value(number));
+    margin-right: 0;
+  }
+}
+
+@layer utilities {
+/* 1. 主题变量 */
+
+:root {
+  /* 默认暗色 */
+  --bg-primary: #0f172a;
+  --bg-secondary: #1e293b;
+  --bg-card: #1e293b;
+  --bg-input: #1e293b;
+  --text-primary: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --border-color: #334155;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --danger: #ef4444;
+  --danger-hover: #dc2626;
+  --success: #10b981;
+  --warning: #f59e0b;
+  --sidebar-bg: #1e293b;
+  --card-bg: #1e293b;
+  --hover-bg: rgba(255, 255, 255, 0.08);
+  --shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  --btn-secondary-bg: #2d3748;
+  --btn-secondary-hover-bg: rgba(255, 255, 255, 0.12);
+
+  /* 默认磨砂玻璃 */
+  --bg-glass-heavy: rgba(23, 31, 48, 0.65);
+  --bg-glass-medium: rgba(23, 31, 48, 0.45);
+  --bg-glass-light: rgba(23, 31, 48, 0.25);
+  --bg-mask: rgba(15, 23, 42, 0.5);
+  --bg-modal-panel: rgba(23, 31, 48, 0.90);
+  --border-glass: rgba(255, 255, 255, 0.06);
+
+  /* 全局交互与滚动条 */
+  --scrollbar-thumb: rgba(148, 163, 184, 0.2);
+  --scrollbar-thumb-hover: rgba(148, 163, 184, 0.4);
+  --focus-ring: rgba(59, 130, 246, 0.2);
+
+  /* 侧边栏激活高对比 */
+  --sidebar-active-bg: var(--accent);
+  --sidebar-active-text: #ffffff;
+  --sidebar-active-shadow: rgba(59, 130, 246, 0.25);
+}
+
+[data-theme="light"] {
+  /* 浅色主题 */
+  --bg-primary: #f1f5f9;
+  --bg-secondary: #ffffff;
+  --bg-card: #ffffff;
+  --bg-input: #ffffff;
+  --text-primary: #0f172a;
+  --text-secondary: #475569;
+  --border-color: #cbd5e1;
+  --accent: #3b82f6;
+  --accent-hover: #2563eb;
+  --danger: #dc2626;
+  --danger-hover: #b91c1c;
+  --success: #059669;
+  --warning: #d97706;
+  --sidebar-bg: #f8fafc;
+  --card-bg: #ffffff;
+  --hover-bg: rgba(15, 23, 42, 0.04);
+  --shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --btn-secondary-bg: #e8ecf0;
+  --btn-secondary-hover-bg: rgba(15, 23, 42, 0.08);
+
+  /* 浅色磨砂玻璃 */
+  --bg-glass-heavy: rgba(255, 255, 255, 0.65);
+  --bg-glass-medium: rgba(255, 255, 255, 0.45);
+  --bg-glass-light: rgba(255, 255, 255, 0.25);
+  --bg-mask: rgba(15, 23, 42, 0.2);
+  --bg-modal-panel: rgba(255, 255, 255, 0.92);
+  --border-glass: rgba(15, 23, 42, 0.06);
+
+  /* 浅色交互与滚动条 */
+  --scrollbar-thumb: rgba(15, 23, 42, 0.15);
+  --scrollbar-thumb-hover: rgba(15, 23, 42, 0.3);
+  --focus-ring: rgba(59, 130, 246, 0.2);
+
+  /* 侧边栏激活高对比 */
+  --sidebar-active-bg: var(--accent);
+  --sidebar-active-text: #ffffff;
+  --sidebar-active-shadow: rgba(59, 130, 246, 0.15);
+}
+
+[data-theme="purple"] {
+  /* 紫色主题 */
+  --bg-primary: #0a0516;
+  --bg-secondary: #120a24;
+  --bg-card: #120a24;
+  --bg-input: #1b0f35;
+  --text-primary: #f3e8ff;
+  --text-secondary: #a78bfa;
+  --border-color: #2e1065;
+  --accent: #c084fc;
+  --accent-hover: #a855f7;
+  --danger: #f43f5e;
+  --danger-hover: #e11d48;
+  --success: #10b981;
+  --warning: #fbbf24;
+  --sidebar-bg: #0e071e;
+  --card-bg: #120a24;
+  --hover-bg: rgba(192, 132, 252, 0.12);
+  --shadow: 0 8px 30px rgba(147, 51, 234, 0.12);
+  --btn-secondary-bg: #1e113a;
+  --btn-secondary-hover-bg: rgba(192, 132, 252, 0.18);
+
+  /* 紫色磨砂玻璃 */
+  --bg-glass-heavy: rgba(10, 5, 22, 0.65);
+  --bg-glass-medium: rgba(10, 5, 22, 0.45);
+  --bg-glass-light: rgba(18, 10, 36, 0.25);
+  --bg-mask: rgba(10, 5, 22, 0.5);
+  --bg-modal-panel: rgba(18, 10, 36, 0.92);
+  --border-glass: rgba(192, 132, 252, 0.15);
+
+  /* 紫色交互与滚动条 */
+  --scrollbar-thumb: rgba(168, 85, 247, 0.2);
+  --scrollbar-thumb-hover: rgba(168, 85, 247, 0.4);
+  --focus-ring: rgba(192, 132, 252, 0.25);
+
+  /* 侧边栏激活高对比 */
+  --sidebar-active-bg: var(--accent);
+  --sidebar-active-text: #0a0516;
+  /* 深紫字色 */
+  --sidebar-active-shadow: rgba(192, 132, 252, 0.25);
+}
+
+[data-theme="pink"] {
+  /* 粉色主题 */
+  --bg-primary: #fff1f2;
+  --bg-secondary: #ffffff;
+  --bg-card: #fff1f2;
+  --bg-input: #ffffff;
+  --text-primary: #881337;
+  --text-secondary: #e11d48;
+  --border-color: #ffe4e6;
+  --accent: #f43f5e;
+  --accent-hover: #e11d48;
+  --danger: #e11d48;
+  --danger-hover: #be123c;
+  --success: #059669;
+  --warning: #d97706;
+  --sidebar-bg: #fff1f2;
+  --card-bg: #ffffff;
+  --hover-bg: rgba(244, 63, 94, 0.06);
+  --shadow: 0 8px 30px rgba(244, 63, 94, 0.08);
+  --btn-secondary-bg: #fff1f2;
+  --btn-secondary-hover-bg: rgba(244, 63, 94, 0.12);
+
+  /* 粉色磨砂玻璃 */
+  --bg-glass-heavy: rgba(255, 255, 255, 0.65);
+  --bg-glass-medium: rgba(255, 255, 255, 0.45);
+  --bg-glass-light: rgba(255, 241, 242, 0.25);
+  --bg-mask: rgba(136, 19, 55, 0.12);
+  --bg-modal-panel: rgba(255, 255, 255, 0.92);
+  --border-glass: rgba(244, 63, 94, 0.12);
+
+  /* 粉色交互与滚动条 */
+  --scrollbar-thumb: rgba(244, 63, 94, 0.2);
+  --scrollbar-thumb-hover: rgba(244, 63, 94, 0.4);
+  --focus-ring: rgba(244, 63, 94, 0.2);
+
+  /* 侧边栏激活高对比 */
+  --sidebar-active-bg: var(--accent);
+  --sidebar-active-text: #ffffff;
+  --sidebar-active-shadow: rgba(244, 63, 94, 0.20);
+}
+
+[data-theme="green"] {
+  /* 抹茶绿主题 (浅翠绿) */
+  --bg-primary: #f0fdf4;
+  --bg-secondary: #ffffff;
+  --bg-card: #f0fdf4;
+  --bg-input: #eafcf0;
+  --text-primary: #052e16;
+  --text-secondary: #166534;
+  --border-color: #dcfce7;
+  --accent: #34c759;
+  --accent-hover: #2f9e44;
+  --danger: #ff3b30;
+  --danger-hover: #e03131;
+  --success: #34c759;
+  --warning: #ff9500;
+  --sidebar-bg: #f5fdf7;
+  --card-bg: #ffffff;
+  --hover-bg: rgba(52, 199, 89, 0.05);
+  --shadow: none;
+  --btn-secondary-bg: #dcfce7;
+  --btn-secondary-hover-bg: rgba(52, 199, 89, 0.12);
+
+  /* 抹茶绿磨砂玻璃 */
+  --bg-glass-heavy: rgba(255, 255, 255, 0.65);
+  --bg-glass-medium: rgba(255, 255, 255, 0.45);
+  --bg-glass-light: rgba(240, 253, 244, 0.25);
+  --bg-mask: rgba(5, 46, 22, 0.12);
+  --bg-modal-panel: rgba(255, 255, 255, 0.92);
+  --border-glass: rgba(52, 199, 89, 0.12);
+
+  /* 抹茶绿交互与滚动条 */
+  --scrollbar-thumb: rgba(52, 199, 89, 0.15);
+  --scrollbar-thumb-hover: rgba(52, 199, 89, 0.3);
+  --focus-ring: rgba(52, 199, 89, 0.2);
+
+  /* 侧边栏激活高对比 */
+  --sidebar-active-bg: var(--accent);
+  --sidebar-active-text: #ffffff;
+  --sidebar-active-shadow: rgba(52, 199, 89, 0.15);
+}
+
+[data-theme="blue"] {
+  /* 冰海蓝主题 */
+  --bg-primary: #f0f9ff;
+  --bg-secondary: #ffffff;
+  --bg-card: #f0f9ff;
+  --bg-input: #e6f4fe;
+  --text-primary: #082f49;
+  --text-secondary: #075985;
+  --border-color: #e0f2fe;
+  --accent: #007aff;
+  --accent-hover: #0056b3;
+  --danger: #ff3b30;
+  --danger-hover: #c92a2a;
+  --success: #34c759;
+  --warning: #ff9500;
+  --sidebar-bg: #f5faff;
+  --card-bg: #ffffff;
+  --hover-bg: rgba(0, 122, 255, 0.05);
+  --shadow: none;
+  --btn-secondary-bg: #e0f2fe;
+  --btn-secondary-hover-bg: rgba(0, 122, 255, 0.12);
+
+  /* 冰海蓝磨砂玻璃 */
+  --bg-glass-heavy: rgba(255, 255, 255, 0.65);
+  --bg-glass-medium: rgba(255, 255, 255, 0.45);
+  --bg-glass-light: rgba(240, 249, 255, 0.25);
+  --bg-mask: rgba(8, 47, 73, 0.12);
+  --bg-modal-panel: rgba(255, 255, 255, 0.92);
+  --border-glass: rgba(0, 122, 255, 0.12);
+
+  /* 冰海蓝交互与滚动条 */
+  --scrollbar-thumb: rgba(0, 122, 255, 0.15);
+  --scrollbar-thumb-hover: rgba(0, 122, 255, 0.3);
+  --focus-ring: rgba(0, 122, 255, 0.2);
+
+  /* 侧边栏激活高对比 */
+  --sidebar-active-bg: var(--accent);
+  --sidebar-active-text: #ffffff;
+  --sidebar-active-shadow: rgba(0, 122, 255, 0.15);
+}
+
+/* 2. 主题覆盖 */
+
+/* 彩色主题 (purple/pink/green/blue) 覆盖规则。
+   各主题前缀选择器互斥，故可合并；仅取值不同的规则单独列出。 */
+
+[data-theme="purple"] .bg-\[\#f1f5f9\],
+[data-theme="purple"] .dark\:bg-\[\#0f172a\],
+[data-theme="pink"] .bg-\[\#f1f5f9\],
+[data-theme="pink"] .dark\:bg-\[\#0f172a\],
+[data-theme="green"] .bg-\[\#f1f5f9\],
+[data-theme="green"] .dark\:bg-\[\#0f172a\],
+[data-theme="blue"] .bg-\[\#f1f5f9\],
+[data-theme="blue"] .dark\:bg-\[\#0f172a\] {
+  background-color: var(--bg-primary) !important;
+}
+
+[data-theme="purple"] .bg-slate-50,
+[data-theme="purple"] .bg-slate-100,
+[data-theme="purple"] .bg-slate-200\/80,
+[data-theme="purple"] .dark\:bg-slate-800,
+[data-theme="purple"] .dark\:bg-slate-800\/40,
+[data-theme="purple"] .dark\:bg-slate-800\/50,
+[data-theme="purple"] .dark\:bg-slate-800\/80,
+[data-theme="pink"] .bg-slate-50,
+[data-theme="pink"] .bg-slate-100,
+[data-theme="pink"] .bg-slate-200\/80,
+[data-theme="pink"] .dark\:bg-slate-800,
+[data-theme="pink"] .dark\:bg-slate-800\/40,
+[data-theme="pink"] .dark\:bg-slate-800\/50,
+[data-theme="pink"] .dark\:bg-slate-800\/80,
+[data-theme="green"] .bg-slate-50,
+[data-theme="green"] .bg-slate-100,
+[data-theme="green"] .bg-slate-200\/80,
+[data-theme="green"] .dark\:bg-slate-800,
+[data-theme="green"] .dark\:bg-slate-800\/40,
+[data-theme="green"] .dark\:bg-slate-800\/50,
+[data-theme="green"] .dark\:bg-slate-800\/80,
+[data-theme="blue"] .bg-slate-50,
+[data-theme="blue"] .bg-slate-100,
+[data-theme="blue"] .bg-slate-200\/80,
+[data-theme="blue"] .dark\:bg-slate-800,
+[data-theme="blue"] .dark\:bg-slate-800\/40,
+[data-theme="blue"] .dark\:bg-slate-800\/50,
+[data-theme="blue"] .dark\:bg-slate-800\/80 {
+  background-color: var(--btn-secondary-bg) !important;
+}
+
+[data-theme="purple"] .hover\:bg-slate-100:hover,
+[data-theme="purple"] .hover\:bg-slate-200:hover,
+[data-theme="purple"] .dark\:hover\:bg-slate-700:hover,
+[data-theme="purple"] .dark\:hover\:bg-slate-800:hover,
+[data-theme="purple"] .dark\:hover\:bg-slate-700\/60:hover,
+[data-theme="purple"] .dark\:hover\:bg-slate-700\/80:hover,
+[data-theme="purple"] .dark\:hover\:bg-slate-800\/80:hover,
+[data-theme="purple"] .bg-slate-200,
+[data-theme="purple"] .dark\:bg-slate-700,
+[data-theme="pink"] .hover\:bg-slate-100:hover,
+[data-theme="pink"] .hover\:bg-slate-200:hover,
+[data-theme="pink"] .dark\:hover\:bg-slate-700:hover,
+[data-theme="pink"] .dark\:hover\:bg-slate-800:hover,
+[data-theme="pink"] .dark\:hover\:bg-slate-700\/60:hover,
+[data-theme="pink"] .dark\:hover\:bg-slate-700\/80:hover,
+[data-theme="pink"] .dark\:hover\:bg-slate-800\/80:hover,
+[data-theme="pink"] .bg-slate-200,
+[data-theme="pink"] .dark\:bg-slate-700,
+[data-theme="green"] .hover\:bg-slate-100:hover,
+[data-theme="green"] .hover\:bg-slate-200:hover,
+[data-theme="green"] .dark\:hover\:bg-slate-700:hover,
+[data-theme="green"] .dark\:hover\:bg-slate-800:hover,
+[data-theme="green"] .dark\:hover\:bg-slate-700\/60:hover,
+[data-theme="green"] .dark\:hover\:bg-slate-700\/80:hover,
+[data-theme="green"] .dark\:hover\:bg-slate-800\/80:hover,
+[data-theme="green"] .bg-slate-200,
+[data-theme="green"] .dark\:bg-slate-700,
+[data-theme="blue"] .hover\:bg-slate-100:hover,
+[data-theme="blue"] .hover\:bg-slate-200:hover,
+[data-theme="blue"] .dark\:hover\:bg-slate-700:hover,
+[data-theme="blue"] .dark\:hover\:bg-slate-800:hover,
+[data-theme="blue"] .dark\:hover\:bg-slate-700\/60:hover,
+[data-theme="blue"] .dark\:hover\:bg-slate-700\/80:hover,
+[data-theme="blue"] .dark\:hover\:bg-slate-800\/80:hover,
+[data-theme="blue"] .bg-slate-200,
+[data-theme="blue"] .dark\:bg-slate-700 {
+  background-color: var(--btn-secondary-hover-bg) !important;
+}
+
+[data-theme="purple"] .border-slate-100,
+[data-theme="purple"] .border-slate-200,
+[data-theme="purple"] .border-slate-100\/50,
+[data-theme="purple"] .border-slate-200\/80,
+[data-theme="purple"] .dark\:border-slate-800,
+[data-theme="purple"] .dark\:border-slate-800\/80,
+[data-theme="purple"] .dark\:border-slate-800\/60,
+[data-theme="purple"] .dark\:border-slate-800\/50,
+[data-theme="purple"] .dark\:border-slate-800\/40,
+[data-theme="purple"] .dark\:border-slate-800\/30,
+[data-theme="pink"] .border-slate-100,
+[data-theme="pink"] .border-slate-200,
+[data-theme="pink"] .border-slate-100\/50,
+[data-theme="pink"] .border-slate-200\/80,
+[data-theme="pink"] .dark\:border-slate-800,
+[data-theme="pink"] .dark\:border-slate-800\/80,
+[data-theme="pink"] .dark\:border-slate-800\/60,
+[data-theme="pink"] .dark\:border-slate-800\/50,
+[data-theme="pink"] .dark\:border-slate-800\/40,
+[data-theme="pink"] .dark\:border-slate-800\/30,
+[data-theme="green"] .border-slate-100,
+[data-theme="green"] .border-slate-200,
+[data-theme="green"] .border-slate-100\/50,
+[data-theme="green"] .border-slate-200\/80,
+[data-theme="green"] .dark\:border-slate-800,
+[data-theme="green"] .dark\:border-slate-800\/80,
+[data-theme="green"] .dark\:border-slate-800\/60,
+[data-theme="green"] .dark\:border-slate-800\/50,
+[data-theme="green"] .dark\:border-slate-800\/40,
+[data-theme="green"] .dark\:border-slate-800\/30,
+[data-theme="blue"] .border-slate-100,
+[data-theme="blue"] .border-slate-200,
+[data-theme="blue"] .border-slate-100\/50,
+[data-theme="blue"] .border-slate-200\/80,
+[data-theme="blue"] .dark\:border-slate-800,
+[data-theme="blue"] .dark\:border-slate-800\/80,
+[data-theme="blue"] .dark\:border-slate-800\/60,
+[data-theme="blue"] .dark\:border-slate-800\/50,
+[data-theme="blue"] .dark\:border-slate-800\/40,
+[data-theme="blue"] .dark\:border-slate-800\/30 {
+  border-color: var(--border-color) !important;
+}
+
+[data-theme="purple"] .text-slate-800,
+[data-theme="purple"] .dark\:text-slate-100,
+[data-theme="purple"] .text-slate-700,
+[data-theme="purple"] .dark\:text-slate-200,
+[data-theme="pink"] .text-slate-800,
+[data-theme="pink"] .dark\:text-slate-100,
+[data-theme="pink"] .text-slate-700,
+[data-theme="pink"] .dark\:text-slate-200,
+[data-theme="green"] .text-slate-800,
+[data-theme="green"] .dark\:text-slate-100,
+[data-theme="green"] .text-slate-700,
+[data-theme="green"] .dark\:text-slate-200,
+[data-theme="blue"] .text-slate-800,
+[data-theme="blue"] .dark\:text-slate-100,
+[data-theme="blue"] .text-slate-700,
+[data-theme="blue"] .dark\:text-slate-200 {
+  color: var(--text-primary) !important;
+}
+
+[data-theme="purple"] .text-slate-400,
+[data-theme="purple"] .text-slate-500,
+[data-theme="purple"] .text-slate-600,
+[data-theme="purple"] .dark\:text-slate-300,
+[data-theme="purple"] .dark\:text-slate-400,
+[data-theme="purple"] .dark\:text-slate-500,
+[data-theme="pink"] .text-slate-400,
+[data-theme="pink"] .text-slate-500,
+[data-theme="pink"] .text-slate-600,
+[data-theme="pink"] .dark\:text-slate-300,
+[data-theme="pink"] .dark\:text-slate-400,
+[data-theme="pink"] .dark\:text-slate-500,
+[data-theme="green"] .text-slate-400,
+[data-theme="green"] .text-slate-500,
+[data-theme="green"] .text-slate-600,
+[data-theme="green"] .dark\:text-slate-300,
+[data-theme="green"] .dark\:text-slate-400,
+[data-theme="green"] .dark\:text-slate-500,
+[data-theme="blue"] .text-slate-400,
+[data-theme="blue"] .text-slate-500,
+[data-theme="blue"] .text-slate-600,
+[data-theme="blue"] .dark\:text-slate-300,
+[data-theme="blue"] .dark\:text-slate-400,
+[data-theme="blue"] .dark\:text-slate-500 {
+  color: var(--text-secondary) !important;
+}
+
+[data-theme="purple"] .bg-slate-50\/50,
+[data-theme="purple"] .dark\:bg-slate-900\/30 {
+  background-color: rgba(27, 15, 53, 0.45) !important;
+}
+
+[data-theme="purple"] .hover\:bg-slate-50\/50:hover,
+[data-theme="purple"] .dark\:hover\:bg-slate-900\/10:hover {
+  background-color: rgba(168, 85, 247, 0.06) !important;
+}
+
+[data-theme="purple"] .bg-white.shadow-sm,
+[data-theme="purple"] .dark\:bg-slate-700.shadow-sm {
+  background-color: var(--hover-bg) !important;
+  color: var(--text-primary) !important;
+}
+
+[data-theme="purple"] aside,
+[data-theme="pink"] aside,
+[data-theme="green"] aside,
+[data-theme="blue"] aside {
+  background-color: var(--bg-glass-heavy) !important;
+  backdrop-filter: blur(16px);
+}
+
+[data-theme="pink"] .bg-slate-50\/50,
+[data-theme="pink"] .dark\:bg-slate-900\/30 {
+  background-color: rgba(255, 241, 242, 0.50) !important;
+}
+
+[data-theme="pink"] .hover\:bg-slate-50\/50:hover,
+[data-theme="pink"] .dark\:hover\:bg-slate-900\/10:hover {
+  background-color: rgba(244, 63, 94, 0.05) !important;
+}
+
+[data-theme="pink"] .bg-white.shadow-sm,
+[data-theme="pink"] .dark\:bg-slate-700.shadow-sm,
+[data-theme="green"] .bg-white.shadow-sm,
+[data-theme="green"] .dark\:bg-slate-700.shadow-sm,
+[data-theme="blue"] .bg-white.shadow-sm,
+[data-theme="blue"] .dark\:bg-slate-700.shadow-sm {
+  background-color: var(--bg-primary) !important;
+  color: var(--text-primary) !important;
+}
+
+[data-theme="green"] .bg-slate-50\/50,
+[data-theme="green"] .dark\:bg-slate-900\/30 {
+  background-color: rgba(234, 252, 240, 0.50) !important;
+}
+
+[data-theme="green"] .hover\:bg-slate-50\/50:hover,
+[data-theme="green"] .dark\:hover\:bg-slate-900\/10:hover {
+  background-color: rgba(52, 199, 89, 0.05) !important;
+}
+
+[data-theme="blue"] .bg-slate-50\/50,
+[data-theme="blue"] .dark\:bg-slate-900\/30 {
+  background-color: rgba(230, 244, 254, 0.50) !important;
+}
+
+[data-theme="blue"] .hover\:bg-slate-50\/50:hover,
+[data-theme="blue"] .dark\:hover\:bg-slate-900\/10:hover {
+  background-color: rgba(0, 122, 255, 0.05) !important;
+}
+
+/* 3. 全局样式与交互 */
+
+/* 全局禁用文本选择，防止交互误触变蓝 */
+body {
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  transition: background-color 0.2s, color 0.2s;
+  overflow: hidden;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+}
+
+/* 允许复制与输入的区域 */
+input,
+textarea,
+.select-text {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  -moz-user-select: text !important;
+  -ms-user-select: text !important;
+}
+
+/* 隐藏只读输入框闪烁的光标 */
+input[readonly],
+textarea[readonly] {
+  caret-color: transparent !important;
+  cursor: default;
+}
+
+/* 针对非输入性区域，屏蔽长按与点击高亮 */
+*:not(input):not(textarea):not(.select-text) {
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* 确保交互控件不被选中 */
+button,
+a,
+svg,
+img,
+[role="button"],
+.cursor-pointer {
+  user-select: none !important;
+  -webkit-user-select: none !important;
+  -moz-user-select: none !important;
+  -ms-user-select: none !important;
+}
+
+/* 输入控件聚焦 */
+input,
+select,
+textarea {
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  outline: 2px solid transparent !important;
+  outline-offset: 2px !important;
+  border-color: var(--accent) !important;
+  box-shadow: 0 0 0 2px var(--focus-ring) !important;
+}
+
+/* 占位符颜色 */
+::-webkit-input-placeholder {
+  color: var(--text-secondary) !important;
+  opacity: 0.45;
+}
+
+:-moz-placeholder {
+  color: var(--text-secondary) !important;
+  opacity: 0.45;
+}
+
+::-moz-placeholder {
+  color: var(--text-secondary) !important;
+  opacity: 0.45;
+}
+
+:-ms-input-placeholder {
+  color: var(--text-secondary) !important;
+  opacity: 0.45;
+}
+
+/* 滚动条整体配置 */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 默认滑块透明 */
+::-webkit-scrollbar-thumb {
+  background-color: transparent;
+  border-radius: 9999px;
+  transition: background-color 0.25s ease-in-out;
+}
+
+/* 容器悬停时显示滑块 */
+*:hover::-webkit-scrollbar-thumb {
+  background-color: var(--scrollbar-thumb);
+}
+
+/* 滑块悬停高亮 */
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--scrollbar-thumb-hover) !important;
+}
+
+/* Firefox 悬停渐显兼容 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 0.25s ease-in-out;
+}
+
+*:hover {
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+/* 4. 磨砂玻璃与遮罩 */
+
+/* 以下磨砂规则只写标准属性 backdrop-filter，切勿手工再补 -webkit-backdrop-filter。
+   Vite 8 默认用 lightningcss 压缩 CSS：同一条规则内若同时出现标准属性与其 -webkit-
+   前缀，会被视为等价声明而只保留后写的一条。此前两者并存且 -webkit- 在后，压缩后
+   标准属性被丢弃，只剩 -webkit-，于是 Chrome / Firefox 等只认标准属性的浏览器完全
+   失去磨砂效果，而仍认该前缀的 Safari 正常 —— 表现为「只在部分浏览器上模糊失效」。
+   （实测 Chrome 153：既无 -webkit-backdrop-filter 属性、CSS.supports 也为 false。）
+   需要前缀的目标由构建工具按 build.cssTarget（默认 baseline）自动补齐，无需手写。 */
+
+.glass-heavy,
+[data-theme] .glass-heavy {
+  background-color: var(--bg-glass-heavy) !important;
+  backdrop-filter: blur(16px);
+  border-color: var(--border-glass) !important;
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.4), 0 0 20px rgba(255, 255, 255, 0.01);
+  /* 硬件加速 */
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+  will-change: backdrop-filter;
+}
+
+.glass-medium,
+[data-theme] .glass-medium {
+  background-color: var(--bg-glass-medium) !important;
+  backdrop-filter: blur(12px);
+  border-color: var(--border-glass) !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+  /* 硬件加速 */
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+  will-change: backdrop-filter;
+}
+
+.glass-medium.shadow-none,
+[data-theme] .glass-medium.shadow-none {
+  box-shadow: none !important;
+}
+
+.glass-light,
+[data-theme] .glass-light {
+  background-color: var(--bg-glass-light) !important;
+  backdrop-filter: blur(10px);
+  border-color: var(--border-glass) !important;
+  /* 硬件加速 */
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+  will-change: backdrop-filter;
+  /* 继承圆角 */
+  border-radius: inherit;
+}
+
+.glass-mask {
+  background-color: var(--bg-mask) !important;
+  backdrop-filter: blur(12px);
+  /* 硬件加速 */
+  transform: translateZ(0);
+  -webkit-transform: translateZ(0);
+  will-change: backdrop-filter;
+}
+
+/* 弹窗内部面板（.glass-mask 的后代卡片）：提升背景不透明度，避免内容透底。
+   遮罩层 .glass-mask 自身带 backdrop-filter，会先把其后方整页内容模糊一次；
+   位于遮罩内的弹窗面板再叠加 backdrop-filter，只能采样到遮罩这一层，视觉上不再
+   产生额外模糊（实测开关面板的 blur 对渲染结果无影响）。因此弹窗的可读性实际
+   只取决于面板自身背景的不透明度：原 --bg-glass-heavy/medium 的 0.65/0.45 在
+   弹窗场景下明显过低，故改用独立的 --bg-modal-panel（约 0.9）。
+   遮罩层的模糊度与底色（--bg-mask）保持不变，仅调整弹窗内部。
+   选择器特异性与 [data-theme] .glass-heavy 同为 (0,2,0)，靠书写顺序居后者生效。 */
+.glass-mask .glass-heavy,
+.glass-mask .glass-medium {
+  background-color: var(--bg-modal-panel) !important;
+}
+
+/* 侧边栏激活 */
+.sidebar-active {
+  background-color: var(--sidebar-active-bg) !important;
+  color: var(--sidebar-active-text) !important;
+  box-shadow: 0 4px 12px var(--sidebar-active-shadow) !important;
+}
+
+/* 磨砂玻璃投影 */
+[data-theme="purple"] .glass-heavy {
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
+}
+
+[data-theme="purple"] .glass-medium {
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="pink"] .glass-heavy {
+  box-shadow: 0 20px 50px rgba(15, 23, 42, 0.06);
+}
+
+[data-theme="pink"] .glass-medium {
+  box-shadow: 0 8px 32px rgba(15, 23, 42, 0.03);
+}
+
+[data-theme="green"] .glass-heavy {
+  box-shadow: 0 20px 50px rgba(5, 46, 22, 0.06);
+}
+
+[data-theme="green"] .glass-medium {
+  box-shadow: 0 8px 32px rgba(5, 46, 22, 0.03);
+}
+
+[data-theme="blue"] .glass-heavy {
+  box-shadow: 0 20px 50px rgba(8, 47, 73, 0.06);
+}
+
+[data-theme="blue"] .glass-medium {
+  box-shadow: 0 8px 32px rgba(8, 47, 73, 0.03);
+}
+
+[data-theme="light"] .glass-heavy {
+  box-shadow: 0 20px 40px rgba(15, 23, 42, 0.05);
+}
+
+/* 纯 dark 主题（非 purple）专用投影。
+   purple 主题也带 .dark 类，但已有更贴合的紫色投影，需排除以免覆盖。 */
+.dark:not([data-theme="purple"]) .glass-heavy {
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.55);
+}
+
+/* 5. 文字颜色 */
+
+.glass-heavy,
+.glass-medium,
+.glass-light {
+  --text-secondary: #cbd5e1;
+}
+
+[data-theme="light"] .glass-heavy,
+[data-theme="light"] .glass-medium,
+[data-theme="light"] .glass-light {
+  --text-secondary: #334155;
+}
+
+[data-theme="pink"] .glass-heavy,
+[data-theme="pink"] .glass-medium,
+[data-theme="pink"] .glass-light {
+  --text-secondary: #be123c;
+}
+
+[data-theme="green"] .glass-heavy,
+[data-theme="green"] .glass-medium,
+[data-theme="green"] .glass-light {
+  --text-secondary: #166534;
+}
+
+[data-theme="blue"] .glass-heavy,
+[data-theme="blue"] .glass-medium,
+[data-theme="blue"] .glass-light {
+  --text-secondary: #075985;
+}
+
+[data-theme="purple"] .glass-heavy,
+[data-theme="purple"] .glass-medium,
+[data-theme="purple"] .glass-light {
+  --text-secondary: #d8b4fe;
+}
+
+/* 覆盖文本色 */
+.glass-heavy .text-slate-400,
+.glass-heavy .text-slate-500,
+.glass-heavy .text-slate-600,
+.glass-heavy .dark\:text-slate-300,
+.glass-heavy .dark\:text-slate-400,
+.glass-heavy .dark\:text-slate-500,
+.glass-medium .text-slate-400,
+.glass-medium .text-slate-500,
+.glass-medium .text-slate-600,
+.glass-medium .dark\:text-slate-300,
+.glass-medium .dark\:text-slate-400,
+.glass-medium .dark\:text-slate-500,
+.glass-light .text-slate-400,
+.glass-light .text-slate-500,
+.glass-light .text-slate-600,
+.glass-light .dark\:text-slate-300,
+.glass-light .dark\:text-slate-400,
+.glass-light .dark\:text-slate-500 {
+  color: var(--text-secondary) !important;
+}
+
+/* 6. 移动端底栏 */
+
+nav.md\:hidden button:not(.text-accent) {
+  color: var(--text-secondary) !important;
+  opacity: 0.55;
+  transition: opacity 0.2s ease;
+}
+
+nav.md\:hidden button.text-accent {
+  color: var(--accent) !important;
+  opacity: 1 !important;
+  transition: opacity 0.2s ease;
+}
+
+/* 7. 动画 */
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 8. 适配与 Hover */
+
+/* 面板玻璃化 */
+main .bg-white,
+main .dark\:bg-\[\#1e293b\],
+main .dark\:bg-slate-800,
+[data-theme="purple"] main .bg-white,
+[data-theme="purple"] main .dark\:bg-\[\#1e293b\],
+[data-theme="pink"] main .bg-white,
+[data-theme="pink"] main .dark\:bg-\[\#1e293b\],
+[data-theme="green"] main .bg-white,
+[data-theme="green"] main .dark\:bg-\[\#1e293b\],
+[data-theme="blue"] main .bg-white,
+[data-theme="blue"] main .dark\:bg-\[\#1e293b\] {
+  background-color: var(--bg-glass-medium) !important;
+  backdrop-filter: blur(12px) !important;
+  /* 硬件加速 */
+  transform: translateZ(0) !important;
+  -webkit-transform: translateZ(0) !important;
+  will-change: backdrop-filter !important;
+}
+
+/* 内部 Hover 优化 */
+.glass-heavy .hover\:bg-slate-50:hover,
+.glass-heavy .hover\:bg-slate-100:hover,
+.glass-heavy .hover\:bg-slate-200:hover,
+.glass-heavy .dark\:hover\:bg-slate-700:hover,
+.glass-heavy .dark\:hover\:bg-slate-800:hover,
+.glass-medium .hover\:bg-slate-50:hover,
+.glass-medium .hover\:bg-slate-100:hover,
+.glass-medium .hover\:bg-slate-200:hover,
+.glass-medium .dark\:hover\:bg-slate-700:hover,
+.glass-medium .dark\:hover\:bg-slate-800:hover,
+.glass-light .hover\:bg-slate-50:hover,
+.glass-light .hover\:bg-slate-100:hover,
+.glass-light .hover\:bg-slate-200:hover,
+.glass-light .dark\:hover\:bg-slate-700:hover,
+.glass-light .dark\:hover\:bg-slate-800:hover,
+/* 兼容卡片 Hover */
+.bg-white .hover\:bg-slate-50:hover,
+.bg-white .hover\:bg-slate-100:hover,
+.bg-white .hover\:bg-slate-200:hover,
+.bg-white .dark\:hover\:bg-slate-700:hover,
+.bg-white .dark\:hover\:bg-slate-800:hover,
+.dark\:bg-\[\#1e293b\] .hover\:bg-slate-50:hover,
+.dark\:bg-\[\#1e293b\] .hover\:bg-slate-100:hover,
+.dark\:bg-\[\#1e293b\] .hover\:bg-slate-200:hover,
+.dark\:bg-\[\#1e293b\] .dark\:hover\:bg-slate-700:hover,
+.dark\:bg-\[\#1e293b\] .dark\:hover\:bg-slate-800:hover {
+  background-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+/* 亮色/粉色主题 Hover 反转 */
+[data-theme="light"] .glass-heavy .hover\:bg-slate-100:hover,
+[data-theme="light"] .glass-heavy .hover\:bg-slate-200:hover,
+[data-theme="light"] .glass-medium .hover\:bg-slate-100:hover,
+[data-theme="light"] .glass-medium .hover\:bg-slate-200:hover,
+[data-theme="light"] .bg-white .hover\:bg-slate-100:hover,
+[data-theme="light"] .bg-white .hover\:bg-slate-200:hover,
+[data-theme="pink"] .glass-heavy .hover\:bg-slate-100:hover,
+[data-theme="pink"] .glass-heavy .hover\:bg-slate-200:hover,
+[data-theme="pink"] .glass-medium .hover\:bg-slate-100:hover,
+[data-theme="pink"] .glass-medium .hover\:bg-slate-200:hover,
+[data-theme="pink"] .bg-white .hover\:bg-slate-100:hover,
+[data-theme="pink"] .bg-white .hover\:bg-slate-200:hover,
+[data-theme="green"] .glass-heavy .hover\:bg-slate-100:hover,
+[data-theme="green"] .glass-heavy .hover\:bg-slate-200:hover,
+[data-theme="green"] .glass-medium .hover\:bg-slate-100:hover,
+[data-theme="green"] .glass-medium .hover\:bg-slate-200:hover,
+[data-theme="green"] .bg-white .hover\:bg-slate-100:hover,
+[data-theme="green"] .bg-white .hover\:bg-slate-200:hover,
+[data-theme="blue"] .glass-heavy .hover\:bg-slate-100:hover,
+[data-theme="blue"] .glass-heavy .hover\:bg-slate-200:hover,
+[data-theme="blue"] .glass-medium .hover\:bg-slate-100:hover,
+[data-theme="blue"] .glass-medium .hover\:bg-slate-200:hover,
+[data-theme="blue"] .bg-white .hover\:bg-slate-100:hover,
+[data-theme="blue"] .bg-white .hover\:bg-slate-200:hover {
+  background-color: rgba(15, 23, 42, 0.05) !important;
+}
+
+/* 侧边栏隐藏滚动条，但仍然允许滚轮滚动 */
+aside::-webkit-scrollbar {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+
+aside {
+  -ms-overflow-style: none !important;
+  /* IE and Edge */
+  scrollbar-width: none !important;
+  /* Firefox */
+}
+
+/* 侧边栏底部按钮图标微交互，采用超缓动贝塞尔曲线缓和速度变化 */
+.sidebar-bottom-icon {
+  transition: transform 0.6s cubic-bezier(0.16, 1, 0.3, 1), color 0.3s ease !important;
+}
+
+/* 常驻硬件加速以防 hover translate 时抗锯齿重算导致文字发虚 */
+.live-card {
+  transform: translate3d(0, 0, 0);
+  -webkit-transform: translate3d(0, 0, 0);
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  transform-style: preserve-3d;
+  -webkit-transform-style: preserve-3d;
+  --live-lift: 3px;
+}
+
+/* 悬停上浮卡片的「命中区恒定」补偿。
+   卡片 hover 时上浮（Config/订阅为 3px），若指针落在卡片下沿数像素内，
+   会随上浮"掉出"卡片，:hover 随即失效 → 卡片落回 → 再次命中，
+   如此反复翻转形成反馈环；卡片连同其文字被持续重绘，看起来发虚、抖动。
+   这里用一层透明伪元素把下沿命中区补齐，并在悬停时反向位移与上浮等高的距离，
+   使其在视口中的位置在上浮前后完全一致，从根上切断反馈环。
+
+   几何（B = 卡片边框盒底边，L = 上浮高度，卡片为 1px 边框）：
+     静止：卡片覆盖 [., B]，伪元素覆盖 [B-L, B]
+     悬停：卡片覆盖 [., B-L]，伪元素随卡片上移 L 后反向位移 L → 仍覆盖 [B-L, B]
+   两态命中区完全相同，且伪元素不超出卡片自身的静止轮廓，不会遮挡相邻元素。
+
+   上浮高度通过 --live-lift 指定，必须与实际的上浮工具类一致；
+   伪元素使用与卡片相同的过渡曲线，保证两者同步移动。 */
+/* 节点卡片使用 hover:-translate-y-[2px]，此处同步为 2px */
+.live-card--lift-2 {
+  --live-lift: 2px;
+}
+
+.live-card::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: var(--live-lift);
+  transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.live-card:hover::after {
+  transform: translateY(var(--live-lift));
+}
+}

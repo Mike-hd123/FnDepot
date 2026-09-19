@@ -1,0 +1,109 @@
+#!/bin/bash
+# 安装后 hook：写 systemd 单元 + fluxor.env + 数据目录归位 + LightGBM Model.bin
+# 对齐 skill 坑「占位符自举」：fluxor.json / config.yaml 仅缺省时生成，升级不覆盖用户配置
+LOG=/tmp/fluxor_install.log
+exec >> "$LOG" 2>&1
+echo "==================== install_callback $(date '+%F %T') ===================="
+echo "env: TRIM_APPDEST=${TRIM_APPDEST:-<unset>} TRIM_PKGVAR=${TRIM_PKGVAR:-<unset>} TRIM_SERVICE_PORT=${TRIM_SERVICE_PORT:-<unset>} euid=$(id -u)"
+set -x
+set -e
+SERVICE="fluxor"
+UNIT="/etc/systemd/system/${SERVICE}.service"
+
+APP_DIR="${TRIM_APPDEST:-}"
+if [ -z "${APP_DIR}" ]; then
+  for v in /vol1 /vol2 /vol3 /vol4; do
+    [ -f "${v}/@appcenter/fluxor/fluxor" ] && APP_DIR="${v}/@appcenter/fluxor" && break
+  done
+  [ -n "${APP_DIR}" ] || APP_DIR="/vol2/@appcenter/fluxor"
+fi
+APPDATA="${TRIM_PKGVAR:-}"
+if [ -z "${APPDATA}" ]; then
+  APP_VOL="$(printf '%s' "${APP_DIR}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
+  if [ -n "${APP_VOL}" ]; then APPDATA="${APP_VOL}/@appdata/fluxor"; else APPDATA="/var/apps/fluxor/var"; fi
+fi
+SHARE_DIR="${APPDATA}/shares"
+PORT="${TRIM_SERVICE_PORT:-18099}"
+
+mkdir -p "${APPDATA}" "${SHARE_DIR}" "${SHARE_DIR}/ui/meta" "${SHARE_DIR}/proxies" "${APPDATA}/bin-backup"
+
+# ── 二进制校验 ──
+for b in fluxor mihomo; do
+  if [ ! -f "${APP_DIR}/${b}" ]; then
+    echo "ERROR: binary missing: ${APP_DIR}/${b}"
+    [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "Fluxor 安装缺二进制：${b}" > "${TRIM_TEMP_LOGFILE}"
+    exit 1
+  fi
+  chmod 755 "${APP_DIR}/${b}"
+done
+# 内核升级备份目录（smart-update 写 fluxor-backup/ 于 FLUXOR_BIN_DIR 下，即 APP_DIR）
+mkdir -p "${APP_DIR}/fluxor-backup" 2>/dev/null || true
+
+# ── LightGBM Model.bin：不存在才拷入内核工作目录（smart 内核首启自动加载）──
+if [ ! -f "${SHARE_DIR}/Model.bin" ] && [ -f "${APP_DIR}/Model.bin" ]; then
+  cp -p "${APP_DIR}/Model.bin" "${SHARE_DIR}/Model.bin"
+fi
+
+# ── Geo/ASN 数据库随包分发：不存在才拷入（无网首启不用下载，规则+Smart 秒加载）──
+for g in geosite.dat geoip.metadb ASN.mmdb; do
+  if [ ! -f "${SHARE_DIR}/${g}" ] && [ -f "${APP_DIR}/${g}" ]; then
+    cp -p "${APP_DIR}/${g}" "${SHARE_DIR}/${g}"
+  fi
+done
+
+# ── fluxor.env（路径全量覆盖，避开 ClashLite 生产端口）──
+# 面板 app.sock 必须落在 @appcenter（www-data 可遍历，网关才能 connect——
+# @appdata 是 770 私有目录，www-data 连不进，这是桌面入口打不开的根因）。
+# 内核 core.sock 带外控能力，留在仅 root 可达的 @appdata。
+rm -f "${APPDATA}/app.sock"   # 清掉 1.3.13-1 及之前的旧位置 socket
+cat > "${APPDATA}/fluxor.env" <<EOS
+SOCKET_PATH=${APP_DIR}/app.sock
+BASE_URL=/
+FLUXOR_ADDR=0.0.0.0:${PORT}
+FLUXOR_PID_FILE=${APPDATA}/fluxor.pid
+FLUXOR_BIN_DIR=${APP_DIR}/
+CORE_PID_FILE=${APPDATA}/core.pid
+CORE_BIN=${APP_DIR}/mihomo
+CORE_SOCKET=${APPDATA}/core.sock
+META_DIR=${SHARE_DIR}/ui/meta
+ZASH_DIR=${SHARE_DIR}/ui/zash
+FLUXOR_CONFIG_FILE=${APPDATA}/fluxor.json
+CONFIG_TARGET=${SHARE_DIR}/config.yaml
+INFO_LOG_FILE=${SHARE_DIR}/info.log
+CORE_WORK_DIR=${SHARE_DIR}
+EOS
+
+# ── systemd unit ──
+cat > "${UNIT}" <<EOS
+[Unit]
+Description=fluxor (mihomo smart core panel, fork of shuangji66/fluxor)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# root 是刻意设计：TProxy 需 nft/策略路由权限；1.4.0-3 前 User=nobody 误落在 [Install] 段被 systemd 忽略（Unknown key），1.4.0-4 起显式声明
+User=root
+EnvironmentFile=${APPDATA}/fluxor.env
+ExecStart=${APP_DIR}/fluxor -f
+WorkingDirectory=${APPDATA}
+Restart=on-failure
+RestartSec=3
+KillMode=mixed
+TimeoutStopSec=15
+StandardOutput=append:${APPDATA}/fluxor.log
+StandardError=append:${APPDATA}/fluxor.log
+
+[Install]
+WantedBy=multi-user.target
+EOS
+chmod 644 "${UNIT}"
+systemctl daemon-reload
+systemctl enable "${SERVICE}" >/dev/null 2>&1 || true
+
+# ── 权限自愈（share 目录可读）──
+chmod -R a+rX "${SHARE_DIR}" 2>/dev/null || true
+
+set +x
+echo "===== done ====="
+exit 0

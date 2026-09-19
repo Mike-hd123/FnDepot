@@ -1,0 +1,59 @@
+name: Build fluxor-amd64
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - 'docs/**'
+
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 检出源码
+        uses: actions/checkout@v7
+
+      - name: 设置 Node.js 环境
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: 设置 Go 环境
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.27'
+
+      - name: 修改 package.json 版本号（追加 commit 哈希）
+        run: |
+          HASH=$(git rev-parse --short HEAD)
+          VERSION=$(jq -r '.version' frontend/package.json)
+          NEW_VERSION="${VERSION}~${HASH}"
+          jq --arg new "$NEW_VERSION" '.version = $new' frontend/package.json > frontend/package.json.tmp && mv frontend/package.json.tmp frontend/package.json
+          echo "新版本号: $NEW_VERSION"
+
+      - name: 构建前端 (frontend)
+        working-directory: ./frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: 同步前端构建产物到 backend/dist
+        run: |
+          rm -rf backend/dist
+          mkdir -p backend
+          cp -r frontend/dist backend/dist
+
+      - name: 构建 Go 后端（amd64）
+        run: |
+          cd backend && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o ../fluxor
+
+      - name: 上传 fluxor 二进制作为 Artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: fluxor
+          path: fluxor

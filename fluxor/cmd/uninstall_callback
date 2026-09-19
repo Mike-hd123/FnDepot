@@ -1,0 +1,43 @@
+#!/bin/bash
+# uninstall_callback — 卸载清理
+#   1) 读 $wizard_delete_data（fnOS 卸载向导字段，true/false）：
+#      true 时删数据目录 @appdata/fluxor，false/其他保留。
+#   2) 停服务 + 删 systemd 单元（残留旧 unit 会与新装冲突）。
+#   3) 兜底杀 nohup 残留。
+#
+# fnOS 会在卸载向导弹 wizard/uninstall 定义的 radio（字段名 wizard_delete_data），
+# 用户选择后 appcenter 会以环境变量形式传入本脚本。
+set -u
+LOG=/tmp/fluxor_uninstall.log
+exec >> "$LOG" 2>&1
+echo "==================== uninstall_callback $(date '+%F %T') ===================="
+
+# ---- 1. 数据处理（先于停服务，因为删完目录后再停服务也不冲突，但保留顺序易读） ----
+DATA="${wizard_delete_data:-false}"
+echo "数据删除选项: ${DATA:-<unset>}"
+case "$DATA" in
+    "true")
+        echo "卸载前删除数据目录：$TRIM_PKGVAR"
+        if [ -n "${TRIM_PKGVAR:-}" ] && [ -d "$TRIM_PKGVAR" ]; then
+            rm -rf "$TRIM_PKGVAR" && echo "删除成功" || echo "删除失败" >&2
+        else
+            echo "目录不存在或 TRIM_PKGVAR 未设置，无需删除"
+        fi
+        ;;
+    "false"|*)
+        echo "保留数据文件"
+        ;;
+esac
+
+# ---- 2. systemd 停服务 + 删单元 ----
+systemctl stop fluxor 2>/dev/null || true
+systemctl disable fluxor 2>/dev/null || true
+rm -f /etc/systemd/system/fluxor.service
+systemctl daemon-reload 2>/dev/null || true
+
+# ---- 3. 兜底杀 nohup 残留 ----
+pkill -f "appcenter/flu[x]or/fluxor" 2>/dev/null || true
+pkill -f "appcenter/flu[x]or/mihomo" 2>/dev/null || true
+
+echo "===== done ====="
+exit 0

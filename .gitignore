@@ -1,10 +1,11 @@
-waliapi/app/
-*.bak_*
-hyatlas/src/fnos-native/app.tgz
-wechat-on-cloud/src/fnos-native/app.tgz
-# 构建产物：版本化 fpk 不入库（产物真相源在 /vol2/1000/download/）
-# 市场分发用固定名 fpk（<app>/<app>.fpk）需要入库，见 fnpack.json download_url
-src/*.fpk
-*/src/*.fpk
-__pycache__/
-*.pyc
+# 构建产物不入库：mihomo/fluxor 二进制由 build.sh 期下载，
+# 数据库文件（ASN.mmdb / geoip.metadb / geosite.dat / Model.bin）由 fluxor 首启时下载。
+# 注意：*.fpk 是 fnOS 应用市场分发产物，必须入库 —— 用户 git clone 后靠 fpk 安装。
+fluxor/app/mihomo
+fluxor/app/fluxor
+fluxor/app/ASN.mmdb
+fluxor/app/geoip.metadb
+fluxor/app/geosite.dat
+fluxor/app/Model.bin
+*.log
+.DS_Store

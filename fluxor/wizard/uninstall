@@ -1,0 +1,22 @@
+[
+  {
+    "stepTitle": "卸载 fluxor",
+    "items": [
+      {
+        "type": "tips",
+        "label": "",
+        "helpText": "fluxor 的数据保留或删除。\n\n数据目录：@appdata/fluxor\n包含：代理配置（config.yaml）、订阅/节点、shares、日志。\n\n默认保留，可随时重装恢复。"
+      },
+      {
+        "type": "radio",
+        "field": "wizard_delete_data",
+        "label": "仅卸载，保留现有数据以备将来重新安装。",
+        "initValue": "false",
+        "options": [
+          { "label": "保留现有数据", "value": "false" },
+          { "label": "清除所有应用数据文件（不可恢复）！！！", "value": "true" }
+        ]
+      }
+    ]
+  }
+]

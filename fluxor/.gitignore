@@ -1,0 +1,12 @@
+# 构建产物不入库：二进制由 build.sh 期下载、数据库由 fluxor 首启时下载
+# 注意：*.fpk 必须入库 —— fnOS 应用市场分发产物，用户 git clone 后靠它安装
+*.log
+.DS_Store
+build/
+dist/
+fluxor/app/mihomo
+fluxor/app/fluxor
+fluxor/app/ASN.mmdb
+fluxor/app/geoip.metadb
+fluxor/app/geosite.dat
+fluxor/app/Model.bin

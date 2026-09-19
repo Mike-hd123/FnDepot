@@ -1,0 +1,14 @@
+{
+  ".url": {
+    "fluxor.panel": {
+      "title": "Fluxor",
+      "icon": "images/icon-{0}.png",
+      "type": "iframe",
+      "protocol": "",
+      "gatewayPrefix": "/app/fluxor",
+      "gatewaySocket": "app.sock",
+      "url": "/app/fluxor",
+      "allUsers": true
+    }
+  }
+}

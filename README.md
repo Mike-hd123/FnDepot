@@ -1,6 +1,6 @@
 # FnDepot — Mike 的飞牛第三方应用源
 
-飞牛 fnOS 外部应用源（schema_version 2），收录 6 个自打包应用。每个应用目录 = 安装包(fpk) + 图标 + 说明 + 上游源码 fork(src/)。
+飞牛 fnOS 外部应用源（schema_version 2），收录 7 个自打包应用。每个应用目录 = 安装包(fpk) + 图标 + 说明 + 上游源码 fork(src/)。
 
 ## 添加源
 
@@ -19,6 +19,7 @@ https://github.com/Mike-hd123/FnDepot
 | Octopus `octopus` | 0.13.4-1 | LLM API 聚合网关，Go 单二进制 + 内嵌前端 + SQLite，多渠道/多模型管理，支持单渠道多 Key，端口 8081 | [bestruirui/octopus](https://github.com/bestruirui/octopus) |
 | EZ记账 `ezbookkeeping` | **2.0.0-1** | 家庭记账：本地优先 SQLite 存储，多账本/预算/报表，支持微信/支付宝/信用卡账单导入，gzip 压缩提速，移动端触屏优化。v2 新增信用卡额度/可用额度环、洞察报表自定义图表、S3 对象存储，1.x→2.x 数据自动迁移无损 | [mayswind/ezbookkeeping](https://github.com/mayswind/ezbookkeeping) |
 | 待办(Vikunja) `vikunja` | 2.6.0-14 | 自托管待办面板：Go 静态 ELF 单二进制 + SQLite，中文 UI + CalDAV，API token 全自动读写（Hermes 提醒引擎），桌面 3456 + 手机 /app/vikunja 双通道 | [go-vikunja/vikunja](https://github.com/go-vikunja/vikunja) |
+| Fluxor 智能面板 `fluxor` | **1.4.0-6** | Mihomo/Clash 面板重写版（Vue3+Go 单体），fork 改造：默认捆绑 vernesong alpha-smart 智能内核（LightGBM ML 选路）+ 地区策略组默认 smart 类型 + smart 专用升级通道/降级闸门 + 内核冷启动假就绪修复 + TProxy 隧道防自锁/TUN 互斥兜底 + TProxy DNS 端口可配 + 卸载保留/清除数据；面板 18099 可并存 ClashLite，代理层 7890/7898/9090/1053 同值需二选一 | [shuangji66/fluxor](https://github.com/shuangji66/fluxor) |
 
 ## 目录结构
 
