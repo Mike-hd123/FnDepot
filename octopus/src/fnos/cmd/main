@@ -1,0 +1,114 @@
+#!/bin/bash
+# cmd/main — Octopus 进程管理（v3: 补 fnOS 统一网关 socket 自注册，对齐 minibill 模式）
+# 应用监听 TCP 8081；gateway sidecar 监听 APPDEST/app.sock 转 TCP（手机端 /app/octopus 路由恢复）
+set -u
+
+APP_DIR="${TRIM_APPDEST:-/vol1/@appcenter/octopus}"
+# 数据目录: 优先 TRIM_PKGVAR (fnOS 注入, volume 安装=/vol1/@appdata/octopus);
+# 兜底从 APP_DIR 提取卷推导, 不写死卷号 (对齐 9router 规范)
+DATA_DIR="${TRIM_PKGVAR:-}"
+if [ -z "${DATA_DIR}" ]; then
+  APP_VOL="$(printf '%s' "${APP_DIR}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
+  if [ -n "${APP_VOL}" ]; then
+    DATA_DIR="${APP_VOL}/@appdata/octopus"
+  else
+    DATA_DIR="/var/apps/octopus/var"
+  fi
+fi
+VAR_DIR="${DATA_DIR}"
+LOG_FILE="${VAR_DIR}/panel.log"
+PID_FILE="${VAR_DIR}/panel.pid"
+GW_PID_FILE="${VAR_DIR}/gateway.pid"
+
+mkdir -p "${VAR_DIR}"
+
+is_running() {
+  if [ -f "$PID_FILE" ]; then
+    local pid
+    pid=$(cat "$PID_FILE" 2>/dev/null)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+gw_running() {
+  [ -f "$GW_PID_FILE" ] && kill -0 "$(cat "$GW_PID_FILE" 2>/dev/null)" 2>/dev/null
+}
+
+stop_app() {
+  if is_running; then
+    pid=$(cat "$PID_FILE")
+    kill "$pid" 2>/dev/null
+    sleep 3
+    kill -9 "$pid" 2>/dev/null || true
+    rm -f "$PID_FILE"
+  fi
+}
+
+stop_gw() {
+  if [ -f "$GW_PID_FILE" ]; then
+    gwpid=$(cat "$GW_PID_FILE" 2>/dev/null)
+    if [ -n "$gwpid" ] && kill -0 "$gwpid" 2>/dev/null; then
+      kill "$gwpid" 2>/dev/null
+      sleep 1
+      kill -9 "$gwpid" 2>/dev/null || true
+    fi
+    rm -f "$GW_PID_FILE"
+  fi
+  rm -f "${APP_DIR}/app.sock" 2>/dev/null || true
+}
+
+case "${1:-}" in
+  start)
+    is_running && gw_running && exit 0
+    export OCTOPUS_SERVER_PORT="8081"
+    export OCTOPUS_SERVER_HOST="127.0.0.1"
+    export OCTOPUS_DATABASE_PATH="${DATA_DIR}/data.db"
+    export OCTOPUS_LOG_LEVEL="info"
+    mkdir -p "${DATA_DIR}"
+
+    # ── 应用进程（TCP 8081）──
+    if ! is_running; then
+      nohup "${APP_DIR}/octopus" start \
+        >> "$LOG_FILE" 2>&1 &
+      echo $! > "$PID_FILE"
+      sleep 2
+      if ! is_running; then
+        echo "Octopus start failed" >&2
+        [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "Octopus 启动失败，查看日志：${LOG_FILE}" > "${TRIM_TEMP_LOGFILE}"
+        stop_gw
+        exit 1
+      fi
+    fi
+
+    # ── 网关 sidecar：APPDEST/app.sock -> 127.0.0.1:8081（minibill 同款注册形态）──
+    if ! gw_running; then
+      GATEWAY_SOCK_PATH="${APP_DIR}/app.sock" \
+      GATEWAY_BACKEND_PORT="8081" \
+      GATEWAY_PID_FILE="$GW_PID_FILE" \
+      nohup python3 "${APP_DIR}/gateway/gateway_proxy.py" >> "${VAR_DIR}/gateway.log" 2>&1 &
+      echo $! > "$GW_PID_FILE"
+      sleep 1
+      if ! gw_running || [ ! -S "${APP_DIR}/app.sock" ]; then
+        echo "gateway sidecar start failed" >&2
+        [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "网关 sidecar 启动失败，查看日志：${VAR_DIR}/gateway.log" > "${TRIM_TEMP_LOGFILE}"
+        stop_app
+        exit 1
+      fi
+    fi
+
+    echo "Octopus started on port 8081 (gateway socket: ${APP_DIR}/app.sock, data: ${DATA_DIR})"
+    ;;
+  stop)
+    stop_gw
+    stop_app
+    ;;
+  status)
+    is_running && exit 0 || exit 3
+    ;;
+  *)
+    exit 0
+    ;;
+esac

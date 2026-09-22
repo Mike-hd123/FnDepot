@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#eae9e3" />
+    <meta name="application-name" content="Octopus" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black" />
+    <meta name="apple-mobile-web-app-title" content="Octopus" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-status-bar-style" content="black" />
+    <meta name="mobile-web-app-title" content="Octopus" />
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="icon" href="./favicon.ico" sizes="any" />
+    <link rel="apple-touch-icon" href="./apple-icon.png" />
+    <title>Octopus</title>
+    <script>
+      const theme = localStorage.getItem('theme');
+      const isDark =
+        theme === 'dark' ||
+        ((theme === null || theme === 'system') && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      const root = document.documentElement;
+      root.classList.toggle('dark', isDark);
+      root.style.colorScheme = isDark ? 'dark' : 'light';
+      document.querySelector('meta[name="theme-color"]')?.setAttribute(
+        'content',
+        isDark ? '#413a2c' : '#eae9e3',
+      );
+    </script>
+    <style>
+      #initial-loader {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: oklch(0.9331 0.0081 98.8844);
+        color: oklch(0.6205 0.1199 144.8607);
+        transition: opacity 200ms ease;
+      }
+      html.dark #initial-loader {
+        background: oklch(0.2809 0.0264 153.4040);
+        color: oklch(0.6990 0.1292 144.8727);
+      }
+      #initial-loader.octo-hide {
+        opacity: 0;
+        pointer-events: none;
+      }
+      #initial-loader svg {
+        width: 120px;
+        height: 120px;
+      }
+      #initial-loader .octo-group {
+        animation: octoFade 2s ease-in-out infinite;
+      }
+      #initial-loader path {
+        fill: none;
+        stroke: currentColor;
+        stroke-width: 6;
+        stroke-linecap: round;
+        stroke-dasharray: 1 2;
+        stroke-dashoffset: 1;
+        opacity: 0;
+      }
+      #initial-loader .octo-outline {
+        animation: octoDrawOuter 2s ease-in-out infinite both;
+      }
+      #initial-loader .octo-inner {
+        animation: octoDrawInner 2s ease-in-out infinite both;
+      }
+
+      @keyframes octoDrawOuter {
+        0%   { stroke-dashoffset: 1; opacity: 0; }
+        4%   { opacity: 1; }
+        28%  { stroke-dashoffset: 0; opacity: 1; }
+        100% { stroke-dashoffset: 0; opacity: 1; }
+      }
+      @keyframes octoDrawInner {
+        0%   { stroke-dashoffset: 1; opacity: 0; }
+        32%  { stroke-dashoffset: 1; opacity: 0; }
+        34%  { stroke-dashoffset: 1; opacity: 1; }
+        58%  { stroke-dashoffset: 0; opacity: 1; }
+        100% { stroke-dashoffset: 0; opacity: 1; }
+      }
+      @keyframes octoFade {
+        0%   { opacity: 1; }
+        70%  { opacity: 1; }
+        100% { opacity: 0; }
+      }
+
+      @media (prefers-reduced-motion: reduce) {
+        #initial-loader .octo-group,
+        #initial-loader path {
+          animation: none !important;
+          opacity: 1 !important;
+          stroke-dashoffset: 0 !important;
+        }
+      }
+    </style>
+  </head>
+  <body class="antialiased">
+    <div id="initial-loader" role="status" aria-label="Loading">
+      <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+        <g class="octo-group">
+          <path class="octo-outline" pathLength="1" d="M20 90 Q30 90 30 83 Q30 80 27.88 77.88 C25 75 15 65 15 50 C15 30 30 15 50 15 C70 15 85 30 85 50 C85 65 75 75 72.12 77.88 Q70 80 70 83 Q70 90 80 90" />
+          <path class="octo-inner" pathLength="1" d="M43 77 L43 85 C43 87.76 40.76 90 38 90" />
+          <path class="octo-inner" pathLength="1" d="M62 90 C59.24 90 57 87.76 57 85 L57 77" />
+        </g>
+      </svg>
+    </div>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,8 @@
+#!/bin/bash
+# 升级后置：数据目录不动（升级只覆盖 APPDEST 内二进制，数据在 @appdata）
+set -u
+LOG="${TRIM_PKGVAR:-/var/apps/octopus/var}/upgrade.log"
+echo "===== upgrade_callback $(date) =====" >> "$LOG"
+echo "data dir: ${TRIM_PKGVAR:-/var/apps/octopus/var} (volume install), binary overwritten in APPDEST" >> "$LOG"
+echo "===== done =====" >> "$LOG"
+exit 0

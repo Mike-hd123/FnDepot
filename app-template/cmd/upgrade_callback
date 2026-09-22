@@ -1,0 +1,5 @@
+#!/bin/bash
+# upgrade_callback — 升级后 hook。**铁律：只覆盖程序，绝不动数据目录**（数据在 TRIM_PKGVAR/@appdata/@appshare）。
+# systemd 应用：升级后 daemon-reload + restart 服务。
+set -u
+exit 0

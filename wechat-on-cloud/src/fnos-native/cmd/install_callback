@@ -1,0 +1,116 @@
+#!/bin/bash
+# 云微 NAS 定制安装脚本（run-as: root —— 建 ipvl0 + 写 systemd 单元）
+#
+# 1. woc-lan: ipvlan 业务网段（微信备份同广播域, 手机<->容器）。
+#    parent 动态取默认路由物理网卡(别硬编码 eno1——换机即崩)
+# 2. 宿主 ipvl0 虚接口(.51, slave) 持久化：面板等宿主进程经它访问容器实接口 .50。
+#    系统重启后 ipvl0 会丢，systemd 单元开机重建
+# 3. v1.5.0 纯 ipvlan 单网卡：不再创建 woc-net bridge（用户要求删桥）
+#    面板反代走 docker.sock 实时查容器 IP（实例只有 woc-lan 网卡）
+
+NET_NAME=woc-lan
+SUBNET=192.168.5.0/24
+GATEWAY=192.168.5.1
+IPVL0_IP=192.168.5.51
+
+# --- woc-lan ipvlan 网络 ---
+# IFACE 选取：只挑真正可用的网卡——UP 状态 + 有默认路由。
+# 坑：曾抓到 DOWN 的 enp4s0(NO-CARRIER) 当 parent，ipvlan 挂死网卡上容器失联。
+if ! docker network inspect "$NET_NAME" >/dev/null 2>&1; then
+  IFACE=""
+  for IF in $(ls /sys/class/net | grep -vE '^(lo|docker0|br-|veth|ipvl|tun|wg)'); do
+    ip link show "$IF" 2>/dev/null | grep -q 'state UP' || continue
+    awk -v i="$IF" '$1==i && $2=="00000000"' /proc/net/route | grep -q . || continue
+    IFACE="$IF"; break
+  done
+  [ -z "$IFACE" ] && { echo "ERROR: 无可用物理网卡(UP+默认路由)，woc-lan 不创建，待下次安装/升级重试"; }
+  if [ -n "$IFACE" ]; then
+    docker network create -d ipvlan --subnet=$SUBNET --gateway=$GATEWAY \
+      -o parent="$IFACE" -o ipvlan_mode=l2 "$NET_NAME" 2>/dev/null || echo "WARN: woc-lan 创建失败/已存在"
+  fi
+fi
+
+# --- 宿主 ipvl0：独立脚本 + systemd 单元双保险（开机动态取 iface） ---
+cat > /usr/local/bin/woc-ensure-ipvl0.sh <<'SH'
+#!/bin/bash
+# 确保宿主 ipvl0 虚接口存在（.51, ipvlan l2, parent=默认路由网卡）。
+# 幂等：已存在则不动。被 systemd 开机调用；也可手动执行。
+# IFACE 选取：UP 状态 + 有默认路由的物理网卡。找不到不硬造（exit 0 等 systemd 重试），
+# 坑：boot 抢跑时默认路由未起 + 兜底 eno1 不存在 → 曾导致服务 failed。
+set -u
+IPVL0_IP=192.168.5.51
+if ip link show ipvl0 >/dev/null 2>&1; then
+  # 已存在：确保 IP 配上（异常半残状态补全）
+  ip addr show ipvl0 | grep -q "$IPVL0_IP/" || ip addr add "$IPVL0_IP/24" dev ipvl0 2>/dev/null
+  ip link set ipvl0 up 2>/dev/null
+  exit 0
+fi
+IFACE=""
+for IF in $(ls /sys/class/net | grep -vE '^(lo|docker0|br-|veth|ipvl|tun|wg)'); do
+  ip link show "$IF" 2>/dev/null | grep -q 'state UP' || continue
+  awk -v i="$IF" '$1==i && $2=="00000000"' /proc/net/route | grep -q . || continue
+  IFACE="$IF"; break
+done
+[ -z "$IFACE" ] && { echo "no usable iface(UP+default route), skip; systemd will retry"; exit 0; }
+ip link add ipvl0 link "$IFACE" type ipvlan mode l2 || exit 1
+ip link set ipvl0 up || true
+ip addr add "$IPVL0_IP/24" dev ipvl0 || true
+SH
+chmod 755 /usr/local/bin/woc-ensure-ipvl0.sh
+chown root:root /usr/local/bin/woc-ensure-ipvl0.sh
+
+cat > /etc/systemd/system/woc-ipvl0.service <<'UNIT'
+[Unit]
+Description=woc ipvl0 slave interface for wechat-on-cloud (192.168.5.51)
+# 等 network-online：boot 抢跑时默认路由未起，曾致脚本失败
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/woc-ensure-ipvl0.sh
+ExecStop=/bin/sh -c 'ip link show ipvl0 >/dev/null 2>&1 && ip link del ipvl0 2>/dev/null || true'
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable woc-ipvl0.service 2>/dev/null
+
+# 立即生效（本机首次安装/升级当场建，不等重启）
+WOC_IPVL0_OK=1
+/usr/local/bin/woc-ensure-ipvl0.sh || WOC_IPVL0_OK=0
+if [ "$WOC_IPVL0_OK" != "1" ]; then
+  echo "WARN: ipvl0 现场创建失败（systemd 开机会自动重试）"
+fi
+
+# 数据目录需要宿主侧存在（docker.ts Binds bind mount 形态：${WOC_DATA_DIR}/woc-data-<id>）
+# 面板创建实例时会自建目录，这里只确保根目录在且可写（mike uid=1000）
+DATA_DIR="${WOC_DATA_DIR:-/vol2/1000/weixin}"
+if [ -n "$DATA_DIR" ]; then
+  mkdir -p "$DATA_DIR" 2>/dev/null
+  chown 1000:1000 "$DATA_DIR" 2>/dev/null || true
+fi
+
+# 面板 config 落 @appshare（与 cmd/main VAR_DIR 一致）：预建目录 + 权限
+VAR_DIR="${WOC_VAR_DIR:-/vol1/@appshare/wechat-on-cloud}"
+mkdir -p "${VAR_DIR}/data" 2>/dev/null
+chown -R wechat-on-cloud:wechat-on-cloud "${VAR_DIR}" 2>/dev/null || chmod 777 "${VAR_DIR}" 2>/dev/null || true
+
+# --- 飞牛「应用开放 API」：面板运行用户加入 TrimApiUsers 组 ---
+# 三件套之一（组权限；另两件 = manifest api-scope + 系统注入 TRIM_API_TOKEN env）。
+# 没有组则 /var/run/trim_open_gateway_apiscope.socket 无 rw，后端调开放 API 403。
+# 幂等：组存在才动（组由 fnOS 系统创建）；已在组则跳过 usermod。
+if getent group TrimApiUsers >/dev/null 2>&1; then
+  if id -nG wechat-on-cloud 2>/dev/null | tr ' ' '\n' | grep -qx TrimApiUsers; then
+    echo "TrimApiUsers: wechat-on-cloud 已在组，跳过"
+  else
+    usermod -aG TrimApiUsers wechat-on-cloud && echo "已把 wechat-on-cloud 加入 TrimApiUsers 组" \
+      || echo "WARN: usermod 加组失败（面板开放 API 功能将降级为不可用）"
+  fi
+else
+  echo "WARN: 系统无 TrimApiUsers 组（fnOS 版本过低？），跳过加组"
+fi
+
+exit 0

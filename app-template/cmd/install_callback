@@ -1,0 +1,14 @@
+#!/bin/bash
+# install_callback — 安装后 hook。systemd 应用在此写 unit + env；非 systemd 用途示例：
+#   建数据目录、迁移旧数据、修复权限（chmod a+rX，fpk 打包源是 hermes-studio 751，服务用户读不了）。
+set -u
+LOG="${TRIM_PKGVAR}/install.log"
+echo "===== install_callback $(date) =====" >> "$LOG"
+
+# 示例：数据目录就绪 + 权限自愈（按需启用）
+# DATA="${TRIM_APPDEST}/data"
+# mkdir -p "$DATA"
+# chmod -R a+rX "$DATA"
+
+echo "===== done =====" >> "$LOG"
+exit 0

@@ -1,0 +1,116 @@
+#!/bin/bash
+# 升级后 hook: 重启服务 + v13 桌面入口切直连端口模式 + v14 config.yml publicurl 复位
+set -e
+systemctl restart vikunja 2>/dev/null || true
+
+# ── v14：把已存在 config.yml 的 service.publicurl 复位为空 ──
+# 背景：v12/v13 时代的 install_callback 会生成 hardcode 内网 IP 的
+#   service.publicurl: "http://192.168.5.2:3456"  → 前端 window.API_URL 被写死成
+#   内网地址，手机走域名/外网访问时 JS 拼命请求 192.168.5.2:3456 → 进不去（列表空）。
+#   v14 起 install_callback 已默认 publicurl:""（按 Host 生成相对 /api/v1，同源自适应）。
+# 升级路径的用户 config.yml 里那个写死值还在 → 这里安全复位：
+#   - 仅当 publicurl 非空才动（空 = 已是目标态，跳过，零扰动）
+#   - 先 cp 备份 .bak_日期（用户规则：改配置前先备份）
+#   - 只改 service 段顶层的 publicurl 行，不碰其它配置
+APPDATA="${TRIM_PKGVAR:-}"
+if [ -z "${APPDATA}" ] && [ -n "${TRIM_APPDEST:-}" ]; then
+  APP_VOL="$(printf '%s' "${TRIM_APPDEST}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
+  [ -n "${APP_VOL}" ] && APPDATA="${APP_VOL}/@appdata/vikunja"
+fi
+[ -z "${APPDATA}" ] && APPDATA="/vol2/@appdata/vikunja"
+CFG="${APPDATA}/config.yml"
+if [ -f "${CFG}" ]; then
+  # v14: 用 Python 一次完成「探测+备份+改写」——避开 Bash 嵌套引号陷阱
+  # 逻辑：读取 publicurl 当前值 → 非空则 cp 备份 → 仅改写 publicurl 行（保留 YAML 格式）→ 写回
+  python3 - "${CFG}" <<'PY'
+import sys, os, re, shutil, datetime
+p = sys.argv[1]
+bak_ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+bak = p + '.bak_' + bak_ts
+s = open(p, encoding='utf-8').read()
+# 提取当前 publicurl 值（仅 service 段顶层）
+m = re.search(r'^  publicurl:\s*(.+)$', s, re.M)
+if not m:
+    print('[v14][upgrade] publicurl key not found in %s — skip' % p)
+    sys.exit(0)
+raw = m.group(1).strip()
+# 去引号判空：'' "http://..." 等
+cur = raw.strip("'\"")
+print('[v14][upgrade] current publicurl=%r (raw=%r)' % (cur, raw))
+if cur:
+    # 非空：备份 + 改写
+    shutil.copy2(p, bak)
+    new = re.sub(r'^(  publicurl:\s*).+$', r'\1""', s, count=1, flags=re.M)
+    open(p, 'w', encoding='utf-8').write(new)
+    print('[v14][upgrade] publicurl reset to empty (backup: %s), was %r' % (bak, cur))
+else:
+    print('[v14][upgrade] publicurl already empty — skip')
+PY
+else
+  echo "[v14][upgrade] config.yml not found at ${CFG}, skip publicurl handle"
+fi
+
+# ── v13：把桌面入口从路径反代切到直连端口模式 ──
+# 逻辑与 install_callback 完全一致（详见该文件注释与 README.md v13 节）。
+# 升级时 appcenter 会用新包重建 target/ 并重读 ui/config，entry 必然回滚成
+# 路径模式，所以这里同样要：改 ui/config + 立即 UPDATE + 延时 30s 再 UPDATE +
+# 重启反代/网关。绝不 appcenter-cli start（会覆盖 entry）。
+PORT="${TRIM_SERVICE_PORT:-3456}"
+APP_DIR="${TRIM_APPDEST:-/var/apps/vikunja}"
+# app.tgz 解到 target/（软链 @appcenter/<app>），ui/config 在 target 下
+UI_CONFIG="${APP_DIR}/target/ui/config"
+[ -f "${UI_CONFIG}" ] || UI_CONFIG="${APP_DIR}/ui/config"
+
+if [ -f "${UI_CONFIG}" ]; then
+  echo "[v13][upgrade] rewriting ${UI_CONFIG} — removing gatewaySocket/gatewayPrefix"
+  cp -f "${UI_CONFIG}" "${UI_CONFIG}.bak_$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
+  cat > "${UI_CONFIG}" <<JSONEOF
+{
+  ".url": {
+    "vikunja.panel": {
+      "title": "待办",
+      "icon": "images/icon-{0}.png",
+      "type": "iframe",
+      "protocol": "",
+      "port": ${PORT},
+      "url": "/",
+      "allUsers": true
+    }
+  }
+}
+JSONEOF
+  chmod 644 "${UI_CONFIG}"
+  chown root:root "${UI_CONFIG}" 2>/dev/null || true
+fi
+
+_update_entry_url() {
+  local port="$1"
+  sudo -u postgres psql -d trim_sac -v ON_ERROR_STOP=1 -Atc \
+    "UPDATE entry SET url='{\"port\":\"${port}\",\"path\":\"/\"}', gateway_socket='', gateway_prefix='' WHERE app_name='vikunja' AND service_name='vikunja.panel';" \
+    >/dev/null 2>&1
+}
+
+if command -v psql >/dev/null 2>&1 && [ -S /var/run/postgresql/.s.PGSQL.5432 ]; then
+  if _update_entry_url "${PORT}"; then
+    echo "[v13][upgrade] entry.url switched to direct-port mode (port=${PORT})"
+  else
+    echo "[v13][upgrade][WARN] initial entry.url UPDATE failed"
+  fi
+  (
+    sleep 30
+    if command -v psql >/dev/null 2>&1 && [ -S /var/run/postgresql/.s.PGSQL.5432 ]; then
+      _update_entry_url "${PORT}" && echo "[v13][upgrade] delayed entry.url UPDATE ok" \
+        || echo "[v13][upgrade][WARN] delayed entry.url UPDATE failed"
+    fi
+  ) &
+  disown 2>/dev/null || true
+else
+  echo "[v13][upgrade][WARN] psql or postgresql socket missing — skipping"
+fi
+
+for svc in trim_http_cgi trim_open_gateway; do
+  systemctl restart "${svc}" >/dev/null 2>&1 && echo "[v13][upgrade] restarted ${svc}" \
+    || echo "[v13][upgrade][WARN] restart ${svc} failed"
+done
+
+echo "vikunja upgrade_callback done (APPDEST=${APP_DIR}, PORT=${PORT})"

@@ -1,0 +1,3 @@
+#!/bin/bash
+# 卸载后置：数据保留（fnOS 默认策略），无 systemd 单元需清理
+exit 0

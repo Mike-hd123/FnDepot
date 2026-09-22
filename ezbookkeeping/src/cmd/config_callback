@@ -1,0 +1,8 @@
+#!/bin/bash
+# 配置后置：重启服务使配置生效（如配置变更涉及端口，需同步 manifest service_port）
+set -uo pipefail
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "${SCRIPT_DIR}/main" ]; then
+    bash "${SCRIPT_DIR}/main" restart || true
+fi
+exit 0

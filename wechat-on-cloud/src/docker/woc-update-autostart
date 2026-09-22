@@ -1,0 +1,14 @@
+#!/usr/bin/with-contenv bash
+# linuxserver 启动钩子（/custom-cont-init.d，root 身份，每次启动执行）。
+# 作用：始终用镜像内最新的 /defaults/autostart 覆盖数据卷里的副本。
+# 原因：baseimage 的 init-kasmvnc-config 只在 /config/.config/openbox/autostart "缺失时"才拷贝，
+#       导致旧实例（卷里已有旧 autostart）升级镜像后仍跑旧逻辑（如缺少"最小化自动复原"看守）。
+mkdir -p /config/.config/openbox
+cp /defaults/autostart /config/.config/openbox/autostart
+chmod +x /config/.config/openbox/autostart
+chown "${PUID:-1000}:${PGID:-1000}" /config/.config/openbox/autostart 2>/dev/null || true
+
+# 文件中转目录（桌面）：确保归 abc(PUID) 所有。否则曾被 root 建成 755 root:root 时，微信(abc 身份)
+# 另存到此处会"保存失败"，面板上传也写不进。每次启动强制纠正属主，兼容历史遗留的 root 属主。
+mkdir -p /config/Desktop
+chown "${PUID:-1000}:${PGID:-1000}" /config/Desktop 2>/dev/null || true

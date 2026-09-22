@@ -1,0 +1,40 @@
+{
+  "poc_date": "2026-09-10T05:39+08:00",
+  "task": "t_dbc7965d PoC: 抓 fnOS 网关注入 WOC 的 X-Trim-* 头真实值",
+  "method": "临时在 octopus socket sidecar (gateway_proxy.py) 加 X-Trim-* 捕获，经 fnOS 统一网关 /app/* 真实登录态 (ost cookie, uid=1000 mike) 触发，捕获注入头。octopus 为 socket 型入口；X-Trim-* 为 trim_http_cgi 统一注入，值与后端应用无关。",
+  "confirmed_values": {
+    "x-trim-userid": "1000",
+    "x-trim-username": "mike",
+    "x-trim-isadmin": "true"
+  },
+  "value_format_conclusion": {
+    "x-trim-userid": "unix uid 的数字字符串（十进制），如 \"1000\"",
+    "x-trim-username": "unix 用户名原样字符串，如 \"mike\"",
+    "x-trim-isadmin": "小写布尔字符串 \"true\"/\"false\"（实测 admin=true），不是 1/0 也不是 on/off"
+  },
+  "other_gateway_injected_headers": {
+    "x-forwarded-proto": "http",
+    "note": "随请求透传的还有 Host、Cookie(language=zh-CN)、User-Agent、Accept-Encoding 等常规头；网关注入的除 X-Trim-* 外实测仅见 X-Forwarded-Proto。未发现 trim-cgi-sign 等其它自定义头。"
+  },
+  "raw_gateway_request_headers": {
+    "host": "192.168.5.2",
+    "user-agent": "curl/7.88.1",
+    "accept": "*/*",
+    "cookie": "language=zh-CN",
+    "x-forwarded-proto": "http",
+    "x-trim-isadmin": "true",
+    "x-trim-userid": "1000",
+    "x-trim-username": "mike",
+    "accept-encoding": "gzip"
+  },
+  "key_finding_about_woc": {
+    "conclusion": "当前 WOC (wechat-on-cloud 1.4.9-3) 是 port 型入口 (app_service.url = ://${host}:8080/，gateway_socket 空) → trim_http_cgi 的 sacentry 路由表未注册 /app/wechat-on-cloud socket 路由 → 带登录态的 /app/wechat-on-cloud/* 请求恒返回 404 Not Found，X-Trim-* 头对当前 WOC 不可达。",
+    "evidence": "同 cookie 下 octopus/clashlite/ezbookkeeping (socket 型) 全部 200，仅 wechat-on-cloud 404。trim_http_cgi 启动日志显示 socket 型应用由 source [sacentry] 注册（octopus/clashlite/ez/flymail/EasyTier-Web/fygo/trim.preview 均有 register），无 wechat-on-cloud register 记录。",
+    "implication_for_sso": "WOC SSO 改造必须先给 WOC 加 socket 型 sidecar 入口（对齐 octopus/ez 模式，gateway_proxy.py 剥前缀反代 + entry/app_service 切 socket 型 + 重装或触发 sacentry 注册），才能吃到 X-Trim-* 头做 SSO。纯改 trim_sac.entry 或重启 trim_http_cgi 均不会让 port 型应用进路由表。"
+  },
+  "isadmin_notes": {
+    "current_test": "当前系统唯一用户 mike (uid 1000) 是 admin，实测 isadmin=true。",
+    "false_case": "未实测非 admin 用户（系统无第二用户）；推断为字符串 \"false\"（与 true 对称的小写布尔），建议 SSO 侧用 x-trim-isadmin==='true' 判断管理员分支。"
+  },
+  "capture_channel": "octopus socket sidecar (鉴权通过) 捕获，n=2+ 条一致"
+}

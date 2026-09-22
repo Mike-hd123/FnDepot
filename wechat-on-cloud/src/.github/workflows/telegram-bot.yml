@@ -1,0 +1,54 @@
+name: telegram-bot
+
+# Telegram 机器人（轮询版）——无需服务器，仅靠 GitHub Actions cron。
+#   1) 命令查询：/help /releases /release <tag> /issues /issue <编号>（私聊 / 群组均可）
+#   2) 入群验证（反广告）：新成员需答对一道加法题才放行
+#
+# 启用（一次性）：
+#   1) 已配置 telegram-notify 用到的 TELEGRAM_BOT_TOKEN（Secret）即可复用；
+#   2) 仓库 Settings → Secrets and variables → Actions → Variables 新建
+#        TELEGRAM_BOT_ENABLED = true     （未设为 true 则本工作流不运行，避免空跑）
+#   3) 把机器人拉进群组 / 在私聊里 /start。
+#
+# 启用入群验证还需（缺一不可）：
+#   a) 群组设为「新成员需管理员批准」（群设置 → 邀请链接勾选 Request Admin Approval）；
+#   b) 机器人是群管理员且有 can_invite_users 权限 —— 否则收不到 chat_join_request 更新。
+#
+# ⚠️ 轮询模式下验证码大概率发不出去，务必知悉：
+#   Telegram 只允许机器人在入群申请后【5 分钟】内私聊该用户（官方文档 ChatJoinRequest.user_chat_id），
+#   而本工作流的 cron 最小 5 分钟且常再延后 10~15 分钟，多数情况下窗口已过。
+#   —— 安全性不受影响（待批准用户进不了群、发不了消息），但会退化成「人工审批」，
+#      发不出验证码时不会自动拒绝，需要管理员在 Telegram 里手动批准。
+#   要让验证码真正送达，需改为近实时接收更新：webhook（Cloudflare Workers 等免费常驻）
+#   或自托管长轮询（NAS 上跑个小容器，无需公网端点）。脚本里的验证逻辑可直接复用。
+#
+# 局限：cron 最小 5 分钟且可能再延后 → 命令非实时；
+# GitHub 会在仓库 60 天无活动时暂停定时任务。
+# 想立即处理一次：Actions → telegram-bot → Run workflow（workflow_dispatch）。
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: read
+
+# 避免轮询任务并发重叠重复处理；新触发取消正在跑的（残留未确认更新下次重处理，无副作用）
+concurrency:
+  group: telegram-bot
+  cancel-in-progress: true
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    if: ${{ vars.TELEGRAM_BOT_ENABLED == 'true' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Poll Telegram & handle commands
+        env:
+          TG_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: node .github/scripts/telegram-bot.mjs

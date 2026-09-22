@@ -1,0 +1,30 @@
+#!/bin/bash
+set -u
+VAR_DIR="${TRIM_PKGVAR:-/var/apps/octopus/var}"
+APP_DIR="${TRIM_APPDEST:-/vol1/@appcenter/octopus}"
+PID_FILE="${VAR_DIR}/panel.pid"
+GW_PID_FILE="${VAR_DIR}/gateway.pid"
+
+# 先停网关 sidecar（其 SIGTERM 会顺带停应用），再兜底停应用
+if [ -f "$GW_PID_FILE" ]; then
+  gwpid=$(cat "$GW_PID_FILE" 2>/dev/null)
+  if [ -n "$gwpid" ] && kill -0 "$gwpid" 2>/dev/null; then
+    kill "$gwpid" 2>/dev/null
+    sleep 1
+    kill -9 "$gwpid" 2>/dev/null || true
+  fi
+  rm -f "$GW_PID_FILE"
+fi
+
+if [ -f "$PID_FILE" ]; then
+  pid=$(cat "$PID_FILE" 2>/dev/null)
+  if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+    kill "$pid" 2>/dev/null
+    sleep 3
+    kill -9 "$pid" 2>/dev/null || true
+  fi
+  rm -f "$PID_FILE"
+fi
+
+rm -f "${APP_DIR}/app.sock" 2>/dev/null || true
+exit 0
