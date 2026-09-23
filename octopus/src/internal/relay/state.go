@@ -127,12 +127,12 @@ func (r *RequestState) finishRound(errText string) {
 	publishRequestLocked(r)
 }
 
-// addOutput 按事件数量估算输出字符数并按节流间隔发布快照; 距上次发布不足阈值时只累加不出流。
-func (r *RequestState) addOutput(chars int) {
+// addOutput 每个转发事件累加一个输出字符并按节流间隔发布快照; 距上次发布不足阈值时只累加不出流。
+func (r *RequestState) addOutput() {
 	mu.Lock()
 	defer mu.Unlock()
 
-	r.OutputChars += chars
+	r.OutputChars++
 	if time.Since(r.lastPublish) >= outputPublishInterval {
 		r.lastPublish = time.Now()
 		if !r.streamStarted.IsZero() {
@@ -216,13 +216,8 @@ func (r *RequestState) markSucceeded(responseBody string, usage *llm.Usage) {
 	mu.Lock()
 	defer mu.Unlock()
 
-	if r.requestCtx.Err() != nil {
-		r.Status = StatusCanceled
-		r.Error = r.requestCtx.Err().Error()
-	} else {
-		r.Status = StatusSuccess
-		r.Error = ""
-	}
+	r.Status = StatusSuccess
+	r.Error = ""
 	r.responseBody = responseBody
 	r.finishLocked(usage)
 }

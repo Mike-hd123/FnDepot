@@ -1,7 +1,7 @@
 appname                    = octopus
-version                    = 0.13.5-1
+version                    = 0.13.7-1
+desc                       = One Hub All LLMs For You —— LLM API 聚合网关，Go 单二进制，SQLite 存储，原生宿主机运行。上游 v0.13.7（厂商预设修复：火山方舟/DeepSeek/通义千问/Moonshot/智谱等渠道 base_url 与请求路径拆分纠正，Anthropic 兼容路径按厂商实际端点对齐）+ 本地 gateway sidecar v8 剥前缀 HTTP 反代（SSE 流式透传 + 单模块图单实例），手机端 /app/octopus 全链路可路由。
 display_name               = Octopus
-desc                       = One Hub All LLMs For You —— LLM API 聚合网关，Go 单二进制，SQLite 存储，原生宿主机运行。上游 v0.13.5（首字延迟/实时词元速度/缓存率面板、手动取消请求、全局模型过滤、新 Logo）+ 本地 gateway sidecar v8 剥前缀 HTTP 反代（SSE 流式透传 + 单模块图单实例），手机端 /app/octopus 全链路可路由。
 platform                   = x86
 source                     = thirdparty
 maintainer                 = bestruirui
@@ -16,4 +16,4 @@ service_port               = 8081
 desktop_uidir              = ui
 desktop_applaunchname      = octopus.panel
 disable_authorization_path = false
-changelog                  = v1（2026-09-19）：同步上游 v0.13.5（commit 6f330f5：首字延迟/实时词元速度/缓存率面板、手动取消请求、token 速度展示、全局模型过滤、新 Logo），保留本地 gateway sidecar v8 补丁（剥前缀 HTTP 反代 + SSE 透传 + JS chunk 同版本参数单模块图单实例，手机端/桌面双端渲染正常）。上游大版本升级，本地补丁版本号重置为 1。
+changelog                  = v1（2026-09-23）：同步上游 v0.13.7（commit 0e1c3fc：厂商预设 bug 修复——火山方舟 base_url 去掉 /api/v3 后缀并路径拆分、DeepSeek/通义千问/Moonshot/智谱等 Anthropic 兼容端点纠正）。本地 gateway sidecar v8 补丁保留不变；二进制为上游官方 CI 产物（SHA256 与 Release 校验一致）。

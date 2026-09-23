@@ -288,8 +288,8 @@ func Forward(format llm.APIFormat) gin.HandlerFunc {
 			for {
 				if event != nil {
 					chunks = append(chunks, event)
-					// 按事件数量估算输出字符数供日志页展示, 每个事件计 2 个字符, 按节流间隔发布。
-					request.addOutput(2)
+					// 每个事件计一个输出字符供日志页展示, 按节流间隔发布。
+					request.addOutput()
 					encoded.Reset()
 					if encodeErr := sse.Encode(&encoded, sse.Event{Id: event.LastEventID, Event: event.Type, Data: event.Data}); encodeErr != nil {
 						err = encodeErr
