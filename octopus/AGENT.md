@@ -3,7 +3,7 @@
 > 项目说明见 [README.md](./README.md)。本文件只讲 agent 该做什么 / 红线 / 坑。
 
 ## 定位
-上游 [bestruirui/octopus](https://github.com/bestruirui/octopus) 的 fnOS 发行：**LLM API 聚合网关**（Go 单二进制 + 内嵌前端 + SQLite）。当前发布 **0.13.7-1**（2026-09-23），端口 **8081**——Hermes/本 agent 的模型网关，挂了=agent 失智，最高优先级服务。
+上游 [bestruirui/octopus](https://github.com/bestruirui/octopus) 的 fnOS 发行：**LLM API 聚合网关**（Go 单二进制 + 内嵌前端 + SQLite）。当前发布 **0.13.8-1**（2026-09-23），端口 **8081**——Hermes/本 agent 的模型网关，挂了=agent 失智，最高优先级服务。
 
 ## 架构
 - 二进制=官方 release 原样（前端已嵌入，不改源码）；本地价值在 **fnOS 打包层** `src/fnos/`（cmd/manifest/config/gateway）

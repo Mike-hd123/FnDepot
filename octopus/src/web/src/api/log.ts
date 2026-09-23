@@ -26,6 +26,7 @@ export interface RelayLogOverview {
     stream_duration: number;
     response_duration: number;
     model: string;
+    reasoning_effort: string;
     protocol: number;
     group_id: number;
     api_key_name: string;

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ChevronLeft, Plus, Trash2 } from 'lucide-react';
+import { toast } from 'sonner';
 import { useTranslations } from 'use-intl';
 import {
     type ChannelDetail,
@@ -98,8 +99,14 @@ function ChannelFormFields({ channel, onBack }: { channel?: ChannelDetail; onBac
         event.preventDefault();
         if (!canSubmit) return;
         const detail = toChannelDetail(state, channel?.id ?? 0);
-        const mutation = channel ? updateChannel : createChannel;
-        mutation.mutate(detail, { onSuccess: () => setIsOpen(false) });
+        if (channel) {
+            updateChannel.mutate(detail, { onSuccess: () => setIsOpen(false) });
+        } else {
+            createChannel.mutate(detail, {
+                onSuccess: () => setIsOpen(false),
+                onError: (error) => toast.error(error.message),
+            });
+        }
     };
 
     // 表单高度固定, 否则切换步骤时弹窗会随内容高度跳动; 内容更高的步骤由步骤区内部滚动消化。

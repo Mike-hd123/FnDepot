@@ -1,6 +1,6 @@
 appname                    = octopus
-version                    = 0.13.7-1
-desc                       = One Hub All LLMs For You —— LLM API 聚合网关，Go 单二进制，SQLite 存储，原生宿主机运行。上游 v0.13.7（厂商预设修复：火山方舟/DeepSeek/通义千问/Moonshot/智谱等渠道 base_url 与请求路径拆分纠正，Anthropic 兼容路径按厂商实际端点对齐）+ 本地 gateway sidecar v8 剥前缀 HTTP 反代（SSE 流式透传 + 单模块图单实例），手机端 /app/octopus 全链路可路由。
+version                    = 0.13.8-1
+desc                       = One Hub All LLMs For You —— LLM API 聚合网关，Go 单二进制，SQLite 存储，原生宿主机运行。上游 v0.13.8（创建渠道错误弹窗提醒 + 思考等级支持，日志布局优化）+ 本地 gateway sidecar v8 剥前缀 HTTP 反代（SSE 流式透传 + 单模块图单实例），手机端 /app/octopus 全链路可路由。
 display_name               = Octopus
 platform                   = x86
 source                     = thirdparty
@@ -16,4 +16,4 @@ service_port               = 8081
 desktop_uidir              = ui
 desktop_applaunchname      = octopus.panel
 disable_authorization_path = false
-changelog                  = v1（2026-09-23）：同步上游 v0.13.7（commit 0e1c3fc：厂商预设 bug 修复——火山方舟 base_url 去掉 /api/v3 后缀并路径拆分、DeepSeek/通义千问/Moonshot/智谱等 Anthropic 兼容端点纠正）。本地 gateway sidecar v8 补丁保留不变；二进制为上游官方 CI 产物（SHA256 与 Release 校验一致）。
+changelog                  = v1（2026-09-23）：同步上游 v0.13.8（commit 9357a32：创建渠道错误时弹窗提醒、增加思考等级、优化日志布局；axonhub/llm 依赖升级）。本地 gateway sidecar v8 补丁保留不变；二进制为上游官方 CI 产物（zip sha256 与 Release SHA256SUMS 一致，反解 version=v0.13.8/commit 9357a32）。

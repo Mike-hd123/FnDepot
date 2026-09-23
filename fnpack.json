@@ -74,7 +74,7 @@
     },
     "octopus": {
       "display_name": "Octopus 网关",
-      "desc": "LLM API 聚合网关：Go 单二进制 + 内嵌前端 + SQLite 存储，多渠道/多模型管理，支持单渠道多 Key，原生宿主机运行，端口 8081。上游项目：bestruirui/octopus（v0.13.7）。",
+      "desc": "LLM API 聚合网关：Go 单二进制 + 内嵌前端 + SQLite 存储，多渠道/多模型管理，支持单渠道多 Key，原生宿主机运行，端口 8081。上游项目：bestruirui/octopus（v0.13.8）。",
       "platform": [
         "x86"
       ],
@@ -98,6 +98,17 @@
               "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.23/octopus.fpk",
               "sha256": "b4032d836c885177457599941d6e9bd62b6321ea8ddf9b5301b9f7567f99e408",
               "size": 22643403
+            }
+          }
+        },
+        "0.13.8-1": {
+          "changelog": "v1（2026-09-23）：同步上游 v0.13.8（上游深夜连发 4 commit：思考等级控制修复、日志布局优化、webui 适配）。二进制=官方 octopus-linux-amd64.zip 原样（sha256 a862118c…，与 SHA256SUMS 一致），src 219 文件全量核对。保留本地 gateway sidecar v8 补丁。Release v2026.09.23 的 octopus.fpk 已替换为 0.13.8-1 包。",
+          "updated_at": "2026-09-23T21:35:00+08:00",
+          "packages": {
+            "all": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.23/octopus.fpk",
+              "sha256": "eb3d29dda455570c2e7dc2a9de389625be8fb7bf143823eecfb17bb8a9af1307",
+              "size": 22670236
             }
           }
         }
