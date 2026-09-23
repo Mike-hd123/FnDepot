@@ -26,11 +26,12 @@
       "is_docker": false,
       "service_port": "8080",
       "releases": {
-        "1.4.9": {
-          "changelog": "跟随上游 v1.4.9；本地改动：创建实例可选数据目录 + 多实例IP自增",
+        "1.4.9-4": {
+          "changelog": "v4（2026-09-23）：跟随上游 v1.4.9；本地改动：创建实例可选数据目录 + 多实例IP自增。本版本仅切换分发渠道到 GitHub Release（fpk 二进制与 1.4.9 一致，sha256 相同），版本号进位以触发 appcenter 更新提示。",
+          "updated_at": "2026-09-23T11:03:00+08:00",
           "packages": {
             "all": {
-              "url": "https://github.com/Mike-hd123/FnDepot/raw/main/wechat-on-cloud/wechat-on-cloud.fpk",
+              "url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.23/wechat-on-cloud.fpk",
               "sha256": "a8d6872fae742086b38360abdb859082d6e3a2c2f5e0b0647d2f002b75633415",
               "size": 15550745
             }
@@ -58,14 +59,14 @@
       "is_docker": false,
       "service_port": "19528",
       "releases": {
-        "4.1.1-6": {
-          "changelog": "v4 纯 Go 单二进制 + 内置 ONNX Runtime int8 向量引擎(bge-large-zh 1024d)，移除 llama.cpp 18080 依赖；dashboard 全量汉化 + 移动端响应式；chromem-go 存储，socket 型 fnOS 入口 /app/hyatlas，端口 19528。v6 新增 index 写入合并(异步 coalesce，SSD 写入从 ~11GB/天降至 ~0.5GB/天) + 全删接口护栏 + L7 防膨胀。",
-          "updated_at": "2026-09-19T18:38:00+08:00",
+        "4.1.1-7": {
+          "changelog": "v7（2026-09-23）：fpk 分发切换到主 Release v2026.09.23（原独立 tag hyatlas-4.1.1-6 已删除，改由主 Release 统一分发）。fpk 二进制重新压缩打包，体积 242MB→104MB，功能与 4.1.1-6 一致：v4 纯 Go 单二进制 + 内置 ONNX Runtime int8 向量引擎(bge-large-zh 1024d)，移除 llama.cpp 18080 依赖；dashboard 全量汉化 + 移动端响应式；chromem-go 存储，socket 型 fnOS 入口 /app/hyatlas，端口 19528。v6 新增 index 写入合并(异步 coalesce，SSD 写入从 ~11GB/天降至 ~0.5GB/天) + 全删接口护栏 + L7 防膨胀。版本号进位以触发 appcenter 更新提示。",
+          "updated_at": "2026-09-23T11:03:00+08:00",
           "packages": {
             "all": {
-              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/hyatlas-4.1.1-6/hyatlas-4.1.1-6-x86.fpk",
-              "sha256": "04c657e51c52438ef24e8aee624acc3bbf01c27b866c356f2cfe9cb8dba83e0d",
-              "size": 241818462
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.23/hyatlas.fpk",
+              "sha256": "db168d1d6b08c982c93ae0c6b9f756d1bd6c56ef4dcaac3973d6d47e20a9fdb0",
+              "size": 104695185
             }
           }
         }
@@ -89,12 +90,12 @@
       "is_docker": false,
       "service_port": "8081",
       "releases": {
-        "0.13.5-1": {
-          "changelog": "v1（2026-09-19）：同步上游 v0.13.5（commit 6f330f5：首字延迟/实时词元速度/缓存率面板、手动取消请求、token 速度展示、全局模型过滤、新 Logo），保留本地 gateway sidecar v8 补丁（剥前缀 HTTP 反代 + SSE 透传 + JS chunk 同版本参数单模块图单实例，手机端/桌面双端渲染正常）。上游大版本升级，本地补丁版本号重置为 1。",
-          "updated_at": "2026-09-19T18:32:00+08:00",
+        "0.13.6-1": {
+          "changelog": "v1（2026-09-23）：同步上游 v0.13.6（binary tag v0.13.6，对齐本机已安装版本），fpk 分发切换到主 Release v2026.09.23。保留本地 gateway sidecar v8 补丁（剥前缀 HTTP 反代 + SSE 透传 + JS chunk 同版本参数单模块图单实例，手机端/桌面双端渲染正常）。",
+          "updated_at": "2026-09-23T11:03:00+08:00",
           "packages": {
             "all": {
-              "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/octopus/octopus.fpk",
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.23/octopus.fpk",
               "sha256": "70cab405bd3e5be0d3b9fd8e7bc3a2a96fcba22a11c42dbc08de317d665f2420",
               "size": 22643278
             }
@@ -121,12 +122,12 @@
       "is_docker": false,
       "service_port": "8580",
       "releases": {
-        "2.0.0-1": {
-          "changelog": "v2 大版本升级：MonacEditor / 洞察报表自定义图表 / 信用卡额度 / S3 对象存储 / 全新仪表盘。1.x→2.x 数据自动迁移无损。延续 1.6.1-14 本地定制：index 纯跳转页 + sidecar 剥前缀反代 + gzip、端口 8580。",
-          "updated_at": "2026-09-06T18:30:00+08:00",
+        "2.0.0-2": {
+          "changelog": "v2（2026-09-23）：fpk 分发切换到主 Release v2026.09.23（二进制与 2.0.0-1 一致，sha256 相同），版本号进位以触发 appcenter 更新提示。延续 v2.0.0-1 内容：MonacEditor / 洞察报表自定义图表 / 信用卡额度 / S3 对象存储 / 全新仪表盘。1.x→2.x 数据自动迁移无损。延续 1.6.1-14 本地定制：index 纯跳转页 + sidecar 剥前缀反代 + gzip、端口 8580。",
+          "updated_at": "2026-09-23T11:03:00+08:00",
           "packages": {
             "all": {
-              "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/ezbookkeeping/ezbookkeeping.fpk",
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.23/ezbookkeeping.fpk",
               "sha256": "9345d5d03755861a04b178a3a40e4e2170bcbfd0036b99b7dba4787d5b0d3d92",
               "size": 24379202
             }
@@ -159,7 +160,7 @@
           "updated_at": "2026-09-09T18:10:00+08:00",
           "packages": {
             "x86": {
-              "download_url": "https://raw.githubusercontent.com/Mike-hd123/FnDepot/main/vikunja/vikunja-2.6.0-14-x86.fpk",
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.23/vikunja-2.6.0-14-x86.fpk",
               "sha256": "a0495a245da5cafd17318557f4b01b53aed26cf01951025313ab4ceb542dcb5f",
               "size": 45989308
             }
