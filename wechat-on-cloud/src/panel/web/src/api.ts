@@ -177,6 +177,22 @@ export const api = {
     }),
   listOrphanVolumes: () =>
     req<{ volumes: { name: string; createdAt?: string; sizeBytes?: number }[] }>('/api/admin/orphan-volumes'),
+  // 孤儿 bind 数据目录（1.4.9-5 新增）：删实例时数据目录永不删除，这里把它们显性化。
+  listOrphanBindings: () =>
+    req<{ bindings: { volume_name: string; base_dir: string; path: string; created_at?: string; size_bytes?: number }[] }>(
+      '/api/admin/orphan-bindings',
+    ),
+  deleteOrphanBinding: (path: string, name: string) =>
+    req<{ ok: boolean }>('/api/admin/orphan-bindings/delete', { method: 'POST', body: JSON.stringify({ path, name }) }),
+  // 孤儿目录挂到现存实例（不重建容器；下次重启生效）
+  attachBinding: (instId: string, path: string) =>
+    req<{ ok: boolean; instance: PanelInstance; note: string }>(`/api/admin/instances/${instId}/attach-data`, {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+    }),
+  getOrphanScanDirs: () => req<{ dirs: string[] }>('/api/admin/orphan-scan-dirs'),
+  setOrphanScanDirs: (dirs: string[]) =>
+    req<{ ok: boolean; dirs: string[] }>('/api/admin/orphan-scan-dirs', { method: 'PUT', body: JSON.stringify({ dirs }) }),
   deleteOrphanVolume: (name: string) =>
     req(`/api/admin/orphan-volumes/${encodeURIComponent(name)}`, { method: 'DELETE' }),
   listOrphanContainers: () =>

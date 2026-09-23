@@ -414,6 +414,11 @@ export default function Admin({ onOpenMenu, onChangePassword }: { onOpenMenu: ()
   const [orphanVols, setOrphanVols] = useState<{ name: string; createdAt?: string; sizeBytes?: number }[]>([]);
   // 残留 woc-wx-* 容器（runInstance 启动失败遗留的 Created 容器等）：占着卷名让删卷报 409。
   const [orphanConts, setOrphanConts] = useState<{ id: string; name: string; status: string; volumeName?: string }[]>([]);
+  // 孤儿 bind 数据目录（E2.5）：删实例时目录永不删，这里显性化，可挂回现存实例或彻底删除。
+  const [orphanBinds, setOrphanBinds] = useState<{ volume_name: string; base_dir: string; path: string; created_at?: string; size_bytes?: number }[]>([]);
+  const [bindAttach, setBindAttach] = useState<Record<string, string>>({}); // path → 挂回目标实例 id
+  // 自定义扫描目录（settings.orphanScanDirs）；编辑态在弹窗里
+  const [orphanScanDirs, setOrphanScanDirs_] = useState<string[]>([]);
   const setAct = (id: string, label: string | null) =>
     setActing((a) => {
       const n = { ...a };
@@ -455,6 +460,18 @@ export default function Admin({ onOpenMenu, onChangePassword }: { onOpenMenu: ()
     } catch {
       /* ignore */
     }
+    try {
+      const { bindings } = await api.listOrphanBindings();
+      setOrphanBinds(bindings);
+    } catch {
+      /* ignore */
+    }
+    try {
+      const { dirs } = await api.getOrphanScanDirs();
+      setOrphanScanDirs_(dirs);
+    } catch {
+      /* ignore */
+    }
   };
 
   const removeOrphanCont = async (c: { id: string; name: string }) => {
@@ -493,6 +510,48 @@ export default function Admin({ onOpenMenu, onChangePassword }: { onOpenMenu: ()
       await api.deleteOrphanVolume(name);
       toast('已删除数据卷', 'ok');
       setOrphanVols((vs) => vs.filter((v) => v.name !== name));
+    } catch (e: any) {
+      toast(e.message || '删除失败', 'error');
+    }
+  };
+
+  // 孤儿 bind 目录挂回现存实例（写绑定，下次重启生效；不删任何数据）
+  const attachOrphanBind = async (b: { path: string; volume_name: string }) => {
+    const target = bindAttach[b.path];
+    if (!target) {
+      toast('先在下方选择要挂回的实例', 'error');
+      return;
+    }
+    const ok = await confirm({
+      title: `把数据目录挂回实例「${instName(target)}」？`,
+      body: `该目录（${b.path}）将作为实例的数据目录。绑定在容器重建时生效 —— 确认后请重启该实例。聊天记录等数据会随之回来。`,
+      confirmText: '挂回并准备重启',
+    });
+    if (!ok) return;
+    try {
+      const r = await api.attachBinding(target, b.path);
+      toast(r.note || '已绑定，重启实例后生效', 'ok');
+      setOrphanBinds((bs) => bs.filter((x) => x.path !== b.path));
+      load();
+    } catch (e: any) {
+      toast(e.message || '绑定失败', 'error');
+    }
+  };
+
+  // 彻底删除孤儿 bind 目录（rm -rf，二次确认需手输目录名）
+  const removeOrphanBind = async (b: { path: string; volume_name: string }) => {
+    const typed = window.prompt(
+      `永久删除孤儿数据目录：\n${b.path}\n\n目录内微信本地数据（聊天记录等）将彻底消失，无法恢复。\n输入目录名「${b.volume_name}」确认删除：`,
+    );
+    if (typed === null) return;
+    if (typed.trim() !== b.volume_name) {
+      toast('输入不匹配，已取消', 'error');
+      return;
+    }
+    try {
+      await api.deleteOrphanBinding(b.path, b.volume_name);
+      toast('已删除孤儿数据目录', 'ok');
+      setOrphanBinds((bs) => bs.filter((x) => x.path !== b.path));
     } catch (e: any) {
       toast(e.message || '删除失败', 'error');
     }
@@ -879,6 +938,111 @@ export default function Admin({ onOpenMenu, onChangePassword }: { onOpenMenu: ()
                 </div>
               </>
             )}
+            {/* 孤儿 bind 数据目录（E2.5）：删实例时目录永不删除，这里显性化 → 挂回现存实例 / 彻底删除 */}
+            <div className="section-row" style={{ marginTop: 22 }}>
+              <span className="section-title">孤儿数据目录</span>
+              <span className="muted small">
+                曾作为实例数据目录、现已无任何实例引用的 bind 目录（聊天记录在其中）。
+                {orphanBinds.length === 0 ? '当前没有。' : `共 ${orphanBinds.length} 个。`}
+              </span>
+            </div>
+            {orphanBinds.length > 0 && (
+              <div className="inst-grid">
+                {orphanBinds.map((b) => (
+                  <div key={b.path} className="inst-card">
+                    <div className="inst-head">
+                      <span className="inst-name" style={{ fontFamily: 'monospace', fontSize: 13 }}>{b.volume_name}</span>
+                    </div>
+                    <div className="inst-sub" style={{ wordBreak: 'break-all' }}>
+                      {b.path}
+                      <br />
+                      {b.created_at ? `创建于 ${b.created_at.slice(0, 10)}　·　` : '创建时间未知　·　'}
+                      {typeof b.size_bytes === 'number' ? fmtBytes(b.size_bytes) : '大小未知'}
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
+                      <select
+                        className="input"
+                        style={{ flex: 1, minWidth: 0 }}
+                        value={bindAttach[b.path] || ''}
+                        onChange={(e) => setBindAttach((m) => ({ ...m, [b.path]: e.target.value }))}
+                      >
+                        <option value="">选择挂回目标实例…</option>
+                        {instances.map((i) => (
+                          <option key={i.id} value={i.id}>{i.name}</option>
+                        ))}
+                      </select>
+                      <button className="btn-text" disabled={!bindAttach[b.path]} onClick={() => attachOrphanBind(b)}>
+                        挂回
+                      </button>
+                    </div>
+                    <div className="inst-admin-links">
+                      <button className="btn-text danger" onClick={() => removeOrphanBind(b)}>
+                        彻底删除
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="section-row" style={{ marginTop: 22 }}>
+              <span className="section-title">扫描目录设置</span>
+              <span className="muted small">除面板默认数据目录外，额外扫描哪些父目录下的 woc-data-* 子目录。</span>
+            </div>
+            {orphanScanDirs.length > 0 ? (
+              <div className="chip-row" style={{ marginBottom: 8 }}>
+                {orphanScanDirs.map((d) => (
+                  <span key={d} className="chip chip-static" style={{ fontFamily: 'monospace', fontSize: 12 }}>{d}</span>
+                ))}
+              </div>
+            ) : (
+              <p className="s-foot">未配置额外扫描目录（仅扫面板默认数据目录）。</p>
+            )}
+            <div className="inst-admin-links">
+              <button
+                className="btn-text"
+                onClick={async () => {
+                  const r = await pickSharedFolder();
+                  if (!r.ok || !r.paths[0]) {
+                    if (!r.cancelled) toast(r.error || '未选择目录', 'error');
+                    return;
+                  }
+                  const p = r.paths[0].replace(/\/+$/, '');
+                  if (orphanScanDirs.includes(p)) {
+                    toast('该目录已在列表中', 'error');
+                    return;
+                  }
+                  try {
+                    const { dirs } = await api.setOrphanScanDirs([...orphanScanDirs, p]);
+                    setOrphanScanDirs_(dirs);
+                    toast('已添加扫描目录', 'ok');
+                    load();
+                  } catch (e: any) {
+                    toast(e.message || '保存失败', 'error');
+                  }
+                }}
+              >
+                + 添加扫描目录
+              </button>
+              {orphanScanDirs.length > 0 && (
+                <button
+                  className="btn-text danger"
+                  onClick={async () => {
+                    const okc = await confirm({ title: '清空全部额外扫描目录？', body: '之后只扫描面板默认数据目录。不会删除任何数据。', danger: true, confirmText: '清空' });
+                    if (!okc) return;
+                    try {
+                      const { dirs } = await api.setOrphanScanDirs([]);
+                      setOrphanScanDirs_(dirs);
+                      toast('已清空', 'ok');
+                      load();
+                    } catch (e: any) {
+                      toast(e.message || '保存失败', 'error');
+                    }
+                  }}
+                >
+                  清空
+                </button>
+              )}
+            </div>
           </>
         )}
 
@@ -2089,9 +2253,12 @@ function CreateInstance({ subs, onClose, onDone }: { subs: PanelUser[]; onClose:
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
-  // 未使用的旧数据卷（之前删除实例但未勾选「彻底清除」时保留下来的），允许在此复用以继承聊天记录。
-  const [orphans, setOrphans] = useState<{ name: string; createdAt?: string }[]>([]);
-  const [reuse, setReuse] = useState<string>(''); // '' = 不复用，新建空卷
+  // 未使用的旧数据（之前删除实例但未勾选「彻底清除」时保留下来的），允许在此复用以继承聊天记录。
+  // 两个来源合并：docker 命名卷 + bind 主机目录（E2.5 孤儿扫描，带「目录」标记）。
+  const [orphans, setOrphans] = useState<
+    { key: string; kind: 'vol' | 'dir'; name: string; baseDir?: string; createdAt?: string; sizeBytes?: number }[]
+  >([]);
+  const [reuse, setReuse] = useState<string>(''); // '' = 不复用，新建空卷（值为 orphans.key）
   // 可选「数据父目录」：留空走面板默认（env WOC_DATA_DIR 或 docker 命名卷）；
   // 填写绝对路径 → 数据 bind 挂载到 <dataDir>/woc-data-<id> 子目录（自动创建）。
   const [dataDir, setDataDir] = useState('');
@@ -2123,12 +2290,17 @@ function CreateInstance({ subs, onClose, onDone }: { subs: PanelUser[]; onClose:
 
   useEffect(() => {
     let alive = true;
-    api
-      .listOrphanVolumes()
-      .then(({ volumes }) => alive && setOrphans(volumes))
-      .catch(() => {
-        /* 读取失败时不阻塞创建：列表为空即可，照常新建空卷 */
-      });
+    Promise.all([
+      api.listOrphanVolumes().catch(() => ({ volumes: [] as any[] })),
+      api.listOrphanBindings().catch(() => ({ bindings: [] as any[] })),
+    ]).then(([volRes, bindRes]) => {
+      if (!alive) return;
+      const merged = [
+        ...volRes.volumes.map((v: any) => ({ key: `vol:${v.name}`, kind: 'vol' as const, name: v.name, createdAt: v.createdAt, sizeBytes: v.sizeBytes })),
+        ...bindRes.bindings.map((b: any) => ({ key: `dir:${b.path}`, kind: 'dir' as const, name: b.volume_name, baseDir: b.base_dir, createdAt: b.created_at, sizeBytes: b.size_bytes })),
+      ];
+      setOrphans(merged);
+    });
     return () => {
       alive = false;
     };
@@ -2153,7 +2325,15 @@ function CreateInstance({ subs, onClose, onDone }: { subs: PanelUser[]; onClose:
           return;
         }
       }
-      await api.createInstance(name.trim(), [...sel], reuse || undefined, appType, dir || undefined);
+      // 复用选择（E2.5）：vol = docker 命名卷；dir = bind 孤儿目录（同时把它所在的父目录设为实例数据目录）
+      const picked = orphans.find((o) => o.key === reuse);
+      if (picked && picked.kind === 'vol' && dir) {
+        setErr('「复用数据卷（命名卷）」与手选「数据目录」互斥：请清除其一，或在复用列表改选目录项');
+        return;
+      }
+      const reuseVolume = picked ? picked.name : undefined;
+      const effDir = picked ? (picked.kind === 'dir' ? picked.baseDir : undefined) : dir;
+      await api.createInstance(name.trim(), [...sel], reuseVolume, appType, effDir || undefined);
       onDone();
     } catch (e: any) {
       setErr(e.message || '创建失败');
@@ -2215,13 +2395,14 @@ function CreateInstance({ subs, onClose, onDone }: { subs: PanelUser[]; onClose:
         />
         {orphans.length > 0 && (
           <>
-            <div className="field-label" style={{ marginTop: 12 }}>数据卷（可选）</div>
+            <div className="field-label" style={{ marginTop: 12 }}>数据卷 / 目录（可选，复用旧数据）</div>
             <select className="input" value={reuse} onChange={(e) => setReuse(e.target.value)}>
               <option value="">新建空卷（全新登录）</option>
               {orphans.map((v) => (
-                <option key={v.name} value={v.name}>
-                  复用 · {v.name}
-                  {v.createdAt ? `（${v.createdAt.slice(0, 10)} 创建）` : ''}
+                <option key={v.key} value={v.key}>
+                  {v.kind === 'dir' ? '复用·目录' : '复用·卷'} {v.name}
+                  {v.createdAt ? `（${v.createdAt.slice(0, 10)}）` : ''}
+                  {typeof v.sizeBytes === 'number' ? ` ${fmtBytes(v.sizeBytes)}` : ''}
                 </option>
               ))}
             </select>

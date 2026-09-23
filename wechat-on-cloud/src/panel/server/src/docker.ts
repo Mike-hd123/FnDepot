@@ -1,10 +1,13 @@
 import { hostname } from 'node:os';
 import { existsSync, readdirSync, statSync, mkdirSync, chownSync, rmSync, readFileSync } from 'node:fs';
+import fsp from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { appendInstanceLog, deleteInstanceLog, appendPanelLog, readInstanceLog, readPanelLog, filterSince } from './logs.js';
 import http from 'node:http';
 import zlib from 'node:zlib';
 import Docker from 'dockerode';
-import { instanceAppType, getDesktopDark, listInstances, setInstanceLanIP, type Instance } from './store.js';
+import { instanceAppType, getDesktopDark, getOrphanScanDirs, listInstances, setInstanceLanIP, type Instance } from './store.js';
 
 // 实例镜像引用。版本耦合（架构守则 R1）：面板与实例镜像同一 release 同步出包、按同版本号
 // 互相验证——正式版面板把 :latest 改写为与自身相同的版本 tag（如 1.4.1），保证
@@ -138,11 +141,20 @@ const WOC_LAN_IP = process.env.WOC_LAN_IP || '192.168.5.50';
 // 数据挂载形态：优先 instance.dataDir（新建实例时可选的「数据父目录」）→ 非空则 bind
 // `${dataDir}/woc-data-<id>:/config`；否则按 WOC_DATA_DIR env 非空 bind；都不满足 → docker
 // 命名卷。目录缺失由 runInstance 预建；容器启动时 Kasm init 会按 PUID/PGID chown /config。
+// bind 目录基名：以 instance.volumeName 的基名为准（创建/复用卷时已钉死），而不是按
+// inst.id 现拼。复用旧卷的实例 id 可能≠卷内嵌 id（store.createInstance 的退回路径），
+// 按 id 现拼会把「复用卷」挂成另一个空目录 → 聊天记录凭空消失（E2.5 根因之一）。
+// volumeName 异常（非 woc-data- 前缀）时回退旧语义 woc-data-<id>，兼容存量记录。
+function bindBase(inst: Instance): string {
+  const v = (inst.volumeName || '').trim().split('/').pop() || '';
+  return v.startsWith('woc-data-') ? v : `woc-data-${inst.id}`;
+}
+
 function dataBind(inst: Instance): string {
   const custom = (inst.dataDir || '').trim();
-  if (custom) return `${custom}/woc-data-${inst.id}:/config`;
+  if (custom) return `${custom}/${bindBase(inst)}:/config`;
   const dir = (process.env.WOC_DATA_DIR || '').trim();
-  if (dir) return `${dir}/woc-data-${inst.id}:/config`;
+  if (dir) return `${dir}/${bindBase(inst)}:/config`;
   return `${inst.volumeName}:/config`;
 }
 
@@ -150,10 +162,10 @@ function dataBind(inst: Instance): string {
 // 优先 instance.dataDir，其次 env WOC_DATA_DIR。
 function dataDirFor(inst: Instance): string | null {
   const custom = (inst.dataDir || '').trim();
-  if (custom) return `${custom}/woc-data-${inst.id}`;
+  if (custom) return `${custom}/${bindBase(inst)}`;
   const dir = (process.env.WOC_DATA_DIR || '').trim();
   if (!dir) return null;
-  return `${dir}/woc-data-${inst.id}`;
+  return `${dir}/${bindBase(inst)}`;
 }
 
 // 动态取默认路由物理网卡（ipvlan 的 parent 必须是宿主物理网卡，不能是 docker0 之类）
@@ -206,7 +218,8 @@ async function instanceLanIP(inst: Instance): Promise<string> {
 // 挂 woc-lan（ipvlan 主网卡）到实例容器 —— 单网卡模式，这是唯一网络。
 // 幂等：网络缺失则自动创建（动态取默认路由物理网卡做 parent）；容器已挂则跳过。
 // 失败只警告不抛错——容器已在默认网络跑，微信可用，只是没有同广播域备份能力。
-export async function ensureWocLan(containerName: string): Promise<void> {
+export async function ensureWocLan(inst: Instance): Promise<void> {
+  const containerName = inst.containerName;
   try {
     await docker.getNetwork(WOC_LAN_NET).inspect();
   } catch {
@@ -449,7 +462,7 @@ export async function runInstance(inst: Instance, opts?: { keepImage?: boolean }
     NetworkMode: net || undefined,
     SecurityOpt: ['seccomp=unconfined'],
     ShmSize: SHM_SIZE,
-    RestartPolicy: { Name: 'unless-stopped' },
+    RestartPolicy: { Name: 'no' }, // 实例默认不跟随系统重启；面板「启动实例」走 container.start() 不受影响
     // 日志硬上限：docker 默认 json-file 无大小限制，应用崩溃循环（每 2s 刷错误）会把宿主磁盘
     // 无限吃掉（群晖用户反馈"一下子 1TB 没了"的元凶之一）。每实例封顶 20MB×2。
     LogConfig: { Type: 'json-file', Config: { 'max-size': '20m', 'max-file': '2' } },
@@ -504,7 +517,7 @@ export async function runInstance(inst: Instance, opts?: { keepImage?: boolean }
     appendInstanceLog(inst.id, '容器已启动');
     // 单网卡固化（NAS 定制）：启动后挂 woc-lan ipvlan 业务网卡（微信备份同广播域）。
     // v1.5.0 起实例只挂此网（woc-net bridge 已删）。网络不存在则自动创建。
-    await ensureWocLan(inst.containerName);
+    await ensureWocLan(inst);
     // 容器重建后恢复持久化的字体配置 / xsettingsd
     restoreFontFromVolume(inst).catch(() => {});
   } catch (e) {
@@ -710,7 +723,6 @@ export async function removeInstance(inst: Instance, purgeVolume: boolean): Prom
 export async function listOrphanVolumes(referencedVolumes: Set<string>): Promise<
   Array<{ name: string; createdAt?: string; sizeBytes?: number }>
 > {
-  const dataDir = (process.env.WOC_DATA_DIR || '').trim();
   const out: Array<{ name: string; createdAt?: string; sizeBytes?: number }> = [];
   // 容器视角：扫所有容器（含已停止 / Created），收集它们挂载的 woc-data-* 卷名
   const allContainers = await docker.listContainers({ all: true });
@@ -741,18 +753,9 @@ export async function listOrphanVolumes(referencedVolumes: Set<string>): Promise
     }
   }
 
-  // bind 形态：扫 WOC_DATA_DIR 下的 woc-data-* 目录（无容器引用者）
-  if (dataDir) {
-    try {
-      for (const base of readdirSync(dataDir)) {
-        if (!base.startsWith('woc-data-')) continue;
-        if (referenced.has(base)) continue;
-        let sizeBytes: number | undefined;
-        try { sizeBytes = statSync(`${dataDir}/${base}`).size; } catch { /* 目录读不到忽略 */ }
-        out.push({ name: base, createdAt: undefined, sizeBytes });
-      }
-    } catch { /* WOC_DATA_DIR 不存在/不可读则跳过 bind 扫描 */ }
-  }
+  // bind 形态目录一律归 listOrphanBindings() 扫描（E2.5），此处不再重复扫
+  // WOC_DATA_DIR —— 此前两处都扫同一父目录，/api/admin/orphan-volumes 与
+  // /api/admin/orphan-bindings 各报一次，前端合并展示出现同目录两条重复。
   return out.sort((a, b) => (a.createdAt && b.createdAt ? (a.createdAt < b.createdAt ? 1 : -1) : 0));
 }
 
@@ -789,6 +792,140 @@ export async function listOrphanContainers(
     out.push({ id: c.Id, name, status: c.Status || c.State || '', volumeName: volName });
   }
   return out;
+}
+
+// ---------- 孤儿 bind 数据目录（E2.5，1.4.9-5） ----------
+// 背景：删实例时 bind 目录永不被删（保护数据，见 removeInstance 的 bind 分支）。这些目录
+// 只存在于文件系统，docker API 看不见（没有容器挂载就是「无」），所以孤儿卷扫描必须真 stat
+// 磁盘。扫描父目录集合：env WOC_DATA_DIR（默认父目录）∪ settings.orphanScanDirs
+// （管理员确认过的历史目录，migrate-orphans 脚本产出候选后勾选写入）∪ 现存实例 dataDir。
+// 注意 bind 形态下实例记录的 dataDir 是父目录，实际目录 = 父/woc-data-<id>（与 dataBind 同构）。
+// 结果缓存 30s 并 stale-if-error：列表页每次刷新都 stat 一遍磁盘太浪费，NAS 磁盘卡住时
+// 宁可显示旧数据也不让接口报错。
+
+export interface OrphanBinding {
+  volume_name: string; // 目录名 woc-data-<id>（展示与删除定位用）
+  base_dir: string;    // 所在父目录：attach 时写回 instance.dataDir 的就是它
+  path: string;        // 实际数据目录 base_dir/volume_name
+  created_at?: string; // 目录 mtime 近似（ISO）
+  size_bytes?: number; // du 近似
+}
+
+let bindingsCache: { at: number; data: OrphanBinding[] } | null = null;
+let bindingsScan: Promise<OrphanBinding[]> | null = null;
+
+// 从卷/目录名 woc-data-<id> 解析实例 id。面板实例 id 是 10 位 hex（store: randomBytes(5)），
+// 名字可能带 <ver> 后缀（rename 残留），按首个 '-' 截断取 hex 段。
+function parseBindingId(volumeName: string): string | null {
+  const m = /^woc-data-(.+)$/.exec(volumeName);
+  if (!m) return null;
+  const id = m[1].split('-')[0];
+  return /^[0-9a-f]{10}$/.test(id) ? id : null;
+}
+
+const execFileP = promisify(execFile);
+
+// 目录体积：du -sb 一次搞定（8s 超时兜底；失败=未知，不阻塞列表）。
+async function duBytes(path: string): Promise<number | undefined> {
+  try {
+    const { stdout } = await execFileP('du', ['-sb', path], { timeout: 8000 });
+    const n = parseInt(stdout.split('\t')[0], 10);
+    return Number.isFinite(n) ? n : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function scanOrphanBindingsOnce(extraDirs?: string[]): Promise<OrphanBinding[]> {
+  const envBase = process.env.WOC_DATA_DIR || '/vol2/1000/weixin';
+  // env 默认父目录 ∪ 额外配置 ∪ 现存实例 dataDir ∪ 调用方追加（被删实例的父目录，保证「删了就可见」）
+  const bases = new Set<string>([envBase, ...getOrphanScanDirs(), ...listInstances().map((i) => i.dataDir || ''), ...(extraDirs || [])]);
+  // 现存实例占用集合：按 volumeName 基名（bindBase 语义）——复用卷的实例卷名可能≠自身 id
+  const known = new Set(listInstances().map((i) => bindBase(i)));
+  const out: OrphanBinding[] = [];
+  for (const base of bases) {
+    if (!base || !base.startsWith('/')) continue;
+    let names: string[] = [];
+    try {
+      names = (await fsp.readdir(base)).filter((n) => n.startsWith('woc-data-'));
+    } catch {
+      continue; // 父目录不存在/无权限：跳过（历史授权目录被撤销是常态）
+    }
+    for (const name of names) {
+      if (known.has(name)) continue; // 现存实例占用（含被删但容器没清的：容器侧由 orphan-containers 兜）
+      const path = `${base.replace(/\/+$/, '')}/${name}`;
+      try {
+        const st = await fsp.stat(path);
+        if (!st.isDirectory()) continue;
+        out.push({
+          volume_name: name,
+          base_dir: base.replace(/\/+$/, ''),
+          path,
+          created_at: new Date(st.mtimeMs).toISOString(),
+          size_bytes: await duBytes(path),
+        });
+        known.add(name); // 多父目录撞名只报一次
+      } catch {
+        /* 竞态删除，忽略 */
+      }
+    }
+  }
+  return out;
+}
+
+// 列表页轮询入口：30s 缓存 + 单飞（并发只发起一次扫描）+ stale-if-error。
+// force=true（attach/delete 路由用）：跳缓存强制重扫，保证写操作后状态即时。
+export async function listOrphanBindings(force = false, extraDirs?: string[]): Promise<OrphanBinding[]> {
+  const now = Date.now();
+  if (!force && bindingsCache && now - bindingsCache.at < 30_000) return bindingsCache.data;
+  if (bindingsScan) {
+    try { return await bindingsScan; } catch { /* 落旧缓存 */ }
+    return bindingsCache?.data || [];
+  }
+  const p = scanOrphanBindingsOnce(extraDirs);
+  bindingsScan = p;
+  try {
+    const data = await p;
+    bindingsCache = { at: Date.now(), data };
+    return data;
+  } catch (e) {
+    if (bindingsCache) return bindingsCache.data; // 磁盘抖了：宁旧勿错
+    throw e;
+  } finally {
+    bindingsScan = null;
+  }
+}
+
+// 孤儿 bind 目录是否"可挂回某实例"：实际目录存在 + 目录名可解析出 id + 该 id 无现存实例。
+// 不可挂回的常见原因是撞现存 id（面板永不删目录、用户反复建删时 hex 撞车虽罕见但留护栏）。
+export async function inspectOrphanBinding(volumeName: string): Promise<OrphanBinding | null> {
+  const list = await listOrphanBindings(true);
+  return list.find((b) => b.volume_name === volumeName) || null;
+}
+
+export function bindingIdInUse(volumeName: string): boolean {
+  const id = parseBindingId(volumeName);
+  if (!id) return true; // 解析不出 id 的目录不给挂回（只归"未知来源"，需人工）
+  return !!listInstances().some((i) => i.id === id);
+}
+
+// 彻底删除一个孤儿 bind 目录（二次确认在路由层：名字必须精确等于 base_dir 下的现存目录）。
+export async function removeOrphanBinding(volumeName: string, baseDir: string): Promise<void> {
+  const base = String(baseDir || '').trim().replace(/\/+$/, '');
+  if (!/^woc-data-[0-9a-zA-Z_.-]+$/.test(volumeName) || !base.startsWith('/')) {
+    throw new Error('目录名/父目录不合法');
+  }
+  if (bindingIdInUse(volumeName)) throw new Error('该数据目录正被现存实例使用，不能删除');
+  const path = `${base}/${volumeName}`;
+  try {
+    const st = await fsp.stat(path);
+    if (!st.isDirectory()) throw new Error('目标不是目录');
+  } catch (e: any) {
+    if (e?.code === 'ENOENT') throw new Error(`目录不存在：${path}`);
+    throw e;
+  }
+  await fsp.rm(path, { recursive: true, force: true });
+  bindingsCache = null; // 强制下次重扫
 }
 
 // 强制删除一个残留容器（按短/全 id 或容器名都行）。

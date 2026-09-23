@@ -3,7 +3,7 @@
 > 项目说明见 [README.md](./README.md)。本文件只讲 agent 该做什么 / 红线 / 坑。
 
 ## 定位
-上游 [Gloridust/WechatOnCloud](https://github.com/Gloridust/WechatOnCloud) 的 fnOS 原生发行 fork：NAS 上跑微信的 Web 面板（Node.js + dockerode 管理微信实例容器）。当前发布 **1.4.9-3**，面板端口 8080。
+上游 [Gloridust/WechatOnCloud](https://github.com/Gloridust/WechatOnCloud) 的 fnOS 原生发行 fork：NAS 上跑微信的 Web 面板（Node.js + dockerode 管理微信实例容器）。当前发布 **1.4.9-6**，面板端口 8080。
 
 ## 架构
 - `src/` — 上游源码 fork + 全部 NAS 适配改动（Node.js 面板）

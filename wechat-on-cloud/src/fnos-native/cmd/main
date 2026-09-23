@@ -9,19 +9,79 @@ PID_FILE="${VAR_DIR}/panel.pid"
 PROXY_PID_FILE="${VAR_DIR}/proxy.pid"
 SYNC_PID_FILE="${VAR_DIR}/hosts-sync.pid"
 NODE_BIN="/vol1/@appcenter/nodejs_v24/bin/node"
-TSX_BIN="${APP_DIR}/server/node_modules/tsx/dist/cli.mjs"
+TSX_LOADER_DIR="${APP_DIR}/server/node_modules/tsx/dist"
 
 mkdir -p "${VAR_DIR}"
 
+# 活性判定改为 cmdline 模式扫描（不依赖 pid 文件——旧版 pid 文件只记 tsx wrapper，
+# 真实 server 是其子进程，wrapper 被杀后子进程孤儿化存活，pid 文件判定会失真）。
+# 模式用 "wechat-on-cloud/server/src/index.ts" 中段子串：兼容 TRIM_APPDEST 以
+# /vol2/@appcenter 或 /usr/local/apps/@appcenter symlink 形态出现的两种 cmdline。
+# 注：start 已改单进程直起（不再经 wrapper），PID_FILE 重新可信；本扫描仍是
+# 唯一判活依据（防 pid 复用与历史孤儿波）。
+PANEL_PATTERN="wechat-on-cloud/server/src/index.ts"
+PROXY_PATTERN="wechat-on-cloud/server/proxy.py"
+
+# 判活 = cmdline 命中模式 且 可执行文件真身是 NODE_BIN。
+# 禁止用 /proc/PID/comm 过滤：node v24 主线程 comm 是 "MainThread" 不是 "node"
+# （2026-09-23 实测），按 comm=node* 匹配会恒空 → stop 变 no-op → 进程杀不掉。
+panel_pids() {
+  local p exe
+  for p in $(pgrep -f "$PANEL_PATTERN" 2>/dev/null); do
+    [ "$p" = "$$" ] && continue
+    [ "$p" = "$PPID" ] && continue
+    exe=$(readlink "/proc/$p/exe" 2>/dev/null) || continue
+    [ "$exe" = "$NODE_BIN" ] || continue   # 只认真身是本应用 node 的进程，防误杀 bash/调用方
+    echo "$p"
+  done
+}
+
 is_running() {
-  if [ -f "$PID_FILE" ]; then
-    local pid
-    pid=$(cat "$PID_FILE" 2>/dev/null)
-    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-      return 0
-    fi
-  fi
-  return 1
+  [ -n "$(panel_pids)" ]
+}
+
+# sock 探活：SOCK_PATH 有进程在 LISTEN 才算面板活着（判活不得只依赖 PID 存活——
+# A5 兜底：进程在但已崩死/未就绪时，fnOS keepalive 应能拉起新实例而非误报 running）。
+sock_alive() {
+  local sp="${SOCK_PATH:-${APP_DIR}/app.sock}"
+  [ -S "$sp" ] || return 1
+  "$NODE_BIN" -e '
+    const net = require("net");
+    const s = net.connect({ path: process.argv[1] });
+    s.setTimeout(1000);
+    s.on("connect", () => { s.destroy(); process.exit(0); });
+    s.on("error", () => process.exit(1));
+    s.on("timeout", () => { s.destroy(); process.exit(1); });
+  ' "$sp" 2>/dev/null
+}
+
+panel_alive() {
+  is_running && sock_alive
+}
+
+# 彻底清场：TERM → 最多等 3s → 残留 -9 → 再等 1s。返回 0=已无残留。
+kill_panel_tree() {
+  local pids i
+  pids=$(panel_pids)
+  [ -z "$pids" ] && return 0
+  kill $pids 2>/dev/null
+  for i in 1 2 3 4 5 6; do
+    sleep 0.5
+    pids=$(panel_pids)
+    [ -z "$pids" ] && return 0
+  done
+  [ -n "$pids" ] && kill -9 $pids 2>/dev/null
+  sleep 1
+  [ -z "$(panel_pids)" ]
+}
+
+kill_proxy() {
+  local p comm
+  for p in $(pgrep -f "$PROXY_PATTERN" 2>/dev/null); do
+    comm=$(cat /proc/"$p"/comm 2>/dev/null) || continue
+    case "$comm" in python*) ;; *) continue ;; esac
+    kill "$p" 2>/dev/null
+  done
 }
 
 ensure_proxy() {
@@ -63,69 +123,97 @@ sync_woc_hosts() {
 #   - hosts 非原子写 + 无守护 + 重启丢失
 #   - hosts 同步循环对 dockerd 的高频 docker 调用（dockermgr 死锁隐患源之一）
 
+do_start() {
+  # start 幂等：真面板（进程在且 sock 在听）已活 → 直接成功返回，绝不清场重起
+  # （防 fnOS keepalive 与手工操作撞车导致的无谓重启波）。
+  if panel_alive; then
+    echo "Panel already running"
+    exit 0
+  fi
+  # 走到这里：要么全没活，要么"进程残活但 sock 不在听"（半死状态）。
+  # 后者必须先清场再起，否则新面板与僵尸进程抢 8080/sock。
+  kill_panel_tree || { echo "错误：仍有面板进程无法清除，拒绝带病双起" >&2; exit 1; }
+  kill_proxy
+  rm -f "$PID_FILE" "$SYNC_PID_FILE" "$PROXY_PID_FILE"
+  # 启动时立即同步一次 hosts（方案 A 兜底：清旧残留容器名条目，兼容旧面板版本）
+  sync_woc_hosts
+  export PORT="${PORT:-8080}"
+  export WOC_PANEL_PORT="${WOC_PANEL_PORT:-8080}"
+  export HOST="${HOST:-0.0.0.0}"
+  export SOCK_PATH="${SOCK_PATH:-${APP_DIR}/app.sock}"
+  export PANEL_DATA="${PANEL_DATA:-${VAR_DIR}/data/accounts.json}"
+  export WOC_VERSION="${WOC_VERSION:-1.4.9}"
+  export PANEL_ALLOWED_HOSTS="${PANEL_ALLOWED_HOSTS:-*.mike-hd123.fnos.net}"
+  # docker 权限检测：非 root 运行时若无 docker 组，实例管理不可用
+  if ! id -nG 2>/dev/null | tr ' ' '\n' | grep -qx docker 2>/dev/null; then
+    if [ "$(id -u)" != "0" ]; then
+      echo "警告：当前用户无 docker 权限，实例管理（创建/启停/删除容器）不可用。请将 wechat-on-cloud 加入 docker 组：sudo usermod -aG docker wechat-on-cloud" >&2
+    fi
+  fi
+  export WOC_WECHAT_IMAGE="${WOC_WECHAT_IMAGE:-ghcr.nju.edu.cn/gloridust/wechat-on-cloud:latest}"
+  export WOC_DOCKER_NETWORK="${WOC_DOCKER_NETWORK:-woc-lan}"
+  # 默认数据父目录（bind 形态）：1.4.9-5 起导出给面板进程 —— 此前只有 install_callback
+  # 知道这个默认值，面板 env 里根本没有 → 孤儿 bind 目录（如删实例留下的
+  # woc-data-*）无固定扫描根。现在扫描集合 = 此 env ∪ settings.orphanScanDirs ∪
+  # store 历史实例 dataDir（docker.ts bindScanDirs()）。
+  export WOC_DATA_DIR="${WOC_DATA_DIR:-/vol2/1000/weixin}"
+  export STATIC_DIR="${APP_DIR}/web-dist"
+  mkdir -p "$(dirname "${PANEL_DATA}")"
+  # 陈旧 sock 文件清掉（此时已无任何进程在听）；面板自己 listen 前也会再清一次。
+  rm -f "${SOCK_PATH}" 2>/dev/null
+  # A1（核心）：单进程直起，去掉 tsx wrapper —— 手工复刻 tsx cli 的 spawn argv
+  # （--require preflight.cjs + --import loader.mjs + 入口 .ts），2026-09-23 已
+  # 冒烟验证线上 node v24.15.0 可直跑。进程树从 2 层变 1 层，杀一即杀全，
+  # $! 即真 server PID，PID_FILE 语义恢复正确，从根上消灭孤儿化通道。
+  nohup "$NODE_BIN" \
+    --require "${TSX_LOADER_DIR}/preflight.cjs" \
+    --import "file://${TSX_LOADER_DIR}/loader.mjs" \
+    "${APP_DIR}/server/src/index.ts" >> "$LOG_FILE" 2>&1 &
+  echo $! > "$PID_FILE"
+  # 等就绪最多 10s（tsx 首次加载 + fastify listen）
+  for _i in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 1
+    panel_alive && break
+  done
+  ensure_proxy
+  if panel_alive; then
+    echo "===== panel start $(date '+%F %T') pid=$(cat "$PID_FILE" 2>/dev/null) =====" >> "$LOG_FILE" 2>/dev/null
+    echo "Panel started"
+  else
+    echo "===== panel start FAILED $(date '+%F %T') =====" >> "$LOG_FILE" 2>/dev/null
+    echo "Panel start failed"
+    exit 1
+  fi
+}
+
 case "${1:-}" in
   start)
-    # 清理残留面板进程，避免双面板端口冲突（EADDRINUSE）
-    if [ -f "$PID_FILE" ]; then
-      old_pid=$(cat "$PID_FILE" 2>/dev/null)
-      [ -n "$old_pid" ] && kill "$old_pid" 2>/dev/null
-      sleep 1
-      kill -9 "$old_pid" 2>/dev/null || true
-      rm -f "$PID_FILE"
-    fi
-    # 兜底：按 cmdline 匹配本应用残留 node 进程
-    for pid in $(pgrep -f "${APP_DIR}/server/src/index.ts" 2>/dev/null); do
-      [ "$pid" != "$$" ] && kill "$pid" 2>/dev/null
-    done
-    # 清理残留 hosts-sync 进程 + 陈旧锁
-    rm -f "$SYNC_PID_FILE"
-    sleep 1
-    is_running && exit 0
-    # 启动时立即同步一次 hosts（方案 A 兜底：清旧残留容器名条目，兼容旧面板版本）
-    sync_woc_hosts
-    export PORT="${PORT:-8080}"
-    export WOC_PANEL_PORT="${WOC_PANEL_PORT:-8080}"
-    export HOST="${HOST:-0.0.0.0}"
-    export SOCK_PATH="${SOCK_PATH:-${APP_DIR}/app.sock}"
-    export PANEL_DATA="${PANEL_DATA:-${VAR_DIR}/data/accounts.json}"
-    export WOC_VERSION="${WOC_VERSION:-1.4.9}"
-    export PANEL_ALLOWED_HOSTS="${PANEL_ALLOWED_HOSTS:-*.mike-hd123.fnos.net}"
-    # docker 权限检测：非 root 运行时若无 docker 组，实例管理不可用
-    if ! id -nG 2>/dev/null | tr ' ' '\n' | grep -qx docker 2>/dev/null; then
-      if [ "$(id -u)" != "0" ]; then
-        echo "警告：当前用户无 docker 权限，实例管理（创建/启停/删除容器）不可用。请将 wechat-on-cloud 加入 docker 组：sudo usermod -aG docker wechat-on-cloud" >&2
-      fi
-    fi
-    export WOC_WECHAT_IMAGE="${WOC_WECHAT_IMAGE:-ghcr.nju.edu.cn/gloridust/wechat-on-cloud:latest}"
-    export WOC_DOCKER_NETWORK="${WOC_DOCKER_NETWORK:-woc-lan}"
-    export STATIC_DIR="${APP_DIR}/web-dist"
-    mkdir -p "$(dirname "${PANEL_DATA}")"
-    nohup "$NODE_BIN" "$TSX_BIN" "${APP_DIR}/server/src/index.ts" \
-      > "$LOG_FILE" 2>&1 &
-    echo $! > "$PID_FILE"
-    sleep 2
-    ensure_proxy
-    is_running && echo "Panel started" || echo "Panel start failed"
+    do_start
     ;;
   stop)
+    # 先杀干净再删 sock（旧版先删 sock 后杀进程，孤儿 server 会重新 listen
+    # 一个已删除路径的 sock，盘上留下「path 存在但无人应答」的僵尸套接字）。
     if [ -f "$SYNC_PID_FILE" ]; then
       sp=$(cat "$SYNC_PID_FILE" 2>/dev/null)
       [ -n "$sp" ] && kill "$sp" 2>/dev/null
       rm -f "$SYNC_PID_FILE"
     fi
-    pf="$PROXY_PID_FILE"
-    [ -f "$pf" ] && kill "$(cat "$pf")" 2>/dev/null; rm -f "$pf"
+    rm -f "$PROXY_PID_FILE"
+    kill_proxy
+    kill_panel_tree || echo "警告：仍有面板进程残留" >&2
+    rm -f "$PID_FILE"
     rm -f "${APP_DIR}/app.sock" 2>/dev/null
-    if is_running; then
-      pid=$(cat "$PID_FILE")
-      kill "$pid" 2>/dev/null
-      sleep 2
-      kill -9 "$pid" 2>/dev/null || true
-      rm -f "$PID_FILE"
-    fi
+    ;;
+  restart)
+    # 显式 restart 分支：旧版走 *) exit 0 被静默吞掉，fnOS 下发 restart 会假成功。
+    "$0" stop
+    do_start
     ;;
   status)
-    is_running && exit 0 || exit 3
+    # A5：判活 = 进程在 且 app.sock 有 LISTEN（不得只靠 PID 存活，也不得只靠
+    # sock 文件存在）。kill -9 后面板瞬间死亡时，此处返回 3 → fnOS keepalive
+    # 拉起的 do_start 因已无进程而正常清场重启，收敛成立。
+    panel_alive && exit 0 || exit 3
     ;;
   *)
     exit 0

@@ -25,31 +25,59 @@
 #    gzip mtime=0, 条目顺序与原 fpk 一致, 保证 `tar tzf` 清单与原包逐行相同。
 #
 # 产物: 覆盖项目根 wechat-on-cloud.fpk
+#
+# --from-source 模式（全量构建链路, 配合 build-app.sh）:
+# - 应用体取 fnos-native/app.new.tgz（build-app.sh 从 panel 源码产出）, 不取定档 app.tgz;
+# - manifest 的 checksum 字段同步改写为 md5(app.new.tgz) 后入包（仅改工作副本, 不写回定档 manifest）;
+# - 定档 app.tgz 与 manifest 原样不动, 默认模式仍走定档路径保回归。
 set -euo pipefail
 
 NATIVE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJ_ROOT="$(dirname "$(dirname "$NATIVE_DIR")")"
 WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
+MAN_TMP=""
+trap 'rm -rf "$WORK" ${MAN_TMP:+"$MAN_TMP"}' EXIT
 
-# --- 0. checksum 不变式校验: checksum 字段必须等于 md5(app.tgz) ---
-APP_MD5="$(md5sum "$NATIVE_DIR/app.tgz" | awk '{print $1}')"
-MAN_CHKSUM="$(sed -n 's/^checksum[[:space:]]*=[[:space:]]*//p' "$NATIVE_DIR/manifest")"
-if [ "$APP_MD5" != "$MAN_CHKSUM" ]; then
-  echo "ERROR: manifest checksum($MAN_CHKSUM) != md5(app.tgz)($APP_MD5), 中止" >&2
-  exit 1
+FROM_SOURCE=0
+for arg in "$@"; do
+  case "$arg" in
+    --from-source) FROM_SOURCE=1 ;;
+    *) echo "ERROR: 未知参数 $arg (支持: --from-source)" >&2; exit 1 ;;
+  esac
+done
+
+# --- 0. 应用体选择 + checksum 不变式校验 ---
+if [ "$FROM_SOURCE" = 1 ]; then
+  APP_SRC="$NATIVE_DIR/app.new.tgz"
+  [ -f "$APP_SRC" ] || { echo "ERROR: --from-source 需要 app.new.tgz, 先跑 build-app.sh" >&2; exit 1; }
+  APP_MD5="$(md5sum "$APP_SRC" | awk '{print $1}')"
+  # manifest 工作副本: checksum 改写为 app.new.tgz 的 md5（定档 manifest 不动）
+  MAN_TMP="$(mktemp)"
+  sed "s/^checksum[[:space:]]*=.*/checksum                    = $APP_MD5/" \
+      "$NATIVE_DIR/manifest" > "$MAN_TMP"
+  MANIFEST_SRC="$MAN_TMP"
+  echo "from-source 模式: app.new.tgz md5=$APP_MD5 (checksum 已同步, 定档未动)"
+else
+  APP_SRC="$NATIVE_DIR/app.tgz"
+  MANIFEST_SRC="$NATIVE_DIR/manifest"
+  APP_MD5="$(md5sum "$APP_SRC" | awk '{print $1}')"
+  MAN_CHKSUM="$(sed -n 's/^checksum[[:space:]]*=[[:space:]]*//p' "$MANIFEST_SRC")"
+  if [ "$APP_MD5" != "$MAN_CHKSUM" ]; then
+    echo "ERROR: manifest checksum($MAN_CHKSUM) != md5(app.tgz)($APP_MD5), 中止" >&2
+    exit 1
+  fi
+  echo "checksum invariant OK: $APP_MD5"
 fi
-echo "checksum invariant OK: $APP_MD5"
 
 # --- 1. 组装中间目录 (fnpack 约定: app/ 目录为应用体) ---
 cp -a "$NATIVE_DIR/cmd"     "$WORK/cmd"
 cp -a "$NATIVE_DIR/config"  "$WORK/config"
 cp -a "$NATIVE_DIR/wizard"  "$WORK/wizard"
-cp -a "$NATIVE_DIR/manifest" "$WORK/manifest"
+cp -a "$MANIFEST_SRC" "$WORK/manifest"
 cp -a "$PROJ_ROOT/ICON.PNG"     "$WORK/ICON.PNG"
 cp -a "$PROJ_ROOT/ICON_256.PNG" "$WORK/ICON_256.PNG"
 mkdir "$WORK/app"
-tar xzf "$NATIVE_DIR/app.tgz" -C "$WORK/app"
+tar xzf "$APP_SRC" -C "$WORK/app"
 
 # --- 2. fnpack build -d . 结构校验 (产物丢弃) ---
 if ! ( cd "$WORK" && fnpack build -d . ); then
@@ -62,11 +90,11 @@ echo "fnpack 结构校验通过 (fnpack 产物丢弃, 不发布)"
 # --- 3. 确定性重拼最终 fpk ---
 # app.tgz 与 manifest 从 fnos-native/ 定档直取, 不经 fnpack 产物,
 # 保证内层 app.tgz 字节原样(md5=checksum) 且 manifest 逐字节不变。
-python3 - "$WORK" "$NATIVE_DIR" <<'PYEOF'
+python3 - "$WORK" "$APP_SRC" "$MANIFEST_SRC" <<'PYEOF'
 import gzip, os, pwd, grp, shutil, stat, sys, tarfile
 from fnmatch import fnmatch
 
-work, native = sys.argv[1], sys.argv[2]
+work, app_src, manifest_src = sys.argv[1], sys.argv[2], sys.argv[3]
 out = os.path.join(work, "wechat-on-cloud.fpk")
 os.chdir(work)
 
@@ -75,9 +103,9 @@ entries = ["app.tgz"] + sorted(
     ["cmd", "config", "ICON.PNG", "ICON_256.PNG", "manifest", "wizard"],
     key=str.lower,
 )
-# 定档来源覆盖: app.tgz / manifest 以 fnos-native/ 为准 (copy2 保字节与 mtime)
-shutil.copy2(os.path.join(native, "app.tgz"), os.path.join(work, "app.tgz"))
-shutil.copy2(os.path.join(native, "manifest"), os.path.join(work, "manifest"))
+# 定档来源覆盖: app.tgz / manifest 以选定的源为准 (copy2 保字节与 mtime)
+shutil.copy2(app_src, os.path.join(work, "app.tgz"))
+shutil.copy2(manifest_src, os.path.join(work, "manifest"))
 
 class BareDirInfo(tarfile.TarInfo):
     """目录条目名字不带尾斜杠, 与原 fpk (Go tar 写入) 清单一致"""

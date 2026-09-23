@@ -69,6 +69,11 @@ export interface Settings {
   // 实例桌面深色模式：由面板顶栏的主题开关统一控制（管理员）。true=实例内应用走深色。
   // 既作为新建/重启实例的初始明暗（经容器环境 WOC_DARK 下发），也用于对运行中实例实时切换。
   desktopDark?: boolean;
+  // 孤儿 bind 数据目录的额外扫描父目录（1.4.9-5）。孤儿判定不能只看 env WOC_DATA_DIR：
+  // 历史上实例可以指定任意 dataDir，删实例后目录散落在各共享目录。这里存管理员
+  // 确认过的扫描根（migrate-orphans 脚本产出的候选清单勾选后写入），
+  // 与 env、现存实例 dataDir 取并集 → listOrphanVolumes 的 bind 扫描集合。
+  orphanScanDirs?: string[];
 }
 
 interface Data {
@@ -154,6 +159,17 @@ export function getDesktopDark(): boolean {
 
 export function setDesktopDark(v: boolean) {
   getSettings().desktopDark = !!v;
+  persist();
+}
+
+// 孤儿 bind 扫描目录集合（读 = 规整去重去空；写 = 校验绝对路径，见路由层）。
+export function getOrphanScanDirs(): string[] {
+  const s = getSettings().orphanScanDirs;
+  return Array.isArray(s) ? s.filter((x) => typeof x === 'string' && x.trim() !== '') : [];
+}
+
+export function setOrphanScanDirs(dirs: string[]) {
+  getSettings().orphanScanDirs = Array.from(new Set(dirs.map((d) => d.trim()).filter(Boolean)));
   persist();
 }
 
@@ -379,6 +395,25 @@ export function createInstance(
     if (u && u.role !== 'admin' && !u.allowedInstances.includes(id)) {
       u.allowedInstances.push(id);
     }
+  }
+  persist();
+  return inst;
+}
+
+// 设置/清除实例的数据父目录（attach-data 向导用：孤儿 bind 目录挂回后回写
+// instance.dataDir=base_dir，后续 runInstance 的 dataBind()/dataDirFor() 才会指过去）。
+// 校验：绝对路径且不含 ..（与创建路由同口径）。
+export function setInstanceDataDir(id: string, baseDir: string | null) {
+  const inst = findInstance(id);
+  if (!inst) throw new Error('实例不存在');
+  if (baseDir === null) {
+    delete inst.dataDir;
+  } else {
+    const d = String(baseDir).trim().replace(/\/+$/, '');
+    if (!d.startsWith('/') || /(^|\/)\.\.(\/|$)/.test(d) || d.includes('\0')) {
+      throw new Error('数据目录需为绝对路径（不含 ..）');
+    }
+    inst.dataDir = d;
   }
   persist();
   return inst;

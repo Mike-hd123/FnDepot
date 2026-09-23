@@ -32,6 +32,9 @@ import {
   publicInstance,
   getDesktopDark,
   setDesktopDark,
+  getOrphanScanDirs,
+  setOrphanScanDirs,
+  setInstanceDataDir,
   APP_TYPES,
   type AppType,
   type User,
@@ -65,6 +68,8 @@ import {
   typeInInstance,
   keyInInstance,
   listOrphanVolumes,
+  listOrphanBindings,
+  removeOrphanBinding,
   removeVolume,
   listOrphanContainers,
   removeContainerById,
@@ -555,6 +560,106 @@ app.delete('/api/admin/orphan-volumes/:name', async (req, reply) => {
   }
 });
 
+// ---------- 孤儿 bind 数据目录（E2.5） ----------
+// bind 形态下删实例永不动数据目录（防误删聊天记录），代价是目录成孤儿。本组路由把
+// 孤儿目录显性化：扫描展示（docker.ts 30s 缓存）→ 向导式挂回（attach）→ 确认删除。
+app.get('/api/admin/orphan-bindings', async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  try {
+    return { bindings: await listOrphanBindings() };
+  } catch (e: any) {
+    return reply.code(500).send({ error: e?.message || '扫描孤儿目录失败' });
+  }
+});
+
+// 扫描目录设置（设置弹窗用）：GET 读、PUT 全量替换（后端规整去重）。
+app.get('/api/admin/orphan-scan-dirs', async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  return { dirs: getOrphanScanDirs() };
+});
+app.put('/api/admin/orphan-scan-dirs', async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  const dirs = (req.body as any)?.dirs;
+  if (!Array.isArray(dirs)) return reply.code(400).send({ error: 'dirs 需为字符串数组' });
+  for (const d of dirs) {
+    if (typeof d !== 'string' || !d.trim().startsWith('/') || d.includes('..')) {
+      return reply.code(400).send({ error: `目录不合法（需绝对路径且不含 ..）：${d}` });
+    }
+  }
+  setOrphanScanDirs(dirs.map(String));
+  return { ok: true, dirs: getOrphanScanDirs() };
+});
+
+// 把孤儿 bind 目录挂给一个现存实例（向导第一步）：绑定 dataDir + volumeName 基名，
+// 立即强制重扫让该目录从孤儿列表消失。数据本体零拷贝——只改实例记录指过去。
+// 实例当前若有数据（bind 或命名卷），是否迁移由前端提示用户先停实例并自行确认。
+app.post('/api/admin/instances/:id/attach-data', async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  const id = (req.params as any).id;
+  const inst = findInstance(id);
+  if (!inst) return reply.code(404).send({ error: '实例不存在' });
+  const path = String((req.body as any)?.path ?? '').trim().replace(/\/+$/, '');
+  if (!path.startsWith('/') || path.includes('..')) {
+    return reply.code(400).send({ error: '目录路径不合法' });
+  }
+  const base = path.split('/').pop() || '';
+  if (!base.startsWith('woc-data-')) {
+    return reply.code(400).send({ error: '只能挂 woc-data- 前缀的数据目录' });
+  }
+  // 该目录不能正被别的现存实例占用
+  if (listInstances().some((i) => i.id !== id && (i.volumeName === base || (i.dataDir || '').split('/').pop() === base))) {
+    return reply.code(409).send({ error: '该数据目录已挂在其它实例上' });
+  }
+  const parentDir = path.slice(0, path.length - base.length).replace(/\/+$/, '') || '/';
+  inst.volumeName = base; // bindBase() 语义：卷基名钉死为目录名（须在 persist 前改）
+  try {
+    setInstanceDataDir(id, parentDir);
+  } catch (e: any) {
+    return reply.code(400).send({ error: e?.message || '绑定失败' });
+  }
+  await listOrphanBindings(true).catch(() => undefined); // 强制重扫刷新缓存
+  appendPanelLog('INFO', `实例「${inst.name}」(id=${id}) 已绑定数据目录 ${path}`);
+  return {
+    ok: true,
+    instance: publicInstance(inst),
+    note: '已绑定。数据挂载在容器重建时生效 —— 请「重启实例」（或停止后再启动）后生效。',
+  };
+});
+
+// 解除实例的数据目录绑定（回到默认 WOC_DATA_DIR 形态；不删任何数据）。
+app.post('/api/admin/instances/:id/detach-data', async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  const inst = findInstance((req.params as any).id);
+  if (!inst) return reply.code(404).send({ error: '实例不存在' });
+  setInstanceDataDir(inst.id, null);
+  await listOrphanBindings(true).catch(() => undefined);
+  appendPanelLog('INFO', `实例「${inst.name}」(id=${inst.id}) 已解除数据目录绑定（数据未删除）`);
+  return { ok: true, instance: publicInstance(inst) };
+});
+
+// 显式删除一个孤儿 bind 目录：二次确认（name 必须与目录基名完全一致）+ 占用校验。
+app.post('/api/admin/orphan-bindings/delete', async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  const path = String((req.body as any)?.path ?? '').trim().replace(/\/+$/, '');
+  const name = String((req.body as any)?.name ?? '').trim();
+  const base = path.split('/').pop() || '';
+  if (!path.startsWith('/') || path.includes('..') || !base.startsWith('woc-data-')) {
+    return reply.code(400).send({ error: '目录路径不合法' });
+  }
+  if (name !== base) {
+    return reply.code(400).send({ error: '二次确认失败：输入的名称与目录名不一致' });
+  }
+  const baseDir = path.slice(0, path.length - base.length).replace(/\/+$/, '') || '/';
+  try {
+    await removeOrphanBinding(base, baseDir);
+    await listOrphanBindings(true).catch(() => undefined);
+    appendPanelLog('INFO', `已删除孤儿数据目录 ${path}（管理员二次确认）`);
+    return { ok: true };
+  } catch (e: any) {
+    return reply.code(500).send({ error: e?.message || '删除目录失败' });
+  }
+});
+
 // ---------- 飞牛共享授权目录（fnOS 应用开放 API）----------
 // 面板在 fnOS 桌面 iframe 内时，前端可用 @trimjs/web-app 的 pickSharedFile 让管理员
 // 直接选目录授权给本应用；授权结果由系统持久化，后端经 Unix socket 查询列表作为
@@ -664,9 +769,13 @@ app.delete('/api/admin/instances/:id', async (req, reply) => {
   const inst = findInstance(id);
   if (!inst) return reply.code(404).send({ error: '实例不存在' });
   appendPanelLog('INFO', `删除实例「${inst.name}」(id=${id})${purge ? ' · 同时清除数据卷' : ' · 保留数据卷'}`);
+  const wasDataDir = inst.dataDir || '';
   await removeInstanceContainer(inst, purge);
   removeInstanceRecord(id);
   controlHolders.delete(id);
+  // 删完立刻强制重扫孤儿目录（带上被删实例的父目录——它已不在现存实例列表里，
+  // 不追加的话若它是该父目录下最后一个引用，扫描集合会漏掉这个父目录）。
+  await listOrphanBindings(true, wasDataDir ? [wasDataDir] : undefined).catch(() => undefined);
   return { ok: true };
 });
 
@@ -1719,6 +1828,25 @@ const SOCK_PATH = process.env.SOCK_PATH || '';
 const listeners = [];
 if (SOCK_PATH) {
   const { unlinkSync, existsSync } = await import('node:fs');
+  const { createConnection } = await import('node:net');
+  // A5 启动自检「bind 失败必须死」：旧版无条件 unlink 再 bind → 与活体面板并发启动时
+  // 后起者抢走路径、先起者留僵尸 LISTEN inode（盘上同路径多 inode + 网关连到旧 inode）。
+  // 现在：sock 能 connect 上 = 已有活体面板 → 直接退出（fnOS keepalive 之后会拉起
+  // 干净实例，收敛比"带病共存"快）；connect 失败 = 陈旧 sock 文件 → unlink 重建。
+  const probeLive = await new Promise<boolean>((resolve) => {
+    if (!existsSync(SOCK_PATH)) return resolve(false);
+    const s = createConnection({ path: SOCK_PATH });
+    const done = (r: boolean) => { s.destroy(); resolve(r); };
+    s.setTimeout(1000);
+    s.on('connect', () => done(true));
+    s.on('error', () => done(false));
+    s.on('timeout', () => done(false));
+  });
+  if (probeLive) {
+    console.error(`[panel] ${SOCK_PATH} 已有活体面板在监听，拒绝双起，退出`);
+    appendPanelLog('ERROR', `启动自检：${SOCK_PATH} 已有活体面板监听 → 本进程退出（防僵尸 LISTEN inode）`);
+    process.exit(1);
+  }
   if (existsSync(SOCK_PATH)) unlinkSync(SOCK_PATH);
   await app.listen({ path: SOCK_PATH });
   console.log(`[panel] 监听 unix:${SOCK_PATH}`);
@@ -1727,7 +1855,7 @@ if (SOCK_PATH) {
   await app.listen({ port: PORT, host: HOST });
 }
 // 另开 TCP 8080 端口，用 Node net 转发到 socket（Fastify 一个 app 只能 listen 一次）
-try {
+{
   const { createServer } = await import('node:net');
   const { connect } = await import('node:net');
   const proxy = createServer(async (client) => {
@@ -1737,14 +1865,20 @@ try {
     upstream.on('error', () => client.end());
     client.on('error', () => upstream.end());
   });
-  await new Promise<void>((resolve, reject) => {
-    proxy.listen(PORT, HOST, resolve);
-    proxy.on('error', reject);
-  });
-  console.log(`[panel] TCP 转发监听 http://${HOST}:${PORT}`);
-  appendPanelLog('INFO', `TCP 8080 转发监听 · ${HOST}:${PORT}`);
-} catch (e) {
-  appendPanelLog('WARN', `TCP 转发启动失败: ${e.message}`);
+  // 旧版 bind 失败只 WARN 继续跑 → 僵尸波"降级裸 unix sock"存活（网关连不上 TCP、
+  // 页面转圈的元凶之一）。TCP 端口是本部署的必备监听面，失败即整进程退出，
+  // 绝不带着残缺监听苟活。
+  try {
+    await new Promise<void>((resolve, reject) => {
+      proxy.listen(PORT, HOST, resolve);
+      proxy.on('error', reject);
+    });
+    console.log(`[panel] TCP 转发监听 http://${HOST}:${PORT}`);
+    appendPanelLog('INFO', `TCP 8080 转发监听 · ${HOST}:${PORT}`);
+  } catch (e: any) {
+    appendPanelLog('ERROR', `TCP ${HOST}:${PORT} 监听失败（${e?.code || e?.message}）→ 面板退出（禁止降级裸 unix sock）`);
+    process.exit(1);
+  }
 }
 startUpdateChecker(); // 后台检测新版（best-effort，失败静默）
 // 日志保留期清理：启动后跑一次 + 每 24h 一次，删除超过一年的日志行（unref 不阻止退出）。

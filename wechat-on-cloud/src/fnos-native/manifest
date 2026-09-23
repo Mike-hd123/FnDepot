@@ -1,5 +1,5 @@
 appname                    = wechat-on-cloud
-version                    = 1.4.9-3
+version                    = 1.4.9-6
 display_name               = 云微
 desc                       = WeChatOnCloud 官方 Linux 微信面板（原生部署）
 platform                   = all
@@ -18,5 +18,5 @@ desktop_applaunchname      = wechat-on-cloud.panel
 disable_authorization_path = false
 ; 1.5.0 纯 ipvlan 单网卡 + 数据卷 bind 主机目录
 ; 1.4.9 跟随上游版本号；本地改动含创建实例可选数据目录 + 多实例IP自增
-changelog                  = UI: 加回一键授权目录按钮
-checksum                    = 8bc4afb9f00b1a6538af7b9301cce32b
+changelog                  = 1.4.9-6: 承接1.4.9-5（面板数据落@appshare抗升级覆盖；stop清理app.sock防重启循环；孤儿bind目录扫描/绑定/删除管理+创建实例复用旧目录）；修复恢复向导孤儿列表同一bind目录重复展示两条（命名卷扫描不再混入bind目录）
+checksum                    = de58c35878bbd92aa2b4ea383973e14e
