@@ -1,5 +1,7 @@
-# 注意：*.fpk 是 fnOS 应用市场分发产物，必须入库 —— 用户 git clone 后靠 fpk 安装。
+# fpk 分发已切 GitHub Release（用户拍板 4bbf1c7：不入库），fnpack.json 索引指向 Release 下载 URL。
+*.fpk
 *.log
 .DS_Store
 # 构建下载物：由 build.sh 期从上游 Release 拉取，不入库
 ezbookkeeping/src/*.tar.gz
+.hermes/

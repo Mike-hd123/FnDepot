@@ -26,18 +26,16 @@
       "is_docker": false,
       "service_port": "8080",
       "releases": {
-        "1.4.9-4": {
-          "changelog": "v4（2026-09-23）：跟随上游 v1.4.9；本地改动：创建实例可选数据目录 + 多实例IP自增。本版本仅切换分发渠道到 GitHub Release（fpk 二进制与 1.4.9 一致，sha256 相同），版本号进位以触发 appcenter 更新提示。",
-          "updated_at": "2026-09-23T11:03:00+08:00",
+        "1.4.9-6": {
+          "changelog": "v6（2026-09-24）：1.4.9-5 启停幂等修复+孤儿bind目录全链路（直起真server、/proc/PID/exe+app.sock双判活、stop清sock、EADDRINUSE直接退出、dataBind治本复用目录挂错、恢复向导卷/目录双报消除）；1.4.9-6 面板数据落 @appshare 抗升级覆盖。fpk 走主 Release v2026.09.23。",
+          "updated_at": "2026-09-24T08:00:00+08:00",
           "packages": {
             "all": {
-              "url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.23/wechat-on-cloud.fpk",
-              "sha256": "a8d6872fae742086b38360abdb859082d6e3a2c2f5e0b0647d2f002b75633415",
-              "size": 15550745
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.23/wechat-on-cloud.fpk",
+              "sha256": "36972d8c284c5db581832eb4d01e7437f13409d997c1d765649f0504db5c1b98",
+              "size": 15564416
             }
-          },
-          "sha256": "d5fb5d71677a3ca23e591b79ae7ca5aef16da4fd7faa76d8fd0d84608e0e4ff1",
-          "size": 15416672
+          }
         }
       }
     },
@@ -90,17 +88,6 @@
       "is_docker": false,
       "service_port": "8081",
       "releases": {
-        "0.13.7-1": {
-          "changelog": "v1（2026-09-23）：同步上游 v0.13.7（厂商预设修复：火山方舟 doubao-seed-1-6-250615 补 modelRatio、Anthropic url_mode 改 anthropic_message、OpenRouter 补 DeepSeek V4 思考模式开关）。二进制=官方 octopus-linux-amd64.zip 原样（sha256 3031d85b…，与 SHA256SUMS 一致）。保留本地 gateway sidecar v8 补丁。修正上一版登记错位：Release v2026.09.23 的 octopus.fpk 实为 0.13.5-1 包，本版起 fpk 挂主 Release v2026.09.23。",
-          "updated_at": "2026-09-23T17:40:00+08:00",
-          "packages": {
-            "all": {
-              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.23/octopus.fpk",
-              "sha256": "b4032d836c885177457599941d6e9bd62b6321ea8ddf9b5301b9f7567f99e408",
-              "size": 22643403
-            }
-          }
-        },
         "0.13.8-1": {
           "changelog": "v1（2026-09-23）：同步上游 v0.13.8（上游深夜连发 4 commit：思考等级控制修复、日志布局优化、webui 适配）。二进制=官方 octopus-linux-amd64.zip 原样（sha256 a862118c…，与 SHA256SUMS 一致），src 219 文件全量核对。保留本地 gateway sidecar v8 补丁。Release v2026.09.23 的 octopus.fpk 已替换为 0.13.8-1 包。",
           "updated_at": "2026-09-23T21:35:00+08:00",
