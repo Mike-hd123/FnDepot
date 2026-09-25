@@ -1,5 +1,5 @@
 #!/bin/bash
-# HyAtlas v4.1.1-6 fpk 构建（B2: 内置 ORT int8 bge-large-zh + shares 实体化治理 + index 写入合并）
+# HyAtlas v4.1.1-8 fpk 构建（B2: 内置 ORT int8 bge-large-zh + shares 实体化治理 + index 写入合并）
 #
 # 输入来源：
 #   - fpk 控制层（cmd/config/wizard/manifest/ICON）：本目录归档原件
@@ -19,10 +19,10 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-OUT="${1:-/vol2/1000/download/hyatlas-4.1.1-6-x86.fpk}"
+OUT="${1:-/vol2/1000/download/hyatlas-4.1.1-8-x86.fpk}"
 REF_FPK="/vol2/1000/download/hyatlas-4.1.1-4-x86.fpk"
 
-SHA_BIN="8b054e70a3630c4e6e9a64da45e9452d16d4ad91effc9f79febadac0cd7333bd"
+SHA_BIN="72f88be162892148b85df24c8263054922b83cde23929eb0b32c0469833b7211"
 SHA_ONNX="8a3f371a7e535e25d3d5a0ff0c0501a605ef0b62577800d2bf4b1fc76d6cbcf1"
 SHA_ORT="99458e9d185dfa1a9b5f6510790ede3bedc25dea378adb904ce292b517eeaecf"
 SHA_TOK="7dfbf1966ebf99d471c3796e9b457329d2b2182b817e144f1e904b957745c839"
@@ -194,8 +194,8 @@ fi
 # 2) manifest 版本/appname
 GOT_VER=$(tar -xOf "$OUT" manifest | awk -F'= *' '$1 ~ /^version/ {print $2}' | tr -d ' ')
 GOT_APP=$(tar -xOf "$OUT" manifest | awk -F'= *' '$1 ~ /^appname/ {print $2}' | tr -d ' ')
-if [ "$GOT_VER" != "4.1.1-6" ] || [ "$GOT_APP" != "hyatlas" ]; then
-  echo "FAIL: manifest appname=$GOT_APP version=$GOT_VER (expected hyatlas 4.1.1-6)" >&2; FAIL=1
+if [ "$GOT_VER" != "4.1.1-8" ] || [ "$GOT_APP" != "hyatlas" ]; then
+  echo "FAIL: manifest appname=$GOT_APP version=$GOT_VER (expected hyatlas 4.1.1-8)" >&2; FAIL=1
 fi
 
 # 3) shares 自愈回调在位（install/upgrade 双回调都含特征串）
@@ -223,5 +223,5 @@ if [ "$FAIL" != "0" ]; then
   echo "STRUCTURE CHECK FAILED" >&2
   exit 1
 fi
-echo "PASS: structure ok (manifest 4.1.1-6, shares-heal callbacks present, app payload complete)"
+echo "PASS: structure ok (manifest 4.1.1-8, shares-heal callbacks present, app payload complete)"
 echo "$OUT  $((GOT_SIZE/1024/1024))MB  sha256=$GOT_SHA"

@@ -802,20 +802,48 @@ func (s *MemoryStore) persistIndexLocked() error {
 }
 
 // rebuildIndex reconstructs the exact index from chromem by enumerating all docs.
+//
+// Stability hardening (2026-09-26, t_a7ff4ed2):
+//  1. every per-layer failure path logs WARNING/ERROR — the old silent
+//     `continue` is how a 384d-vs-1024d dim mismatch wiped the index with zero
+//     diagnostics (chromem returns "vectors must have the same length").
+//  2. overwrite guard: if this rebuild indexed < 50% of what chromem actually
+//     holds (or < 50% of the previous on-disk index), persist is REFUSED and
+//     the previous doc_index.json stays untouched. chromem remains the source
+//     of truth; a broken rebuild must not clobber a good index.
+//  3. the text-query fallback embeds via the configured embedder, which may be
+//     a remote wrapper still starting up — wait for it (up to 60s, exponential
+//     backoff) before giving up a layer.
 func (s *MemoryStore) rebuildIndex() error {
 	// chromem has no "list all"; enumerate via QueryEmbedding with zero vector over each layer.
+	expected := 0
+	started := len(s.index) // normally 0; entries already in the map count as indexed
+	var embedWaited, embedReady bool
+	var failedLayers []string
 	for _, l := range memory.All() {
 		col := s.cols[l]
 		n := col.Count()
 		if n == 0 {
 			continue
 		}
+		expected += n
 		// zero vector queries return all docs (score ~0) in arbitrary order.
 		res, err := col.QueryEmbedding(s.ctx, make([]float32, s.dimFor(l)), n, nil, nil)
 		if err != nil {
-			// if zero-vector fails, fall back to a neutral query
+			log.Printf("WARNING hyatlas: rebuildIndex %s: zero-vector query failed for %d docs (query dim=%d): %v",
+				l, n, s.dimFor(l), err)
+			// if zero-vector fails, fall back to a neutral query. The fallback
+			// embeds through the configured embedder — give a slow-to-start
+			// remote embedder a chance before failing the layer (fix 3).
+			if s.needsEmbedderProbe() && !embedWaited {
+				embedWaited = true
+				embedReady = s.waitForEmbedder(60 * time.Second)
+			}
 			res, err = col.Query(s.ctx, "memory", n, nil, nil)
 			if err != nil {
+				log.Printf("ERROR hyatlas: rebuildIndex %s: fallback query failed, %d docs NOT indexed (embedder ready=%v): %v",
+					l, n, embedReady, err)
+				failedLayers = append(failedLayers, fmt.Sprintf("%s(%d docs)", l, n))
 				continue
 			}
 		}
@@ -823,7 +851,87 @@ func (s *MemoryStore) rebuildIndex() error {
 			s.index[r.ID] = docIndexFrom(r.ID, string(l), r.Content, r.Metadata)
 		}
 	}
+	indexed := len(s.index) - started
+
+	// --- fix 2: overwrite guard ---
+	// Both references are "how much SHOULD be in the index": the live chromem
+	// doc count (expected) and the previous persisted index (oldCount). If the
+	// rebuild recovered less than half of either, refuse to persist.
+	if reason := s.persistGuard(indexed, expected); reason != "" {
+		log.Printf("ERROR hyatlas: rebuildIndex REFUSED to overwrite doc_index.json: %s (indexed=%d expected=%d failedLayers=%v) — previous index kept; fix the embedder/dims config and restart",
+			reason, indexed, expected, failedLayers)
+		return nil
+	}
+	if len(failedLayers) > 0 {
+		log.Printf("WARNING hyatlas: rebuildIndex completed with %d failed layer(s) %v (%d/%d docs indexed)",
+			len(failedLayers), failedLayers, indexed, expected)
+	}
 	return s.persistIndex()
+}
+
+// persistGuard returns a non-empty refusal reason when writing an index of
+// `indexed` entries would destroy more than half of either reference count:
+// the live chromem doc total (expected) or the previous on-disk index.
+// Empty string = safe to persist. A missing/unparseable old index is not a
+// reason (there is nothing worth protecting).
+func (s *MemoryStore) persistGuard(indexed, expected int) string {
+	if expected > 0 && indexed*2 < expected {
+		return "recovered <50% of chromem docs"
+	}
+	if oldCount := countIndexFile(s.indexPath); oldCount > 0 && indexed*2 < oldCount {
+		return fmt.Sprintf("new index <50%% of previous doc_index.json (%d entries)", oldCount)
+	}
+	return ""
+}
+
+// countIndexFile cheaply counts top-level keys of a persisted doc index
+// (values decoded as RawMessage so the 94 MB file parse stays fast).
+// Returns 0 when the file is missing or unreadable.
+func countIndexFile(path string) int {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		return 0
+	}
+	return len(m)
+}
+
+// needsEmbedderProbe reports whether the configured embedder talks to an
+// external process (whose startup can race with ours). Embedded/local models
+// are in-process and always ready by the time rebuildIndex runs.
+func (s *MemoryStore) needsEmbedderProbe() bool {
+	_, remote := s.embed.(*OpenAIEmbedder)
+	return remote
+}
+
+// waitForEmbedder probes the embedder with exponential backoff (500ms..5s)
+// until it answers or maxWait elapses. Returns true when the probe succeeded.
+func (s *MemoryStore) waitForEmbedder(maxWait time.Duration) bool {
+	deadline := time.Now().Add(maxWait)
+	backoff := 500 * time.Millisecond
+	for {
+		_, err := s.embed.Embed(s.ctx, "hyatlas startup probe")
+		if err == nil {
+			return true
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			log.Printf("WARNING hyatlas: embedder not ready after %v, giving up waiting: %v", maxWait, err)
+			return false
+		}
+		if backoff > remaining {
+			backoff = remaining
+		}
+		log.Printf("INFO hyatlas: waiting for embedder (%v): %v", backoff, err)
+		time.Sleep(backoff)
+		backoff *= 2
+		if backoff > 5*time.Second {
+			backoff = 5 * time.Second
+		}
+	}
 }
 
 func (s *MemoryStore) dimFor(l memory.Layer) int {
