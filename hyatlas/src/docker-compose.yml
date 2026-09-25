@@ -1,0 +1,37 @@
+# HyAtlas v4.0 — Docker (single Go binary, embedded BGE-small)
+#
+# Usage:
+#   cp .env.example .env  # set HYATLAS_LLM_KEY
+#   docker compose up -d --build
+#   curl http://127.0.0.1:19528/healthz
+#   open http://127.0.0.1:19528/dashboard/
+#
+# One Go binary, no Python, no sidecar vector DB, no HTTP embed subprocess.
+
+services:
+  hyatlas:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hyatlas-memory:4.0.1
+    container_name: hyatlas-memory
+    ports:
+      - "19528:19528"
+    environment:
+      HYATLAS_PORT: "19528"
+      HYATLAS_LLM_BASE: ${HYATLAS_LLM_BASE:-https://inference-api.nousresearch.com/v1}
+      HYATLAS_LLM_MODEL: ${HYATLAS_LLM_MODEL:-poolside/laguna-s-2.1:free}
+      HYATLAS_LLM_KEY: ${HYATLAS_LLM_KEY:-}
+      HYATLAS_EMBED_BASE: bge
+    volumes:
+      - hyatlas_data:/data/hyatlas
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:19528/healthz"]
+      interval: 15s
+      timeout: 5s
+      start_period: 10s
+      retries: 8
+
+volumes:
+  hyatlas_data:

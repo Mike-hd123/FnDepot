@@ -1,0 +1,171 @@
+#!/bin/bash
+# cmd/main — HyAtlas v4 (Go) 进程管理（v4.1.1-3 降权版）
+# 应用监听 TCP 19528 (loopback)；gateway sidecar 监听 APPDEST/app.sock 转 TCP（手机端 /app/hyatlas 路由）
+# v4.1.1-3: 进程以专用用户运行（privilege username=hy-memory；installer 注入 TRIM_USERNAME）。
+#           root 调用时经 setpriv 降权拉起；以运行用户身份调用时直跑。数据/日志/pid 均落在该用户可写路径。
+set -u
+
+APP_DIR="${TRIM_APPDEST:-/vol1/@appcenter/hyatlas}"
+# 数据目录: 复用现役 v3 的 /var/apps/hyatlas/shares (→ /vol1/@appshare/hyatlas)，v4 数据子目录独立于 v3
+APP_SHARE="${TRIM_SHARE_DIR:-}"
+if [ -z "${APP_SHARE}" ]; then
+  APP_SHARE="/var/apps/hyatlas/shares"
+fi
+SHARE_ROOT="${APP_SHARE}/hyatlas"
+DATA_DIR="${SHARE_ROOT}/go-data"
+VAR_DIR="${TRIM_PKGVAR:-/vol1/@appdata/hyatlas}"
+LOG_FILE="${VAR_DIR}/panel.log"
+PID_FILE="${VAR_DIR}/panel.pid"
+GW_PID_FILE="${VAR_DIR}/gateway.pid"
+
+# ── 运行用户（install_callback 兜底保证存在；正常路径由 installer 注入 TRIM_USERNAME）──
+RUN_USER="${TRIM_USERNAME:-hy-memory}"
+
+# ── HOME/TMPDIR: ORT 推理缓存写 $HOME/.cache，必须落 VAR_DIR（不能写 /root）──
+export HOME="${VAR_DIR}/home"
+export TMPDIR="${VAR_DIR}/tmp"
+mkdir -p "$HOME" "$TMPDIR" 2>/dev/null || true
+chmod 700 "$TMPDIR" 2>/dev/null || true
+
+# ── 可写性自愈: 历史以 root 跑时遗留的 root 属主日志/pid 会卡住降权进程。
+# 以「运行用户」身份探测可写性（root 万能写，root 自测无意义），不可写即删除重建 ──
+for f in "$LOG_FILE" "${VAR_DIR}/gateway.log" "$PID_FILE" "$GW_PID_FILE"; do
+  [ -e "$f" ] || continue
+  if [ "$(id -u)" = "0" ] && [ -n "${RUN_UID:-}" ] && [ -n "${RUN_GID:-}" ]; then
+    if ! setpriv --reuid="$RUN_UID" --regid="$RUN_GID" --init-groups test -w "$f" 2>/dev/null; then
+      rm -f "$f" 2>/dev/null || true
+    fi
+  else
+    [ -w "$f" ] || rm -f "$f" 2>/dev/null || true
+  fi
+done
+
+# ── 日志文件属主归一: root 身份下若日志不存在,重定向会以 root 建文件 → 下轮降权写不进。预先建好并归运行用户 ──
+for f in "$LOG_FILE" "${VAR_DIR}/gateway.log"; do
+  [ -e "$f" ] || : > "$f" 2>/dev/null || true
+  [ -n "${RUN_UID:-}" ] && [ -n "${RUN_GID:-}" ] && chown "${RUN_UID}:${RUN_GID}" "$f" 2>/dev/null || true
+done
+
+mkdir -p "${DATA_DIR}" "${VAR_DIR}" 2>/dev/null || true
+
+RUN_UID="$(id -u "$RUN_USER" 2>/dev/null || true)"
+RUN_GID="$(id -g "$RUN_USER" 2>/dev/null || true)"
+
+# as_user: 用 exec 保证 & 后台子 shell 直接变成目标进程（PID_FILE 记录的就是服务本身）
+as_user() {
+  if [ -n "${RUN_UID:-}" ] && [ "$(id -u)" = "$RUN_UID" ]; then
+    exec nohup "$@"
+  elif [ "$(id -u)" = "0" ] && [ -n "${RUN_UID:-}" ] && [ -n "${RUN_GID:-}" ]; then
+    exec nohup setpriv --reuid="$RUN_UID" --regid="$RUN_GID" --init-groups --inh-caps=-all "$@"
+  else
+    echo "WARN: cannot drop privileges to ${RUN_USER} (uid=${RUN_UID:-} gid=${RUN_GID:-}), starting as $(id -un)" >&2
+    exec nohup "$@"
+  fi
+}
+
+is_running() {
+  if [ -f "$PID_FILE" ]; then
+    local pid
+    pid=$(cat "$PID_FILE" 2>/dev/null)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+gw_running() {
+  [ -f "$GW_PID_FILE" ] && kill -0 "$(cat "$GW_PID_FILE" 2>/dev/null)" 2>/dev/null
+}
+
+stop_app() {
+  if is_running; then
+    pid=$(cat "$PID_FILE")
+    kill "$pid" 2>/dev/null
+    sleep 3
+    kill -9 "$pid" 2>/dev/null || true
+    rm -f "$PID_FILE"
+  fi
+}
+
+stop_gw() {
+  if [ -f "$GW_PID_FILE" ]; then
+    gwpid=$(cat "$GW_PID_FILE" 2>/dev/null)
+    if [ -n "$gwpid" ] && kill -0 "$gwpid" 2>/dev/null; then
+      kill "$gwpid" 2>/dev/null
+      sleep 1
+      kill -9 "$gwpid" 2>/dev/null || true
+    fi
+    rm -f "$GW_PID_FILE"
+  fi
+  rm -f "${APP_DIR}/app.sock" 2>/dev/null || true
+}
+
+case "${1:-}" in
+  start)
+    is_running && gw_running && exit 0
+    # ── 配置预设: embedding 走内置 ORT int8 bge-large-zh (B2, 无 18080 依赖); LLM 走本机 Octopus 8081 ──
+    export HYATLAS_GO_HOST="127.0.0.1"
+    export HYATLAS_GO_PORT="19528"
+    export HYATLAS_GO_DATA="${DATA_DIR}"
+    # 向量引擎 base_url：环境变量兜底，未设时默认走本机 embedding wrapper (18080, MIGraphX fp16)
+    # 改法：HYATLAS_EMBED_BASE="bge" 回退进程内 ORT int8 路径（旧 B2 兼容）
+    export HYATLAS_EMBED_BASE="${HYATLAS_EMBED_BASE:-http://127.0.0.1:18080/v1}"
+    export HYATLAS_EMBED_MODEL="${HYATLAS_EMBED_MODEL:-bge-large-zh-v1.5}"
+    export HYATLAS_MODEL_DIR="${APP_DIR}/models"
+    LLM_BASE="http://127.0.0.1:8081/v1"
+    LLM_KEY=""
+    # 优先迁移现役 v3 的 llm.api_key；无则尝试 Octopus 通道1 key
+    V3_JSON="${SHARE_ROOT}/config/hy_memory.json"
+    if [ -f "$V3_JSON" ]; then
+      V3_KEY=$(python3 -c "import json;print(json.load(open('$V3_JSON')).get('llm',{}).get('api_key',''))" 2>/dev/null)
+      [ -n "${V3_KEY:-}" ] && LLM_KEY="$V3_KEY"
+      V3_MODEL=$(python3 -c "import json;print(json.load(open('$V3_JSON')).get('llm',{}).get('model',''))" 2>/dev/null)
+      [ -n "${V3_MODEL:-}" ] && export HYATLAS_LLM_MODEL="$V3_MODEL"
+    fi
+    if [ -z "${LLM_KEY:-}" ]; then
+      # Octopus 通道1 master key 兜底
+      LLM_KEY=$(sqlite3 "${TRIM_PKGVAR:-/vol1/@appdata/octopus}/data.db" "SELECT value FROM settings WHERE key='master_key' LIMIT 1;" 2>/dev/null)
+    fi
+    export HYATLAS_LLM_BASE="${LLM_BASE}"
+    export HYATLAS_LLM_KEY="${LLM_KEY:-}"
+
+    if ! is_running; then
+      as_user "${APP_DIR}/hyatlas-go" >> "$LOG_FILE" 2>&1 &
+      echo $! > "$PID_FILE"
+      sleep 2
+      if ! is_running; then
+        echo "HyAtlas start failed" >&2
+        [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "HyAtlas 启动失败，查看日志：${LOG_FILE}" > "${TRIM_TEMP_LOGFILE}"
+        stop_gw
+        exit 1
+      fi
+    fi
+
+    if ! gw_running; then
+      GATEWAY_SOCK_PATH="${APP_DIR}/app.sock" \
+      GATEWAY_BACKEND_PORT="19528" \
+      GATEWAY_PID_FILE="$GW_PID_FILE" \
+        as_user python3 "${APP_DIR}/gateway/gateway_proxy.py" >> "${VAR_DIR}/gateway.log" 2>&1 &
+      sleep 1
+      if ! gw_running || [ ! -S "${APP_DIR}/app.sock" ]; then
+        echo "gateway sidecar start failed" >&2
+        [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "网关 sidecar 启动失败，查看日志：${VAR_DIR}/gateway.log" > "${TRIM_TEMP_LOGFILE}"
+        stop_app
+        exit 1
+      fi
+    fi
+
+    echo "HyAtlas started on port 19528 (user: ${RUN_USER}, gateway socket: ${APP_DIR}/app.sock, data: ${DATA_DIR}, llm: ${LLM_BASE})"
+    ;;
+  stop)
+    stop_gw
+    stop_app
+    ;;
+  status)
+    is_running && exit 0 || exit 3
+    ;;
+  *)
+    exit 0
+    ;;
+esac

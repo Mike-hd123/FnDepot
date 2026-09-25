@@ -1,0 +1,54 @@
+# Built binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Runtime data store (regenerated on each run)
+data/
+models/
+
+# Editor / backup files
+*~
+*.swp
+*.swo
+
+# IDEs
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Go build cache
+.cache/
+
+# Test artifacts
+*.test
+*.out
+coverage.txt
+
+# Never commit — secrets, user data, session artifacts
+.env
+.env.local
+*.env
+!*.example.env
+hy_memory.json
+hy_memory.local.json
+auth.json
+credentials.json
+*.pem
+*.key
+
+# AI / agent session artifacts
+.hermes/
+handoff.md
+NOW.md
+TUNA_AGENT_OS_TASK_BRIEF.md
