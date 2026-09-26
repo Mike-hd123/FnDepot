@@ -5,3 +5,8 @@
 # 构建下载物：由 build.sh 期从上游 Release 拉取，不入库
 ezbookkeeping/src/*.tar.gz
 .hermes/
+# 本地备份/构建产物不入库
+*.bak_*
+build-fnos-*/
+hyatlas/scripts/reembed/reembed
+hyatlas/dist/
