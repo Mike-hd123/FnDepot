@@ -141,6 +141,17 @@
               "size": 24379202
             }
           }
+        },
+        "2.0.1-1": {
+          "changelog": "（2026-09-26，⚠️ 待实测+待上传 Release，勿分发）同步上游 v2.0.1：API token 权限收紧（token 不可再创建/吊销其他 token、清数据、改资料、配 2FA/外部认证/同步）、移动端新增记账按钮 widget、定时模板跨时区修复、OAuth2 登录按钮修复。本地定制延续：index 纯跳转页 + sidecar 剥前缀反代 + gzip、端口 8580、数据目录钉死 @appdata。二进制=上游官方 release 原样（sha256 93a96bf8…）。",
+          "updated_at": "2026-09-26T23:40:00+08:00",
+          "packages": {
+            "all": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/PENDING/ezbookkeeping.fpk",
+              "sha256": "2e4d67bef4b94ce6d29f101b672cce9f30759ce38e195d693858c5520c4b3b85",
+              "size": 24384400
+            }
+          }
         }
       }
     },
