@@ -24,6 +24,10 @@ services:
       # 实例资源相关（见 .env.example）：GPU 硬件编码默认关闭（避免 WSL2/虚拟 GPU 下 Xvnc 内存暴涨）；
       # 可选给每个实例设内存上限（GiB），0=不限制；watchdog 双阈值（soft 柔和自愈 / hard 强制重启）+ 巡检间隔。
       - WOC_ENABLE_GPU=${WOC_ENABLE_GPU:-}
+      # 宿主内核禁用了 IPv6 时实例 nginx 起不来；面板会自动检测，检测不到时可设 1 强制（见 .env.example）
+      - WOC_DISABLE_IPV6=${WOC_DISABLE_IPV6:-}
+      # 新建实例的数据放到指定的宿主目录（大容量盘 / 方便直接取微信收到的文件），见 .env.example
+      - WOC_DATA_ROOT=${WOC_DATA_ROOT:-}
       - WOC_INSTANCE_MEM_GB=${WOC_INSTANCE_MEM_GB:-}
       - WOC_INSTANCE_MEM_SOFT_MB=${WOC_INSTANCE_MEM_SOFT_MB:-1500}
       - WOC_INSTANCE_MEM_HARD_MB=${WOC_INSTANCE_MEM_HARD_MB:-2500}

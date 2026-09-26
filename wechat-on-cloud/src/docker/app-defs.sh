@@ -20,8 +20,10 @@ woc_app_def() {
       #   [0 0 0 0; 0 0 0 0; …] 不可逆 → transform.cc NOTREACHED → GPU/viz 进程连崩 3 次 → "GPU process isn't usable.
       #   Goodbye." 整个浏览器退出 → autostart 每 2s 重启 → 死循环黑屏（只有鼠标、无窗口）。旧版 Chromium 能容忍退化
       #   分辨率，149 变严格才暴露。--force-device-scale-factor=1 强制缩放为 1，使变换矩阵可逆，从根上消除该崩溃。
+      # --disable-metrics* / --disable-crash-reporter / --disable-breakpad：避免无头/容器场景下 Chromium
+      #   把延迟指标与崩溃上报缓存长期写进持久化数据卷（曾见 DeferredBrowserMetrics 异常膨胀到数百 GiB）。
       APP_BIN=/usr/bin/chromium
-      APP_LAUNCH="$APP_BIN --no-sandbox --no-first-run --no-default-browser-check --start-maximized --password-store=basic --disable-gpu --force-device-scale-factor=1 --disable-background-networking --user-data-dir=/config/chromium"
+      APP_LAUNCH="$APP_BIN --no-sandbox --no-first-run --no-default-browser-check --start-maximized --password-store=basic --disable-gpu --force-device-scale-factor=1 --disable-background-networking --disable-metrics --disable-metrics-reporting --disable-crash-reporter --disable-breakpad --user-data-dir=/config/chromium"
       APP_NAME=Chromium
       ;;
     custom)

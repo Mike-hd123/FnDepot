@@ -685,12 +685,18 @@ button {
   flex-direction: column;
   gap: 10px;
   border-radius: var(--r-card);
-  /* 平板/小屏友好：高度封顶可滚动，宽度不超视口 */
-  max-height: calc(100vh - 48px);
-  max-width: min(100%, 480px);
+  /* 弹窗高于视口时（矮屏、横屏手机、浏览器缩放）不能溢出页面：遮罩是居中对齐，内容会同时越出上下两端、
+     且哪头都滚不到（issue #125：「实例 → 安全」标题和保存按钮都被切掉）。限高 + 弹窗内滚动。 */
+  max-height: calc(100vh - 48px); /* 48 = 遮罩上下 padding */
+  max-height: calc(100dvh - 48px); /* 手机地址栏伸缩时以可见高度为准 */
+  max-width: min(100%, 480px); /* 本地定制：宽度不超视口 */
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
+}
+.modal > * {
+  /* 限高后纵向 flex 会先压缩子项（输入框被压成细条）而不是滚动——子项一律保持自身高度，超出部分交给滚动 */
+  flex-shrink: 0;
 }
 .modal h2 {
   margin: 0 0 4px;
@@ -712,6 +718,16 @@ button {
 .modal-actions {
   display: flex;
   gap: 10px;
+}
+/* 内容需滚动时，底部操作按钮吸底常驻：长表单不用滚到底才能「保存/取消」。
+   负 bottom + 同量 padding 抵消卡片内边距，让按钮区贴住弹窗底边、滚动内容不会从下面漏出来。 */
+.modal > .modal-actions:last-child {
+  position: sticky;
+  bottom: -24px;
+  margin: 0 -24px -24px;
+  padding: 12px 24px 24px;
+  background: var(--surface);
+  z-index: 1;
 }
 .modal-actions .btn {
   flex: 1;
@@ -1765,7 +1781,8 @@ button {
   font-size: 16px;
   font-weight: 700;
   flex: 1;
-  min-width: 0;
+  /* 手机上操作按钮多，至少给标题留几个字，否则用户看不出自己在哪个实例 */
+  min-width: 4.5em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1783,6 +1800,29 @@ button {
   cursor: pointer;
   border-radius: 9px;
   margin-left: -6px;
+}
+.ws-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0; /* 允许被压缩，放不下时在内部横向滑动 */
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  /* 给按钮的折痕阴影留出上下空间，否则 overflow 会把阴影裁掉 */
+  padding: 6px 2px;
+  margin: -6px 0;
+}
+.ws-actions::-webkit-scrollbar {
+  display: none;
+}
+@media (max-width: 767px) {
+  /* 右侧渐隐，提示还能往右滑 */
+  .ws-actions {
+    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
+    mask-image: linear-gradient(to right, #000 calc(100% - 20px), transparent);
+    padding-right: 16px;
+  }
 }
 .ws-action {
   flex: none;
@@ -2057,6 +2097,11 @@ button {
   height: 38px;
   width: 38px;
   flex: 0 0 auto;
+  /* 图标用 flex 居中：纯文字/字符在不同字体下基线不一，会出现「Fn 偏右、整体偏下」（issue #125） */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
   border: none;
   border-radius: 10px;
   cursor: pointer;
@@ -2089,6 +2134,10 @@ button {
   min-width: 40px;
   height: 32px;
   padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
   border: none;
   border-radius: 999px;
   cursor: pointer;
@@ -2139,6 +2188,15 @@ button {
   background: rgba(7, 193, 96, 0.16);
   -webkit-backdrop-filter: blur(3px);
   backdrop-filter: blur(3px);
+}
+.iv-files > * {
+  /* 面板限高 + 纵向 flex：默认所有子项都可被压缩，文件一多「选择文件上传」按钮会被挤成一条线（issue #125）。
+     只让文件列表伸缩滚动，其它子项保持自身高度。 */
+  flex-shrink: 0;
+}
+.iv-files > .files-list {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 .iv-files {
   position: absolute;

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { api, appProfile } from '../api';
 import { useUI } from '../ui';
@@ -84,6 +84,89 @@ function installSeamlessIme(win: Window, doc: Document, instId: string): () => v
   };
 }
 
+// 本机截图 / 图片直接粘进应用（issue #91，多人反馈）。
+// 背景：noVNC 在 keydown 里 preventDefault，浏览器的粘贴动作连同 paste 事件都被压掉，本机的图片永远到不了容器。
+// 做法：抢在 noVNC 之前截下 Ctrl/Cmd+V（只 stopImmediatePropagation，不 preventDefault），让浏览器照常派发
+// 带剪贴板数据的 paste 事件——它不依赖异步剪贴板 API，内网 http 访问下同样可用。实测 paste 在按键后同一任务内
+// 到达（约 4ms），早于 setTimeout(0)，所以在定时器里决定走哪条路：
+//   - 本机剪贴板有图片、且它比容器剪贴板「新」→ 上传写入容器 X 剪贴板并在容器里按 Ctrl+V（onImage）
+//   - 其余情况 → 在容器里按一次 Ctrl+V（onPlainPaste），粘贴的仍是容器剪贴板，与以前完全一致
+//     （例如在微信里复制一条消息再粘到别处——这条最常用的路径不能被改变）
+// 不能把截下的按键「合成事件」还给 noVNC：实测按键松开得快时，重放时修饰键已抬起，远端只收到一个 v。
+// 改由服务端 xdotool --clearmodifiers 按 Ctrl+V，与用户按多久无关。
+//
+// 「谁更新」：本机剪贴板里可能躺着很久以前的截图，而用户刚在微信里复制了一张图——此时应粘容器的。
+// 回到页面（focus）视为可能刚在外面复制/截图 → 本机为新；在桌面里 Ctrl/Cmd+C、X 或右键（微信里复制）→ 容器为新。
+// 但有些截图方式不让浏览器失焦（如 macOS 自带截图），只靠 focus 会把新截图误判为旧的——所以再看图片本身：
+// 和上次见过的不是同一张（类型+字节数不同）就一定是本机新产生的，照粘本机；同一张且其后在应用里复制过，才改粘容器。
+function installPasteBridge(
+  win: Window,
+  doc: Document,
+  topWin: Window,
+  handlers: { onImage: (file: File) => void; onPlainPaste: () => void },
+): () => void {
+  type Pending = { handled: boolean };
+  let pending: Pending | null = null;
+  let localIsFresh = true;
+  let lastLocalImage = ''; // 上次在 paste 里见到的本机图片签名
+  const isKey = (e: KeyboardEvent, code: string, key: string) =>
+    (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && (e.code === code || e.key.toLowerCase() === key);
+
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (!e.isTrusted || e.isComposing) return;
+    if (isKey(e, 'KeyC', 'c') || isKey(e, 'KeyX', 'x')) {
+      localIsFresh = false; // 在应用里复制/剪切 → 容器剪贴板更新（按键照常交给 noVNC）
+      return;
+    }
+    if (e.repeat || !isKey(e, 'KeyV', 'v')) return;
+    e.stopImmediatePropagation();
+    const p: Pending = { handled: false };
+    pending = p;
+    win.setTimeout(() => {
+      if (pending === p) pending = null;
+      if (!p.handled) handlers.onPlainPaste();
+    }, 0);
+  };
+
+  const onPaste = (e: ClipboardEvent) => {
+    // 由我们截下的 Ctrl/Cmd+V 引起的粘贴：一律阻止浏览器默认插入，粘什么只由我们决定。
+    // 否则无感模式下焦点在 KasmVNC 的输入框（noVNC_keyboardinput），浏览器会把本机剪贴板文字原样插进去，
+    // KasmVNC 再把它当键入发给远端——既改变了粘贴语义，还会把本机剪贴板里的敏感内容打进应用（实测发生过）。
+    if (pending) e.preventDefault();
+    const item = Array.from(e.clipboardData?.items || []).find((i) => i.kind === 'file' && i.type.startsWith('image/'));
+    const file = item?.getAsFile();
+    if (!file) return;
+    const sig = `${file.type}:${file.size}`;
+    const isNewImage = sig !== lastLocalImage;
+    lastLocalImage = sig;
+    if (!localIsFresh && !isNewImage) return; // 同一张旧图、之后在应用里复制过 → 让定时器粘容器剪贴板
+    localIsFresh = true;
+    e.preventDefault();
+    if (pending) pending.handled = true;
+    handlers.onImage(file);
+  };
+
+  const onFocus = () => {
+    localIsFresh = true;
+  };
+  const onMouseDown = (e: MouseEvent) => {
+    if (e.button === 2) localIsFresh = false; // 右键菜单多半是在应用里「复制」
+  };
+
+  win.addEventListener('keydown', onKeyDown, true);
+  doc.addEventListener('paste', onPaste, true);
+  win.addEventListener('mousedown', onMouseDown, true);
+  topWin.addEventListener('focus', onFocus);
+  win.addEventListener('focus', onFocus);
+  return () => {
+    win.removeEventListener('keydown', onKeyDown, true);
+    doc.removeEventListener('paste', onPaste, true);
+    win.removeEventListener('mousedown', onMouseDown, true);
+    topWin.removeEventListener('focus', onFocus);
+    win.removeEventListener('focus', onFocus);
+  };
+}
+
 interface TFile {
   name: string;
   size: number;
@@ -98,11 +181,24 @@ function humanSize(n: number) {
 // KasmVNC/noVNC 客户端 bundle 偶发未捕获异常（实测长时间空闲后报 "Cannot read properties of undefined
 // (reading 'lastActiveAt')"），会弹出其致命错误浮层（#noVNC_fallback_error 加 .noVNC_open）并卡死桌面，
 // 此时底层 ws 已死、自带重连也救不回。返回错误文案以便记日志；无致命错误则返回 null。
-function fatalErrorMsg(doc: Document | null | undefined): string | null {
+//
+// ⚠️ 浏览器扩展误报：KasmVNC 的全局 error / unhandledrejection 处理器会把页面上【任何】未捕获错误都当致命错误
+// 弹浮层——包括浏览器扩展注入到页面主世界的脚本抛的错（MetaMask 等钱包扩展会往每个页面注入 inpage.js，
+// 连不上时抛 "Failed to connect to MetaMask"）。这类错误与远程桌面无关（此时 VNC 仍是 connected），若据此重载，
+// 装了这类扩展的用户桌面会每十几秒被我们自己的自愈逻辑重载一次（实测 MetaMask：约 13s 一次，#122 同型）。
+// 浮层里带完整堆栈，据扩展协议地址即可区分：扩展错误只关掉浮层、不重载；KasmVNC 自身的崩溃照旧自愈。
+const EXTENSION_SRC = /\b(?:chrome|moz|safari(?:-web)?|ms-browser)-extension:\/\//i;
+function fatalErrorMsg(doc: Document | null | undefined, onExtensionError?: (msg: string) => void): string | null {
   try {
     const el = doc?.getElementById('noVNC_fallback_error');
     if (el && el.classList.contains('noVNC_open')) {
-      return doc?.getElementById('noVNC_fallback_errormsg')?.textContent?.trim() || 'KasmVNC 致命错误';
+      const msg = doc?.getElementById('noVNC_fallback_errormsg')?.textContent?.trim() || 'KasmVNC 致命错误';
+      if (EXTENSION_SRC.test(msg)) {
+        el.classList.remove('noVNC_open'); // 关掉误报浮层，桌面照常用
+        onExtensionError?.(msg);
+        return null;
+      }
+      return msg;
     }
   } catch {
     /* 同源正常不会到这 */
@@ -135,17 +231,28 @@ function allowAutoRecover(iid: string): boolean {
 
 // 转发输入条上的功能键（issue #125）。键名走 xdotool，须匹配服务端白名单 /^[A-Za-z_]{1,20}$/，
 // 故只放单键、不放组合键（ctrl+a 这类含 "+" 会被拒）。
-const FUNC_KEYS: { key: string; label: string; title: string }[] = [
+// 方向键 / 回车用 SVG 而非 ↵ ← ↑ ↓ → 字符：字符的大小与基线随系统字体变化，安卓上 ↵ 小到几乎看不见、
+// 整排也会上下错位（issue #125 追评截图）。线条风格与侧栏图标一致（lucide 同款，MIT）。
+const KeyIcon = ({ d }: { d: string[] }) => (
+  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    {d.map((p) => (
+      <path key={p} d={p} />
+    ))}
+  </svg>
+);
+const ICON_ENTER = ['M9 10 4 15l5 5', 'M20 4v7a4 4 0 0 1-4 4H4'];
+const ICON_KEYBOARD = ['M4 5h16a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2z', 'M6 9h.01M10 9h.01M14 9h.01M18 9h.01M8 13h.01M12 13h.01M16 13h.01M7 16h10'];
+const FUNC_KEYS: { key: string; label: ReactNode; title: string }[] = [
   { key: 'Escape', label: 'Esc', title: 'Escape（关弹窗/退出全屏输入）' },
   { key: 'Tab', label: 'Tab', title: 'Tab（切换焦点）' },
   // 用中文字面而非 ⌫（U+232B）：容器/部分系统缺字形会渲染成豆腐块，实测就是方框
   { key: 'BackSpace', label: '退格', title: '退格（删除前一个字符）' },
   { key: 'Delete', label: 'Del', title: 'Delete（删除后一个字符）' },
-  { key: 'Return', label: '↵', title: '回车（发送/换行）' },
-  { key: 'Left', label: '←', title: '左方向键' },
-  { key: 'Up', label: '↑', title: '上方向键' },
-  { key: 'Down', label: '↓', title: '下方向键' },
-  { key: 'Right', label: '→', title: '右方向键' },
+  { key: 'Return', label: <KeyIcon d={ICON_ENTER} />, title: '回车（发送/换行）' },
+  { key: 'Left', label: <KeyIcon d={['m12 19-7-7 7-7', 'M19 12H5']} />, title: '左方向键' },
+  { key: 'Up', label: <KeyIcon d={['m5 12 7-7 7 7', 'M12 19V5']} />, title: '上方向键' },
+  { key: 'Down', label: <KeyIcon d={['M12 5v14', 'm19 12-7 7-7-7']} />, title: '下方向键' },
+  { key: 'Right', label: <KeyIcon d={['M5 12h14', 'm12 5 7 7-7 7']} />, title: '右方向键' },
 ];
 
 const MenuIcon = (
@@ -279,6 +386,13 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
   const lastBeat = useRef(0);
   const audioRef = useRef<VncAudio | null>(null);
   const recovering = useRef(false); // 致命崩溃自愈进行中（防错误浮层轮询与 error 事件重复触发重载）
+  // 浏览器扩展注入脚本的报错（见 fatalErrorMsg）：只关浮层不重连；每次页面加载只记一条，避免 3s 轮询刷日志
+  const extErrLogged = useRef(false);
+  const onExtensionError = (msg: string) => {
+    if (extErrLogged.current || !id) return;
+    extErrLogged.current = true;
+    api.clientLog(id, `忽略浏览器扩展注入脚本的报错（非桌面故障，不重连）：${msg.slice(0, 160)}`);
+  };
 
   const inst = instances.find((i) => i.id === id);
   const profile = appProfile(inst?.appType); // 按应用类型显示正确文案（微信/Chromium…）
@@ -480,6 +594,32 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
     }
   }, [id, inputMode]);
 
+  // 本机图片粘贴桥（issue #91）：两种输入模式都生效
+  const pastingImage = useRef(false);
+  useEffect(() => {
+    if (!showVnc || !frameLoaded || !id) return;
+    const win = frameRef.current?.contentWindow;
+    const doc = frameRef.current?.contentDocument;
+    if (!win || !doc) return;
+    return installPasteBridge(win, doc, window, {
+      onImage: async (file) => {
+        if (pastingImage.current) return;
+        pastingImage.current = true;
+        toast('正在粘贴本机图片…', 'ok');
+        try {
+          await api.pasteImage(id, file);
+        } catch (e: any) {
+          toast(e?.message || '粘贴图片失败：请确认实例已「升级实例」', 'error');
+        } finally {
+          pastingImage.current = false;
+        }
+      },
+      // 粘贴容器剪贴板：失败时静默（与以前按键直通 noVNC 一样，不额外打扰）
+      onPlainPaste: () => void api.keyInInstance(id, 'ctrl+v').catch(() => {}),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showVnc, frameLoaded, id]);
+
   // 无感模式：往同源 iframe 装「中文转发 + 有序队列」钩子；切回转发/重连/卸载时自动移除。
   useEffect(() => {
     if (inputMode !== 'seamless' || !showVnc || !frameLoaded || !id) return;
@@ -572,7 +712,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
     let lastState = '';
     const t = window.setInterval(() => {
       const doc = frameRef.current?.contentDocument;
-      const fatal = fatalErrorMsg(doc);
+      const fatal = fatalErrorMsg(doc, onExtensionError);
       if (fatal) {
         recoverFromFatal(fatal);
         return;
@@ -610,18 +750,21 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
     if (!win) return;
     const onErr = () => {
       window.setTimeout(() => {
-        const msg = fatalErrorMsg(frameRef.current?.contentDocument);
+        const msg = fatalErrorMsg(frameRef.current?.contentDocument, onExtensionError);
         if (msg) recoverFromFatal(msg);
       }, 400);
     };
     try {
       win.addEventListener('error', onErr);
+      // KasmVNC 对 Promise 未处理拒绝也会弹同一个浮层（扩展报错多走这条），一并快速处理，免得浮层挂满 3s 轮询间隔
+      win.addEventListener('unhandledrejection', onErr);
     } catch {
       return;
     }
     return () => {
       try {
         win.removeEventListener('error', onErr);
+        win.removeEventListener('unhandledrejection', onErr);
       } catch {
         /* ignore */
       }
@@ -963,6 +1106,8 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
         </button>
         <span className="ws-title">{title}</span>
         {showVnc && (
+          // 本地定制：操作按钮收进「更多」下拉菜单（触屏窄屏放不下整排按钮）；
+          // 上游 #126 的 ws-actions 横滑容器方案与下拉菜单重构冲突，保留下拉菜单形态。
           <div className="ws-more-wrap" ref={moreRef}>
             <button
               className={'ws-more' + (moreOpen ? ' on' : '')}
@@ -1406,7 +1551,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
               {showKeys && (
                 <div className="iv-keybar">
                   {FUNC_KEYS.map((k) => (
-                    <button key={k.key} className="iv-key" title={k.title} onClick={() => pressKey(k.key)}>
+                    <button key={k.key} className="iv-key" title={k.title} aria-label={k.title} onClick={() => pressKey(k.key)}>
                       {k.label}
                     </button>
                   ))}
@@ -1416,9 +1561,11 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
                 <button
                   className={'iv-imebar-tool' + (showKeys ? ' on' : '')}
                   title="功能键（Esc / Tab / 退格 / 方向键…）"
+                  aria-label="功能键"
+                  aria-pressed={showKeys}
                   onClick={() => setShowKeys((v) => !v)}
                 >
-                  Fn
+                  <KeyIcon d={ICON_KEYBOARD} />
                 </button>
                 <textarea
                   className="iv-imebar-input"
@@ -1444,9 +1591,11 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
                       ? '自动回车：开。文字送到应用后立刻回车发出。点击关闭（只填字不发送，便于先编辑再发）'
                       : '自动回车：关。只把文字填进应用输入框，发送由你自己按。点击开启'
                   }
+                  aria-label="自动回车"
+                  aria-pressed={autoEnter}
                   onClick={toggleAutoEnter}
                 >
-                  ↵
+                  <KeyIcon d={ICON_ENTER} />
                 </button>
                 <button
                   className="btn btn-primary iv-imebar-send"

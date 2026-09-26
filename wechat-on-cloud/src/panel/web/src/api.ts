@@ -87,9 +87,45 @@ export interface VersionInfo {
   error: string | null; // 检查失败原因
 }
 
+// 反代身份网关（Cloudflare Access / Authelia 等）会话过期时，会把 API 请求 302 到它的跨域登录页；
+// 默认的 fetch 会跟随这个跨域跳转、被浏览器按 CORS 拦下，前端只看到 "Failed to fetch"，页面卡死
+// （PR #108 反馈的场景）。面板自己的 /api 从不返回重定向，所以用 redirect:'manual'：只要拿到
+// opaqueredirect，就一定是网关拦了，整页重载交给网关重新认证后再回来。
+// 刻意不把「网络失败」当成会话过期（PR #108 原方案）：面板重启 / 自更新期间 API 本就短暂不通，
+// 那时整页跳转会停在浏览器的「无法访问」错误页，再也不会自动恢复。
+const REAUTH_KEY = 'woc_gateway_reauth_ts';
+// 重载前先注销 PWA 的 Service Worker：它会拦截页面导航、直接从缓存返回页面，请求根本到不了网关，
+// 网关就没机会重新认证（实测：重载后仍被 302，最后落到 /login）。只在这一刻注销，下次正常加载时
+// SW 会自动重新注册，已安装为应用（Chrome 应用 / 添加到主屏幕）的用户不受影响（PR #109 是直接删掉 PWA）。
+function reloadThroughGateway() {
+  const go = () => window.location.reload();
+  if (!('serviceWorker' in navigator)) return go();
+  navigator.serviceWorker
+    .getRegistrations()
+    .then((rs) => Promise.all(rs.map((r) => r.unregister())))
+    .catch(() => {})
+    .finally(go);
+}
+async function apiFetch(input: string, init: RequestInit = {}): Promise<Response> {
+  const res = await fetch(input, { ...init, redirect: 'manual' });
+  if (res.type === 'opaqueredirect') {
+    let last = 0;
+    try {
+      last = Number(sessionStorage.getItem(REAUTH_KEY) || 0);
+      if (Date.now() - last > 10_000) sessionStorage.setItem(REAUTH_KEY, String(Date.now()));
+    } catch {
+      /* 隐私模式：不做节流，照常重载 */
+    }
+    // 10s 内只重载一次：网关若配置异常一直 302，也不会陷入无限刷新
+    if (Date.now() - last > 10_000) reloadThroughGateway();
+    throw new Error('访问会话已失效，正在重新验证…');
+  }
+  return res;
+}
+
 // 原始二进制上传（File 直传 application/octet-stream），用于数据卷上传/解压/恢复
 async function rawUpload(url: string, file: File): Promise<any> {
-  const res = await fetch(url, {
+  const res = await apiFetch(url, {
     method: 'POST',
     credentials: 'same-origin',
     headers: { 'content-type': 'application/octet-stream' },
@@ -103,7 +139,7 @@ async function rawUpload(url: string, file: File): Promise<any> {
 async function req<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
   // 仅在有 body 时声明 JSON content-type：否则 Fastify 对「空 body + application/json」会报 400
   const headers = opts.body ? { 'content-type': 'application/json', ...opts.headers } : opts.headers;
-  const res = await fetch(path, {
+  const res = await apiFetch(path, {
     credentials: 'same-origin',
     ...opts,
     headers,
@@ -246,15 +282,26 @@ export const api = {
   panelLogUrl: (range: string) => `/api/admin/panel-log?range=${encodeURIComponent(range)}`,
 
   // 文件中转
-  listFiles: (id: string) => req<{ files: { name: string; size: number }[] }>(`/api/instances/${id}/files`),
+  listFiles: (id: string) => req<{ files: { name: string; size: number; mtime?: number }[] }>(`/api/instances/${id}/files`),
   uploadFile: async (id: string, file: File) => {
-    const res = await fetch(`/api/instances/${id}/upload?name=${encodeURIComponent(file.name)}`, {
+    const res = await apiFetch(`/api/instances/${id}/upload?name=${encodeURIComponent(file.name)}`, {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'content-type': 'application/octet-stream' },
       body: file,
     });
     if (!res.ok) throw new Error(((await res.json().catch(() => ({}))) as any).error || '上传失败');
+    return res.json();
+  },
+  // 本机剪贴板图片 → 容器 X 剪贴板 → Ctrl+V（issue #91）
+  pasteImage: async (id: string, file: Blob) => {
+    const res = await apiFetch(`/api/instances/${id}/paste-image?type=${encodeURIComponent(file.type)}`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: file,
+    });
+    if (!res.ok) throw new Error(((await res.json().catch(() => ({}))) as any).error || '粘贴图片失败');
     return res.json();
   },
   downloadFileUrl: (id: string, name: string) => `/api/instances/${id}/download?name=${encodeURIComponent(name)}`,
@@ -289,7 +336,7 @@ export const api = {
   // 桌面壁纸
   listBackgrounds: (id: string) => req<{ backgrounds: string[] }>(`/api/admin/instances/${id}/backgrounds`),
   uploadBackground: async (id: string, name: string, file: File) => {
-    const res = await fetch(`/api/admin/instances/${id}/backgrounds?name=${encodeURIComponent(name)}`, {
+    const res = await apiFetch(`/api/admin/instances/${id}/backgrounds?name=${encodeURIComponent(name)}`, {
       method: 'POST', credentials: 'same-origin',
       headers: { 'content-type': 'application/octet-stream' }, body: file,
     });
@@ -306,7 +353,7 @@ export const api = {
   // 字体管理
   listFonts: (id: string) => req<{ fonts: string[] }>(`/api/admin/instances/${id}/fonts`),
   uploadFont: async (id: string, name: string, file: File) => {
-    const res = await fetch(`/api/admin/instances/${id}/fonts?name=${encodeURIComponent(name)}`, {
+    const res = await apiFetch(`/api/admin/instances/${id}/fonts?name=${encodeURIComponent(name)}`, {
       method: 'POST', credentials: 'same-origin',
       headers: { 'content-type': 'application/octet-stream' }, body: file,
     });

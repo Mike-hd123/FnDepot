@@ -67,6 +67,7 @@ import {
   buildDiagnostics,
   typeInInstance,
   keyInInstance,
+  pasteImageInInstance,
   listOrphanVolumes,
   listOrphanBindings,
   removeOrphanBinding,
@@ -1090,6 +1091,23 @@ app.post('/api/instances/:id/type', async (req, reply) => {
 });
 
 // 模拟单个按键（无感输入模式下按序送出被截下的回车/退格，保证与中文转发的顺序）
+// 本机剪贴板图片直接粘进应用（issue #91）：前端在 paste 事件里拿到图片后上传到这里
+app.post('/api/instances/:id/paste-image', { bodyLimit: 64 * 1024 * 1024 }, async (req, reply) => {
+  const u = requireAuth(req, reply);
+  if (!u) return;
+  const id = (req.params as any).id;
+  if (!userCanAccess(u, id)) return reply.code(403).send({ error: '无权访问该实例' });
+  const mime = String((req.query as any)?.type || '').toLowerCase();
+  const body = req.body as Buffer;
+  if (!Buffer.isBuffer(body) || body.length === 0) return reply.code(400).send({ error: '空图片' });
+  try {
+    await pasteImageInInstance(findInstance(id)!, mime, body);
+    return { ok: true };
+  } catch (e: any) {
+    return reply.code(400).send({ error: e?.message || '粘贴图片失败' });
+  }
+});
+
 app.post('/api/instances/:id/key', async (req, reply) => {
   const u = requireAuth(req, reply);
   if (!u) return;
@@ -1475,6 +1493,30 @@ app.post('/api/admin/instances/:id/fonts/default', async (req, reply) => {
 // ---------- 反向代理到内网 KasmVNC（按实例注入 Basic auth，会话 + 权限把守） ----------
 // 单个 proxy 实例，target 与凭据逐请求指定：凭据暂存在 req 上，proxyReq 时注入。
 const proxy = httpProxy.createProxyServer({ changeOrigin: true, ws: true });
+// 控制权心跳只代表最近有键鼠操作，不能代表桌面是否仍在观看。Chrome 标签页进入后台后
+// 不再产生键鼠事件，但 VNC WebSocket 通常仍保持连接；soft watchdog 应把它视为活跃会话。
+const activeVncSockets = new Map<string, Set<Socket>>();
+
+function trackActiveVncSocket(instId: string, socket: Socket) {
+  let sockets = activeVncSockets.get(instId);
+  if (!sockets) {
+    sockets = new Set<Socket>();
+    activeVncSockets.set(instId, sockets);
+  }
+  if (sockets.has(socket)) return;
+  sockets.add(socket);
+  socket.once('close', () => {
+    const current = activeVncSockets.get(instId);
+    if (!current) return;
+    current.delete(socket);
+    if (current.size === 0) activeVncSockets.delete(instId);
+  });
+}
+
+function activeVncViewerCount(instId: string): number {
+  return activeVncSockets.get(instId)?.size ?? 0;
+}
+
 proxy.on('proxyReq', (proxyReq, req) => {
   const auth = (req as any)._wocAuth;
   if (auth) proxyReq.setHeader('authorization', auth);
@@ -1485,7 +1527,12 @@ proxy.on('proxyReqWs', (proxyReq, req) => {
   // 上游（实例 nginx → KasmVNC websockify）回 101 = ws 接收器接受了连接，桌面真正连上。
   // 卡死时这条不会出现（接收器停止 accept），即可定位"卡在面板→实例之间还是实例内部"。
   const instId = (req as any)._wocInstId;
-  if (instId) proxyReq.on('upgrade', () => appendInstanceLog(instId, '[vnc] 上游已接受(101) · 桌面连接建立'));
+  if (instId) {
+    proxyReq.on('upgrade', () => {
+      trackActiveVncSocket(instId, req.socket as Socket);
+      appendInstanceLog(instId, '[vnc] 上游已接受(101) · 桌面连接建立');
+    });
+  }
 });
 // 上游（面板→实例）套接字 TCP keepalive：客户端断网/切网（WiFi→4G、NAS 休眠）时 TCP 不会主动通知，
 // 半开死连接可挂数小时——对 KasmVNC 表现为"幽灵会话"占坑，与新连接并存是历史上 Xvnc 卡死的诱因之一。
@@ -1741,10 +1788,10 @@ function effectiveLimits(inst: Instance): { soft: number; hard: number } {
   };
 }
 
-// "当前有人在远程会话" 启发式判定：复用控制权心跳。前端在用户鼠标/键盘/滚轮交互时 2.5s 节流 beat，
-// 故 holder 在 TTL 内即视为"有人在主动操作"。只看屏（不交互）超过 TTL 后会被判为空闲——这是有意的，
-// 软自愈宁愿在"看似空闲"时短暂打扰，也不要拖到 hard 强制重启。
+// “当前有人在远程会话”同时看两类信号：VNC WebSocket 表示仍在观看，控制权心跳表示最近
+// 有键鼠操作。Chrome 后台标签页会停止交互心跳，但只要桌面连接仍在，就不能做 soft 重启。
 function hasActiveSession(id: string): boolean {
+  if (activeVncViewerCount(id) > 0) return true;
   const h = controlHolders.get(id);
   return !!h && Date.now() - h.at <= CONTROL_TTL;
 }
@@ -1785,8 +1832,9 @@ if (WATCHDOG_ENABLED) {
         if (mb > 0) {
           const { soft, hard } = effectiveLimits(inst);
           const active = hasActiveSession(inst.id);
+          const viewers = activeVncViewerCount(inst.id);
           if (hard > 0 && mb >= hard) {
-            await recover(inst, 'hard', `mem=${mb}MiB ≥ hard=${hard}MiB，强制重启（active=${active}）`);
+            await recover(inst, 'hard', `mem=${mb}MiB ≥ hard=${hard}MiB，强制重启（active=${active}, viewers=${viewers}）`);
             continue;
           }
           if (soft > 0 && mb >= soft && !active) {
@@ -1794,7 +1842,7 @@ if (WATCHDOG_ENABLED) {
             continue;
           }
           if (soft > 0 && mb >= soft && active) {
-            app.log.info(`[watchdog] ${inst.containerName} mem=${mb}MiB ≥ soft=${soft}MiB 但用户在使用，延后`);
+            app.log.info(`[watchdog] ${inst.containerName} mem=${mb}MiB ≥ soft=${soft}MiB 但用户在使用，延后（viewers=${viewers}）`);
           }
         }
         // 2) 响应性自愈：探测 VNC 是否还能提供页面；连续 N 次无响应 → 重启。

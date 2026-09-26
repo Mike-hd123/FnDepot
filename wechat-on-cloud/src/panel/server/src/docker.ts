@@ -78,6 +78,10 @@ const SHM_SIZE = 1024 * 1024 * 1024; // 1gb
 // 真实可用 GPU 想启用硬件编码：面板侧设 WOC_ENABLE_GPU=1，并让面板可见宿主 /dev/dri
 // （如同摄像头，把宿主 /dev 挂到 /host-dev，或设 WOC_DRI_DEVICES 显式指定）。
 const ENABLE_GPU = process.env.WOC_ENABLE_GPU === '1';
+// #134：宿主内核禁用 IPv6（ipv6.disable=1）时，实例 nginx 默认配置里的 `listen [::]` 绑定失败，整个 nginx 起不来，
+// 远程桌面随之全挂，用户只能进容器手动 sed。同一内核下所有容器看到的 /proc/net/if_inet6 一致：内核禁用 IPv6 时
+// 该文件不存在（普通 Docker 网络只是在容器内关 IPv6，文件仍在、[::] 仍可绑定，不受影响）。也可用 WOC_DISABLE_IPV6 强制。
+const NO_IPV6 = /^(1|true|yes)$/i.test(process.env.WOC_DISABLE_IPV6 || '') || !existsSync('/proc/net/if_inet6');
 
 // 可选：给每个实例容器设内存上限（GiB），作为 Xvnc 等异常增长时的兜底，避免拖垮宿主。
 // 默认 0 = 不限制（保持原行为）。命中上限时容器内 OOM 杀进程、由 s6 自动重启 VNC。
@@ -373,6 +377,8 @@ function envList(inst: Instance): string[] {
   // 微信等 Chromium 系应用即跟随系统深色）。开关由面板顶栏主题统一控制、持久化在 accounts.json，
   // 运行中的实例则通过 setInstanceDark 实时切换（见下）。
   if (getDesktopDark()) env.push('WOC_DARK=1');
+  // baseimage 的 init-nginx 只看 DISABLE_IPV6 是否已设置，设了就删掉 `listen [::]`（每次启动重新生成配置，故须常驻于容器环境）
+  if (NO_IPV6) env.push('DISABLE_IPV6=1');
   return env;
 }
 
@@ -420,6 +426,100 @@ function fallbackLatestRef(): string | null {
   return `${m[1]}:latest`;
 }
 
+// ---------- 自定义数据目录 WOC_DATA_ROOT（#133 #127，取代 PR #69 的做法） ----------
+// 需求：实例数据（聊天记录、收到的文件）落到用户自选的宿主目录（大容量盘 / 方便直接取文件），
+// 而不是 Docker 默认的卷目录。PR #69 直接把 /config 改绑宿主路径，会让已有实例切到空目录（看似丢数据），
+// 且面板里按卷名工作的功能（数据卷浏览/备份/恢复/孤儿卷清理）全部失效。
+// 这里改用 local 驱动的「绑定型具名卷」：卷名不变、内容在宿主目录，其余功能原样可用；
+// 且只在新建实例（卷尚不存在）时生效——已存在的卷一律不碰，老实例零影响，事后取消该设置也不影响已建实例。
+function parseDataRoot(raw: string | undefined): string {
+  const v = (raw || '').trim().replace(/\/+$/, '');
+  if (!v) return '';
+  // 只接受干净的绝对路径：会被拼进辅助容器的 shell 命令与卷的 device 参数
+  if (!/^\/[A-Za-z0-9._\-\/]+$/.test(v) || v.split('/').includes('..')) {
+    console.error(`[data-root] 忽略非法的 WOC_DATA_ROOT：${v}（需为不含空格与 .. 的宿主绝对路径）`);
+    return '';
+  }
+  return v;
+}
+const DATA_ROOT = parseDataRoot(process.env.WOC_DATA_ROOT);
+const VOLUME_NAME_RE = /^woc-data-[0-9a-z]+$/;
+const SAFE_ID = (v: string) => (/^\d+$/.test(v) ? v : '1000');
+
+// 以 root 跑一次性辅助容器，把宿主 root 目录挂到 /woc-root 执行一段脚本（面板容器本身看不到宿主路径）
+async function runDataRootHelper(root: string, image: string, script: string): Promise<void> {
+  const c = await docker.createContainer({
+    Image: image,
+    Entrypoint: ['sh', '-c'],
+    Cmd: [script],
+    User: '0',
+    Labels: { 'woc.helper': 'data-root' },
+    HostConfig: { Binds: [`${root}:/woc-root`] },
+  } as any);
+  try {
+    await c.start();
+    const r: any = await c.wait();
+    if (r?.StatusCode !== 0) throw new Error(`辅助容器退出码 ${r?.StatusCode}`);
+  } finally {
+    await c.remove({ force: true }).catch(() => {});
+  }
+}
+
+async function ensureInstanceVolume(inst: Instance, image: string): Promise<void> {
+  if (!DATA_ROOT || !VOLUME_NAME_RE.test(inst.volumeName)) return;
+  try {
+    await docker.getVolume(inst.volumeName).inspect();
+    return; // 卷已存在（老实例 / 重启 / 自愈）：绝不改动
+  } catch {
+    /* 不存在 → 按 WOC_DATA_ROOT 新建 */
+  }
+  const dir = `${DATA_ROOT}/${inst.volumeName}`;
+  await runDataRootHelper(
+    DATA_ROOT,
+    image,
+    `mkdir -p /woc-root/${inst.volumeName} && chown ${SAFE_ID(PUID)}:${SAFE_ID(PGID)} /woc-root/${inst.volumeName}`,
+  );
+  await docker.createVolume({
+    Name: inst.volumeName,
+    Driver: 'local',
+    DriverOpts: { type: 'none', o: 'bind', device: dir },
+    Labels: { 'woc.data-root': DATA_ROOT },
+  } as any);
+  appendInstanceLog(inst.id, `数据目录：宿主 ${dir}（WOC_DATA_ROOT）`);
+  appendPanelLog('INFO', `实例 ${inst.id} 的数据目录建在宿主 ${dir}`);
+}
+
+// 删除数据卷；若是 WOC_DATA_ROOT 建的绑定型卷，宿主目录一并删除（「清除数据」的本意），
+// 否则删卷只是去掉 Docker 里的卷对象，数据会以用户看不见的形式留在宿主上。
+async function removeVolumeWithData(name: string): Promise<void> {
+  let root = '';
+  try {
+    const info: any = await docker.getVolume(name).inspect();
+    root = parseDataRoot(info?.Labels?.['woc.data-root']);
+  } catch {
+    /* 卷不存在 */
+  }
+  await docker.getVolume(name).remove({ force: true } as any);
+  if (!root || !VOLUME_NAME_RE.test(name)) return;
+  try {
+    await runDataRootHelper(root, WECHAT_IMAGE, `rm -rf /woc-root/${name}`);
+    appendPanelLog('INFO', `已删除宿主数据目录 ${root}/${name}`);
+  } catch (e: any) {
+    appendPanelLog('WARN', `宿主数据目录 ${root}/${name} 未能自动删除（${e?.message || e}），可手动删除`);
+  }
+}
+
+// 诊断用：说明数据实际落在哪里
+export async function describeInstanceVolume(name: string): Promise<string> {
+  try {
+    const info: any = await docker.getVolume(name).inspect();
+    const dev = info?.Options?.device;
+    return info?.Options?.o === 'bind' && dev ? `宿主目录 ${dev}` : `Docker 卷 ${info?.Mountpoint || ''}`.trim();
+  } catch {
+    return '卷尚不存在';
+  }
+}
+
 // 创建并启动一个微信实例容器。若同名容器已存在则先移除（仅容器，不动卷）。
 // keepImage（稳定性关键）：重启/自愈必须幂等——沿用该实例当前正在跑的镜像重建，
 // 绝不因"本地 :latest 恰好被某次拉取更新过"就悄悄换镜像（那等于一次没人要求的隐式升级；
@@ -454,6 +554,7 @@ export async function runInstance(inst: Instance, opts?: { keepImage?: boolean }
   // 沿用旧镜像重建时无需 ensureImage（镜像 id 一定在本地——容器刚在用它）；
   // 也避免"离线 + 本地无 :latest"时连重启都失败。
   if (!imageOverride) await ensureImage();
+  await ensureInstanceVolume(inst, imageOverride || WECHAT_IMAGE);
   // 摄像头设备（探测不到则为空数组 → 仅摄像头不可用，音频/麦克风照常）
   const vids = videoDevices();
   const dris = ENABLE_GPU ? driDevices() : [];
@@ -700,18 +801,19 @@ export async function removeInstance(inst: Instance, purgeVolume: boolean): Prom
     /* 容器可能已不存在 */
   }
   if (purgeVolume) {
-    // 兼容两种形态：命名卷 docker volume rm；bind 目录 rm -rf（instance.dataDir / WOC_DATA_DIR 下）
+    // 兼容三种形态：本地定制①的 WOC_DATA_DIR/instance.dataDir bind 目录 → rm -rf；
+    // 上游 WOC_DATA_ROOT 绑定型具名卷（带 woc.data-root 标签）与普通具名卷 →
+    // removeVolumeWithData 删卷并连带删宿主目录（否则数据以看不见的形式残留）。
     const bindDir = (inst.dataDir || '').trim() || (process.env.WOC_DATA_DIR || '').trim();
     if (bindDir && inst.volumeName.startsWith('woc-data-') && !inst.volumeName.includes('/')) {
       try {
         rmSync(`${bindDir}/${inst.volumeName}`, { recursive: true, force: true });
       } catch { /* 目录可能不存在 */ }
-    } else {
-      try {
-        await docker.getVolume(inst.volumeName).remove({ force: true } as any);
-      } catch {
-        /* 卷可能不存在 */
-      }
+    }
+    try {
+      await removeVolumeWithData(inst.volumeName);
+    } catch {
+      /* 卷可能不存在 */
     }
     deleteInstanceLog(inst.id); // 彻底删除时一并清掉持久日志
   }
@@ -768,7 +870,7 @@ export async function removeVolume(name: string): Promise<void> {
     rmSync(`${dataDir}/${name}`, { recursive: true, force: true });
     return;
   }
-  await docker.getVolume(name).remove({ force: true } as any);
+  await removeVolumeWithData(name);
 }
 
 // 列出"残留的 woc-wx-* 容器"：在 docker 里存在但 store 没登记的（多为 runInstance 失败时
@@ -1317,7 +1419,9 @@ function tarSingleFile(name: string, content: Buffer): Buffer {
   h.write('0001750\0', 108); // uid 1000(octal 1750)
   h.write('0001750\0', 116); // gid 1000
   h.write(content.length.toString(8).padStart(11, '0') + '\0', 124); // size
-  h.write('00000000000\0', 136); // mtime
+  // mtime 必须写当前时间：此前写死 0，上传进实例的文件全是 1970 年，
+  // 微信文件选择器、面板文件列表按时间排序时，刚上传的文件反而沉到最底下。
+  h.write(Math.floor(Date.now() / 1000).toString(8).padStart(11, '0') + '\0', 136); // mtime
   h.write('        ', 148); // checksum 占位（8 空格）
   h.write('0', 156); // typeflag 普通文件
   h.write('ustar\0', 257);
@@ -1338,7 +1442,7 @@ function tarEntry(name: string, content: Buffer): Buffer {
   h.write('0001750\0', 108);
   h.write('0001750\0', 116);
   h.write(content.length.toString(8).padStart(11, '0') + '\0', 124);
-  h.write('00000000000\0', 136);
+  h.write(Math.floor(Date.now() / 1000).toString(8).padStart(11, '0') + '\0', 136); // mtime（同 tarSingleFile，别写 0）
   h.write('        ', 148); // checksum 占位
   h.write('0', 156); // typeflag 普通文件
   h.write('ustar\0', 257);
@@ -1422,7 +1526,7 @@ export async function buildDiagnostics(instances: Instance[], sinceMs: number, m
 
   // 每个实例
   for (const inst of instances) {
-    let c = `实例: ${inst.name}\nID: ${inst.id}\n容器: ${inst.containerName}\n类型: ${instanceAppType(inst)}\n数据卷: ${inst.volumeName}\n创建: ${inst.createdAt}\n\n`;
+    let c = `实例: ${inst.name}\nID: ${inst.id}\n容器: ${inst.containerName}\n类型: ${instanceAppType(inst)}\n数据卷: ${inst.volumeName}（${await describeInstanceVolume(inst.volumeName)}）\n创建: ${inst.createdAt}\n\n`;
     try {
       const info: any = await docker.getContainer(inst.containerName).inspect();
       const s = info.State || {};
@@ -1505,20 +1609,24 @@ export async function uploadToInstance(inst: Instance, name: string, content: Bu
 export interface TransferFile {
   name: string;
   size: number;
+  mtime: number; // 秒级 Unix 时间
 }
 export async function listInstanceFiles(inst: Instance): Promise<TransferFile[]> {
   const out = await execCapture(inst, [
     'sh',
     '-c',
-    `find ${TRANSFER_DIR} -maxdepth 1 -type f -printf '%f\\t%s\\n' 2>/dev/null`,
+    `find ${TRANSFER_DIR} -maxdepth 1 -type f -printf '%f\\t%s\\t%T@\\n' 2>/dev/null`,
   ]);
+  // 按修改时间倒序：最常见的用法是「刚在微信里另存到桌面 → 马上来下载」，最新的应在最上面。
+  // （此前是 find 的目录原始顺序，文件一多就得在乱序列表里找。）
   return out
     .split('\n')
     .filter(Boolean)
     .map((line) => {
-      const [name, size] = line.split('\t');
-      return { name, size: Number(size) || 0 };
-    });
+      const [name, size, mtime] = line.split('\t');
+      return { name, size: Number(size) || 0, mtime: Math.round(Number(mtime) || 0) };
+    })
+    .sort((a, b) => b.mtime - a.mtime || a.name.localeCompare(b.name));
 }
 
 export async function deleteInstanceFile(inst: Instance, name: string): Promise<void> {
@@ -1612,11 +1720,42 @@ export async function typeInInstance(inst: Instance, text: string): Promise<void
   await execCapture(inst, ['bash', '-c', cmd]);
 }
 
+// 把本机剪贴板里的图片（截图等）粘进应用（issue #91）：写入容器的 X 剪贴板（目标类型即图片 MIME），
+// 再按一次 Ctrl+V，效果等同于在容器里复制了一张图片后粘贴。图片先落到 /tmp（非持久卷，重启即清），
+// xclip -i 读完文件后会常驻持有剪贴板选区，文件本身随后即可删除；这里顺手清掉 10 分钟前的旧文件。
+const PASTE_IMAGE_TYPES: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/bmp': 'bmp',
+};
+export async function pasteImageInInstance(inst: Instance, mime: string, content: Buffer): Promise<void> {
+  const ext = PASTE_IMAGE_TYPES[mime];
+  if (!ext) throw new Error('不支持的图片类型');
+  const name = `woc-paste-${Date.now()}.${ext}`;
+  await docker.getContainer(inst.containerName).putArchive(tarSingleFile(name, content), { path: '/tmp' });
+  const cmd = [
+    'set -e',
+    'display="${DISPLAY:-}"',
+    'if [ -z "$display" ]; then for x in /tmp/.X11-unix/X*; do [ -e "$x" ] || continue; display=":${x##*X}"; break; done; fi',
+    'export DISPLAY="${display:-:1}"',
+    'command -v xclip >/dev/null 2>&1 || { echo "xclip not installed in instance image" >&2; exit 127; }',
+    'command -v xdotool >/dev/null 2>&1 || { echo "xdotool not installed in instance image" >&2; exit 127; }',
+    "find /tmp -maxdepth 1 -name 'woc-paste-*' -mmin +10 -delete 2>/dev/null || true",
+    // 同 typeInInstance：xclip 常驻后台持有选区，必须重定向 fd，否则 docker exec 要等它退出（~2s）
+    `xclip -selection clipboard -t ${mime} -i /tmp/${name} >/dev/null 2>&1`,
+    'xdotool key --clearmodifiers ctrl+v',
+  ].join('; ');
+  await execCapture(inst, ['bash', '-c', cmd]);
+}
+
 // 通过 xdotool 在实例容器内模拟一次按键（如 Return / BackSpace）。
 // 用于「无感输入」模式：中文经 xclip 转发期间，把被截下的回车/退格按序送出，保证顺序、避免抢跑。
-// key 仅允许字母与下划线（xdotool keysym 名），杜绝注入。
+// key 为 xdotool keysym 名，可带至多 3 个修饰键前缀（如 ctrl+v、ctrl+shift+Tab）；
+// 只允许字母 / 下划线 / 固定修饰键名与 "+"，杜绝 shell 注入。
 export async function keyInInstance(inst: Instance, key: string): Promise<void> {
-  if (!/^[A-Za-z_]{1,20}$/.test(key)) throw new Error('按键名不合法');
+  if (!/^(?:(?:ctrl|shift|alt|super)\+){0,3}[A-Za-z_]{1,20}$/.test(key)) throw new Error('按键名不合法');
   const cmd = [
     'set -e',
     'display="${DISPLAY:-}"',

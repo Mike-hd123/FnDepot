@@ -30,9 +30,22 @@ EOF
   mv -f "$STATUS_FILE.tmp" "$STATUS_FILE"
 }
 
+# 同 wechat-ctl.sh：状态在持久卷上，安装中途容器被重启/升级，状态会永远停在「进行中」且面板禁用按钮
+#（issue #144）。进行中却没有安装进程 → 纠正为 error 放开重试。无 pgrep 时不纠正。
+installer_running() {
+  command -v pgrep >/dev/null 2>&1 || return 0
+  pgrep -f 'ctl\.sh .*(install|update)' >/dev/null 2>&1
+}
+
 print_status() {
   if [ -f "$STATUS_FILE" ]; then
-    cat "$STATUS_FILE"
+    local s; s="$(cat "$STATUS_FILE")"
+    if printf '%s' "$s" | grep -Eq '"phase":"(downloading|extracting|installing)"' && ! installer_running; then
+      local inst=false; is_installed && inst=true
+      echo "{\"phase\":\"error\",\"percent\":0,\"installed\":$inst,\"version\":\"\",\"message\":\"上次安装被中断（容器重启或升级），请重新点击安装\",\"updatedAt\":$(date +%s)}"
+      return
+    fi
+    printf '%s\n' "$s"
   elif is_installed; then
     echo "{\"phase\":\"done\",\"percent\":100,\"installed\":true,\"version\":\"\",\"message\":\"已就绪\",\"updatedAt\":$(date +%s)}"
   else
@@ -49,7 +62,7 @@ install_telegram() {
   tmp="$work/tg.tar.xz"
   rm -rf "$work"; mkdir -p "$work"
   write_status downloading -1 "正在下载 Telegram"
-  if ! curl -fSL --retry 3 -A "Mozilla/5.0" -o "$tmp" "https://telegram.org/dl/desktop/linux"; then
+  if ! curl -fSL --retry 3 --connect-timeout 20 -A "Mozilla/5.0" -o "$tmp" "https://telegram.org/dl/desktop/linux"; then
     write_status error 0 "下载失败，请检查网络后重试"; rm -rf "$work"; return
   fi
   write_status extracting 92 "正在解压安装"
