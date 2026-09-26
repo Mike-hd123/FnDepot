@@ -36,6 +36,17 @@
               "size": 15564416
             }
           }
+        },
+        "1.5.0-1": {
+          "changelog": "1.5.0-1（2026-09-27 发布，用户已实测通过）：合并上游 v1.5.0——WOC_DATA_ROOT 指定宿主数据目录(#133/#127)、本机截图/文件 Ctrl+V 粘贴(#91)、移动端工具栏横滑+弹窗溢出修复(#126/#125)、宿主禁 IPv6 时 nginx 修复(#134)、安装卡死/CDN 超时修复(#144/#142)、反代会话自动重认证、私聊验证码 5 分钟窗口、可复现构建(lockfile)。保留本地定制：ipvlan woc-lan 单网卡、WOC_DATA_DIR bind+孤儿目录扫描/复用/删除、触屏不抢焦点、电源下拉、host-guard。",
+          "updated_at": "2026-09-27T01:30:00+08:00",
+          "packages": {
+            "all": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.23/wechat-on-cloud-1.5.0-1.fpk",
+              "sha256": "c61e11b1f43affe029eff04c8ce2e55edf60480c1aaeb4494e6933df70f3a378",
+              "size": 15569411
+            }
+          }
         }
       }
     },
@@ -143,11 +154,11 @@
           }
         },
         "2.0.1-1": {
-          "changelog": "（2026-09-26，⚠️ 待实测+待上传 Release，勿分发）同步上游 v2.0.1：API token 权限收紧（token 不可再创建/吊销其他 token、清数据、改资料、配 2FA/外部认证/同步）、移动端新增记账按钮 widget、定时模板跨时区修复、OAuth2 登录按钮修复。本地定制延续：index 纯跳转页 + sidecar 剥前缀反代 + gzip、端口 8580、数据目录钉死 @appdata。二进制=上游官方 release 原样（sha256 93a96bf8…）。",
-          "updated_at": "2026-09-26T23:40:00+08:00",
+          "changelog": "（2026-09-27 发布，用户已实测通过）同步上游 v2.0.1：API token 权限收紧（token 不可再创建/吊销其他 token、清数据、改资料、配 2FA/外部认证/同步）、移动端新增记账按钮 widget、定时模板跨时区修复、OAuth2 登录按钮修复。本地定制延续：index 纯跳转页 + sidecar 剥前缀反代 + gzip、端口 8580、数据目录钉死 @appdata。二进制=上游官方 release 原样（sha256 93a96bf8…）。",
+          "updated_at": "2026-09-27T01:30:00+08:00",
           "packages": {
             "all": {
-              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/PENDING/ezbookkeeping.fpk",
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.23/ezbookkeeping-2.0.1-1.fpk",
               "sha256": "2e4d67bef4b94ce6d29f101b672cce9f30759ce38e195d693858c5520c4b3b85",
               "size": 24384400
             }
