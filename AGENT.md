@@ -8,7 +8,7 @@
 | 目录 | 应用 | 当前版本 | 上游 | 子 AGENT.md |
 |---|---|---|---|---|
 | `wechat-on-cloud/` | 云微(飞牛云微信) | 1.4.9-6 | Gloridust/WechatOnCloud | [AGENT.md](./wechat-on-cloud/AGENT.md) |
-| `hyatlas/` | HyAtlas(混元记忆) | 4.1.1-6 | tuancookiez-hub/HyAtlas-Memory | [AGENT.md](./hyatlas/AGENT.md) |
+| `hyatlas/` | HyAtlas(混元记忆) | 4.1.1-8 | tuancookiez-hub/HyAtlas-Memory | [AGENT.md](./hyatlas/AGENT.md) |
 | `octopus/` | Octopus(LLM 网关) | 0.13.8-1 | bestruirui/octopus | [AGENT.md](./octopus/AGENT.md) |
 | `ezbookkeeping/` | EZ记账 | 2.0.0-1 | mayswind/ezbookkeeping | [AGENT.md](./ezbookkeeping/AGENT.md) |
 | `vikunja/` | 待办(Vikunja) | 2.6.0-14 | go-vikunja/vikunja | [AGENT.md](./vikunja/AGENT.md) |
