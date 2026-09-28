@@ -71,6 +71,14 @@ is_running() {
       return 0
     fi
   fi
+  # 兜底(2026-09-27)：as_user 里 exec 前的 & 子 shell 让 $! 记成已退出的过渡 PID，
+  # 导致 panel.pid 与真身 hyatlas-go 错位、status 误判停用。按进程名找回真身并回写校准。
+  local real
+  real=$(pgrep -x hyatlas-go 2>/dev/null | head -1)
+  if [ -n "$real" ]; then
+    echo "$real" > "$PID_FILE" 2>/dev/null || true
+    return 0
+  fi
   return 1
 }
 
