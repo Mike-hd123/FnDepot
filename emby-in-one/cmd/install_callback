@@ -1,0 +1,8 @@
+#!/bin/bash
+set -u
+LOG="${TRIM_PKGVAR}/install.log"
+echo "===== install_callback $(date) =====" >> "$LOG"
+mkdir -p "${TRIM_PKGVAR}" 2>/dev/null || true
+chmod -R a+rX "${TRIM_APPDEST}" 2>/dev/null || true
+echo "===== done =====" >> "$LOG"
+exit 0

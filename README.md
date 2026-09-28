@@ -1,6 +1,6 @@
 # FnDepot — Mike 的飞牛第三方应用源
 
-飞牛 fnOS 外部应用源（schema_version 2），收录 5 个自打包应用 + 1 个打包模板。每个应用目录 = 图标 + 说明 + 上游源码 fork(`src/`)；fpk 二进制统一走 [GitHub Release `v2026.09.23`](https://github.com/Mike-hd123/FnDepot/releases/tag/v2026.09.23) 分发，不进 git 跟踪。
+飞牛 fnOS 外部应用源（schema_version 2），收录 6 个自打包应用 + 1 个打包模板。每个应用目录 = 图标 + 说明 + 上游源码 fork(`src/`)；fpk 二进制统一走 [GitHub Release `v2026.09.23`](https://github.com/Mike-hd123/FnDepot/releases/tag/v2026.09.23) 分发，不进 git 跟踪。
 
 开发规范见 [AGENT.md](./AGENT.md)。
 
@@ -18,9 +18,10 @@ https://github.com/Mike-hd123/FnDepot
 |---|---|---|---|
 | 云微(飞牛云微信) `wechat-on-cloud` | 1.5.0-1 | NAS 原生微信面板，Node.js 面板 + dockerode 管理微信实例容器，ipvlan(woc-lan) 单网卡直连局域网，数据落主机路径 bind，创建实例可选数据目录，移动端触屏优化，实例「电源」下拉(重启/关机) | [Gloridust/WechatOnCloud](https://github.com/Gloridust/WechatOnCloud) |
 | HyAtlas(混元记忆) `hyatlas` | 4.1.1-7 | AI 长期记忆系统。v4 纯 Go 单二进制：内置 ONNX Runtime int8 向量引擎(bge-large-zh 1024d)，移除 llama.cpp 18080 依赖；dashboard 全量汉化 + 移动端响应式；chromem-go 存储，socket 型 fnOS 入口 /app/hyatlas，端口 19528。v6 新增 index 写入合并(异步 coalesce，SSD 写入从 ~11GB/天降至 ~0.5GB/天) + 全删接口护栏 + L7 防膨胀。**源码不在本仓库**，见上游 | [tuancookiez-hub/HyAtlas-Memory](https://github.com/tuancookiez-hub/HyAtlas-Memory) |
-| Octopus `octopus` | 0.13.6-1 | LLM API 聚合网关，Go 单二进制 + 内嵌前端 + SQLite，多渠道/多模型管理，支持单渠道多 Key，端口 8081 | [bestruirui/octopus](https://github.com/bestruirui/octopus) |
+| Octopus `octopus` | 0.13.8-1 | LLM API 聚合网关，Go 单二进制 + 内嵌前端 + SQLite，多渠道/多模型管理，支持单渠道多 Key，端口 8081 | [bestruirui/octopus](https://github.com/bestruirui/octopus) |
 | EZ记账 `ezbookkeeping` | 2.0.1-1 | 家庭记账：本地优先 SQLite 存储，多账本/预算/报表，支持微信/支付宝/信用卡账单导入，gzip 压缩提速，移动端触屏优化。v2 新增信用卡额度/可用额度环、洞察报表自定义图表、S3 对象存储，1.x→2.x 数据自动迁移无损 | [mayswind/ezbookkeeping](https://github.com/mayswind/ezbookkeeping) |
 | 待办(Vikunja) `vikunja` | 2.6.0-14 | 自托管待办面板：Go 静态 ELF 单二进制 + SQLite，中文 UI + CalDAV，API token 全自动读写（Hermes 提醒引擎），桌面 3456 + 手机 /app/vikunja 双通道 | [go-vikunja/vikunja](https://github.com/go-vikunja/vikunja) |
+| Emby `emby-in-one` | 1.4.4-4 | Emby 多账号聚合反向代理：Go 静态二进制 + Python socket 网关 sidecar，治 Emby Boost CDN 签名 URL 900 秒过期拖拽 403；后台 token 失效自动重登无感续命；桌面入口 /app/emby/admin/，TV 直连 18096 | [ArizeSky/Emby-In-One](https://github.com/ArizeSky/Emby-In-One) |
 | `app-template` | — | 打包模板（非应用）：从现役应用结构提炼的标准骨架，新应用上架 = 复制模板 → 全局替换占位符 → fnpack build | — |
 
 **Fluxor** 已 2026-09 起不再维护（原 fork 分支 2026-09 全量下线，目录/commit/`fnpack.json` 记录均已清空）——请改用 [官方版 shuangji66/fluxor](https://github.com/shuangji66/fluxor)。
@@ -50,6 +51,13 @@ FnDepot/
 │   ├── ICON.PNG / ICON_256.PNG / README.md / AGENT.md
 │   ├── manifest / vikunja.fpk（当前版本）
 │   └── src/                 # 打包层源码（manifest / ui-config / gateway_proxy.py）
+├── emby-in-one/
+│   ├── ICON.PNG / ICON_256.PNG / README.md / AGENT.md / LICENSE (GPL-3.0)
+│   ├── manifest / build.sh / cmd / config / ui / wizard
+│   ├── app/gateway/         # socket sidecar（自动重登）；Go 二进制 app/emby-in-one 不入库
+│   ├── src/                 # 上游 Emby-In-One Go 源码 fork（含 validateAPIKey 定制补丁）
+│   ├── docs/ tests/         # 排障报告 / e2e 测试
+│   └── （emby-in-one.fpk 走 GitHub Release 分发，不进 git）
 ├── app-template/
 │   ├── ICON.PNG / ICON_256.PNG / README.md / AGENT.md
 │   ├── build.sh / manifest / config / cmd / ui / wizard / sidecar

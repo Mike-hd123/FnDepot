@@ -1,0 +1,18 @@
+#!/bin/bash
+set -u
+DATA="${wizard_delete_data:-false}"
+echo "数据删除选项: ${DATA:-<unset>}"
+case "$DATA" in
+    "true")
+        echo "卸载前删除数据目录：$TRIM_PKGVAR"
+        if [ -n "${TRIM_PKGVAR:-}" ] && [ -d "$TRIM_PKGVAR" ]; then
+            rm -rf "$TRIM_PKGVAR" && echo "删除成功" || echo "删除失败" >&2
+        else
+            echo "目录不存在或 TRIM_PKGVAR 未设置，无需删除"
+        fi
+        ;;
+    "false"|*)
+        echo "保留数据文件"
+        ;;
+esac
+exit 0

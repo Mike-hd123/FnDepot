@@ -12,6 +12,7 @@
 | `octopus/` | Octopus(LLM 网关) | 0.13.8-1 | bestruirui/octopus | [AGENT.md](./octopus/AGENT.md) |
 | `ezbookkeeping/` | EZ记账 | 2.0.1-1 | mayswind/ezbookkeeping | [AGENT.md](./ezbookkeeping/AGENT.md) |
 | `vikunja/` | 待办(Vikunja) | 2.6.0-14 | go-vikunja/vikunja | [AGENT.md](./vikunja/AGENT.md) |
+| `emby-in-one/` | Emby | 1.4.4-4 | ArizeSky/Emby-In-One (GPL-3.0) | [AGENT.md](./emby-in-one/AGENT.md) |
 | `app-template/` | 打包模板（非应用） | — | — | [AGENT.md](./app-template/AGENT.md) |
 
 > **fluxor 已 2026-09-22 全量下线**（目录/commit/fnpack.json 记录均已清空），后续统一用官方版，勿在此仓库 fork。
@@ -42,7 +43,7 @@
 
 - **GitHub Contents API 碎片**：逐文件推产生 100+ commit + 冲突标记残留 → 只能 force push 覆盖，别再用。
 - **fnpack.json 索引滞后**：部分 releases 会落后于目录实况（历史遗留：ezbookkeeping 曾未录 2.0.0-1）。**发版收口必须同步** `fnpack.json` + 根 README 表格 + 历史包文件名。
-- **桌面入口 404 / WS 426**：fnOS entry.url 路径 vs 端口模式，唯一决定字段是 `target/ui/config` 的 `gatewaySocket/gatewayPrefix`；manifest 的 `micro_app/service_port` 完全无效（vikunja 2.6.0-12 死路坐实）。
+- **桌面入口 404 / WS 426**：socket 型桌面入口 = `ui/config` 的 `gatewaySocket/gatewayPrefix` **和** manifest `micro_app=true` 两者缺一不可（vikunja 2.6.0-12 只加 micro_app 无 gatewaySocket 死路；emby-in-one 1.4.4-3 反之漏 micro_app 图标点击不通，1.4.4-4 起打包源固化）。
 - **fnpack build 缺脚本 → 10111**：`cmd/` 9 脚本（install_init/install_callback/config_init/config_callback/main/uninstall_init/uninstall_callback 等）必须齐全。
 - **fnOS 桌面图标缓存**：改包图标后桌面显示旧的=缓存问题，不是打包问题（fluxor 1.6.1-2 排查结论）。
 - **fnOS install-fpk 升级忽略 `-v`**：升级时沿用原卷；卷迁移必须重装，不能靠升级切卷。

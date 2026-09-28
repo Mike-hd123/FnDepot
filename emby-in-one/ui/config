@@ -1,0 +1,14 @@
+{
+  ".url": {
+    "emby-in-one.panel": {
+      "title": "Emby",
+      "icon": "images/icon-{0}.png",
+      "type": "iframe",
+      "protocol": "",
+      "gatewayPrefix": "/app/emby",
+      "gatewaySocket": "app.sock",
+      "url": "/app/emby/admin/",
+      "allUsers": true
+    }
+  }
+}

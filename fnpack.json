@@ -198,6 +198,39 @@
           }
         }
       }
+    },
+    "emby-in-one": {
+      "display_name": "Emby",
+      "desc": "Emby 多账号聚合反向代理 —— Go 单二进制(静态编译 CGO+SQLite) + Python socket 网关 sidecar。解决上游 Emby Boost CDN 签名 URL 900 秒过期导致拖拽 403；redirect 模式重建上游 URL、多用户进度隔离、ID 重写、海报墙透传。桌面图标走 /app/emby/admin/，后台 admin token 失效自动重登(无感续命)，TV 端直连 18096 零干预。上游项目：ArizeSky/Emby-In-One (GPL-3.0, V1.4.4-rc1)。",
+      "platform": [
+        "x86"
+      ],
+      "categories": [
+        "影音娱乐",
+        "系统工具"
+      ],
+      "icon_url": "./emby-in-one/ICON.PNG",
+      "maintainer": "ArizeSky",
+      "maintainer_url": "https://github.com/ArizeSky/Emby-In-One",
+      "distributor": "Mike",
+      "distributor_url": "https://github.com/Mike-hd123",
+      "run_as": "package",
+      "install_type": "volume",
+      "is_docker": false,
+      "service_port": "18096",
+      "releases": {
+        "1.4.4-4": {
+          "changelog": "1.4.4-4（2026-09-28）：sidecar 管理员自动重登——后端服务重启致 admin token(纯内存态)失效时，/admin/api 请求 401 自动用 admin/admin 重登拿新 token 重放(≤2发/30s失败退避)，浏览器无感；旧→新 token 映射落盘 gateway_state.json 跨重启；TV/客户端路径零干预；e2e 5 场景全过，用户实测通过。manifest micro_app=true 固化进打包源(4-3 装机侧双写补救的根修)。",
+          "updated_at": "2026-09-28T10:30:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.23/emby-in-one-1.4.4-4-x86.fpk",
+              "sha256": "09490bfd54a7c24474e9f36bdca6de9034a7692d1cd2b548920c55370c003725",
+              "size": 4476032
+            }
+          }
+        }
+      }
     }
   }
 }

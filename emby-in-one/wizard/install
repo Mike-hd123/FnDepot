@@ -1,0 +1,12 @@
+[
+  {
+    "stepTitle": "Emby 聚合代理 安装说明",
+    "items": [
+      {
+        "type": "tips",
+        "label": "",
+        "helpText": "Emby 聚合代理 1.4.4-1\nupstream: ArizeSky/Emby-In-One\n\n• 端口 18096，桌面图标经 fnOS 网关打开。\n• 数据目录独立持久，升级/重装不清数据。\n• 已预配上游 entertang 服务器，redirect 播放模式。\n• 管理面板: http://NAS:18096/admin/"
+      }
+    ]
+  }
+]

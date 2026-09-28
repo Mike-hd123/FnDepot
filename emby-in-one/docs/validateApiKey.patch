@@ -1,0 +1,97 @@
+diff --git a/internal/backend/upstream.go b/internal/backend/upstream.go
+index 0ae7721..cafc0c2 100644
+--- a/internal/backend/upstream.go
++++ b/internal/backend/upstream.go
+@@ -622,16 +622,34 @@ func (c *UpstreamClient) validateAPIKey(ctx context.Context, reqCtx *RequestCont
+ 		c.setOffline(err.Error())
+ 		return
+ 	}
+-	defer resp.Body.Close()
++	resp.Body.Close()
+ 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
++		// Fallback: some custom Emby servers (e.g. "Emby Boost") reject /Users/Me
++		// with 403 "cannot access other user" even for valid API keys. Try the
++		// /Users list endpoint instead and pick the first user's Id.
+ 		if c.logger != nil {
+-			c.logger.Errorf("[%s] API key validation failed: %s", c.Name, resp.Status)
++			c.logger.Infof("[%s] /Users/Me returned %s, falling back to /Users list", c.Name, resp.Status)
++		}
++		userID := c.validateAPIKeyViaUsersList(ctx, reqCtx, identity)
++		if userID != "" {
++			if c.logger != nil {
++				c.logger.Infof("[%s] API key auth success (via /Users fallback), userId=%s", c.Name, userID)
++			}
++			c.setOnline(strings.TrimSpace(c.Config.APIKey), userID)
++			return
+ 		}
+ 		c.setOffline(resp.Status)
+ 		return
+ 	}
++	// Re-read body for the 2xx path (resp.Body was closed above, re-fetch)
++	resp2, err := c.doRequestForMode(ctx, reqCtx, http.MethodGet, "/Users/Me", nil, nil, c.requestHeaders(reqCtx, identity), false, authModeAPIKeyValidation)
++	if err != nil {
++		c.setOffline(err.Error())
++		return
++	}
++	defer resp2.Body.Close()
+ 	var data map[string]any
+-	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
++	if err := json.NewDecoder(resp2.Body).Decode(&data); err != nil {
+ 		if c.logger != nil {
+ 			c.logger.Errorf("[%s] API key validation failed: decode Users/Me: %s", c.Name, err.Error())
+ 		}
+@@ -640,6 +658,15 @@ func (c *UpstreamClient) validateAPIKey(ctx context.Context, reqCtx *RequestCont
+ 	}
+ 	userID, _ := data["Id"].(string)
+ 	if userID == "" {
++		// Try /Users fallback before giving up
++		fallbackID := c.validateAPIKeyViaUsersList(ctx, reqCtx, identity)
++		if fallbackID != "" {
++			if c.logger != nil {
++				c.logger.Infof("[%s] API key auth success (via /Users fallback after missing Id), userId=%s", c.Name, fallbackID)
++			}
++			c.setOnline(strings.TrimSpace(c.Config.APIKey), fallbackID)
++			return
++		}
+ 		if c.logger != nil {
+ 			c.logger.Errorf("[%s] API key validation failed: Users/Me response missing Id", c.Name)
+ 		}
+@@ -652,6 +679,38 @@ func (c *UpstreamClient) validateAPIKey(ctx context.Context, reqCtx *RequestCont
+ 	c.setOnline(strings.TrimSpace(c.Config.APIKey), userID)
+ }
+ 
++// validateAPIKeyViaUsersList fetches /Users and returns the first user's Id.
++// Used as a fallback when /Users/Me is rejected by custom Emby servers.
++func (c *UpstreamClient) validateAPIKeyViaUsersList(ctx context.Context, reqCtx *RequestContext, identity *ClientIdentityService) string {
++	resp, err := c.doRequestForMode(ctx, reqCtx, http.MethodGet, "/Users", nil, nil, c.requestHeaders(reqCtx, identity), false, authModeAPIKeyValidation)
++	if err != nil {
++		if c.logger != nil {
++			c.logger.Errorf("[%s] /Users fallback failed: %s", c.Name, err.Error())
++		}
++		return ""
++	}
++	defer resp.Body.Close()
++	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
++		if c.logger != nil {
++			c.logger.Errorf("[%s] /Users fallback returned %s", c.Name, resp.Status)
++		}
++		return ""
++	}
++	var users []map[string]any
++	if err := json.NewDecoder(resp.Body).Decode(&users); err != nil {
++		if c.logger != nil {
++			c.logger.Errorf("[%s] /Users fallback decode failed: %s", c.Name, err.Error())
++		}
++		return ""
++	}
++	for _, u := range users {
++		if id, _ := u["Id"].(string); id != "" {
++			return id
++		}
++	}
++	return ""
++}
++
+ func (c *UpstreamClient) setOnline(token, userID string) {
+ 	c.mu.Lock()
+ 	defer c.mu.Unlock()

@@ -1,0 +1,148 @@
+#!/bin/bash
+# cmd/main — Emby-In-One (Go) 进程管理 + gateway sidecar
+# 应用监听 TCP 18096；gateway sidecar 监听 APPDEST/app.sock → 127.0.0.1:18096
+# 桌面入口走 socket 模式（/app/emby 前缀），电视端 App 走裸 TCP 18096，两者共存。
+# v1.4.4-3: 新增 sidecar 起停/探活；is_running 加 pgrep 兜底（防 nohup & 的 $! 过渡 PID 坑）
+set -u
+
+APP_DIR="${TRIM_APPDEST:-/vol1/@appcenter/emby-in-one}"
+VAR_DIR="${TRIM_PKGVAR:-/vol1/@appdata/emby-in-one}"
+LOG_FILE="${VAR_DIR}/emby-in-one.log"
+GW_LOG_FILE="${VAR_DIR}/gateway.log"
+PID_FILE="${VAR_DIR}/emby-in-one.pid"
+GW_PID_FILE="${VAR_DIR}/gateway.pid"
+export PORT="${TRIM_SERVICE_PORT:-18096}"
+
+mkdir -p "${VAR_DIR}" "${APP_DIR}/config" "${APP_DIR}/data"
+
+# 二进制以相对路径找 config/config.yaml 与 data/，必须先切到安装目录
+cd "${APP_DIR}" || { echo "FATAL: cannot cd to ${APP_DIR}" >&2; exit 1; }
+
+is_running() {
+  if [ -f "$PID_FILE" ]; then
+    local pid
+    pid=$(cat "$PID_FILE" 2>/dev/null)
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  # 兜底: nohup ... & 的 $! 可能记到过渡 shell PID，按进程名找回真身并回写
+  local real
+  real=$(pgrep -x emby-in-one 2>/dev/null | head -1)
+  if [ -n "$real" ]; then
+    echo "$real" > "$PID_FILE" 2>/dev/null || true
+    return 0
+  fi
+  return 1
+}
+
+gw_running() {
+  if [ -f "$GW_PID_FILE" ]; then
+    local gwpid
+    gwpid=$(cat "$GW_PID_FILE" 2>/dev/null)
+    if [ -n "$gwpid" ] && kill -0 "$gwpid" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  # 兜底: gateway sidecar 是 python3 跑的 emby-gateway.py，按 cmdline 找
+  local real
+  real=$(pgrep -f "emby-gateway.py" 2>/dev/null | head -1)
+  if [ -n "$real" ]; then
+    echo "$real" > "$GW_PID_FILE" 2>/dev/null || true
+    return 0
+  fi
+  return 1
+}
+
+stop_gw() {
+  if [ -f "$GW_PID_FILE" ]; then
+    local gwpid
+    gwpid=$(cat "$GW_PID_FILE" 2>/dev/null)
+    if [ -n "$gwpid" ] && kill -0 "$gwpid" 2>/dev/null; then
+      kill "$gwpid" 2>/dev/null
+      sleep 1
+      kill -9 "$gwpid" 2>/dev/null || true
+    fi
+    rm -f "$GW_PID_FILE"
+  fi
+  # 兜底清理残留 sidecar 进程
+  pkill -f "emby-gateway.py" 2>/dev/null || true
+  rm -f "${APP_DIR}/app.sock" 2>/dev/null || true
+}
+
+stop_app() {
+  if is_running; then
+    local pid
+    pid=$(cat "$PID_FILE")
+    kill "$pid" 2>/dev/null
+    sleep 3
+    kill -9 "$pid" 2>/dev/null || true
+    rm -f "$PID_FILE"
+  fi
+}
+
+case "${1:-}" in
+  start)
+    is_running && gw_running && exit 0
+
+    # Config file: prefer persistent copy in VAR_DIR, fallback to bundled default
+    CONFIG_SRC="${VAR_DIR}/config.yaml"
+    CONFIG_DST="${APP_DIR}/config/config.yaml"
+    if [ -f "$CONFIG_SRC" ]; then
+      cp "$CONFIG_SRC" "$CONFIG_DST"
+    elif [ -f "$CONFIG_DST" ]; then
+      : # use bundled
+    else
+      echo "FATAL: no config.yaml found" >&2
+      exit 1
+    fi
+
+    # Data dir: persistent in VAR_DIR, symlink into app dir
+    ln -sfn "${VAR_DIR}" "${APP_DIR}/data-persist" 2>/dev/null || true
+    mkdir -p "${VAR_DIR}/data"
+
+    if ! is_running; then
+      nohup "${APP_DIR}/emby-in-one" \
+        >> "$LOG_FILE" 2>&1 &
+      echo $! > "$PID_FILE"
+      sleep 3
+      if ! is_running; then
+        echo "emby-in-one start failed - check ${LOG_FILE}" >&2
+        stop_gw
+        exit 1
+      fi
+    fi
+
+    # 启动 gateway sidecar
+    if ! gw_running; then
+      GATEWAY_SOCK_PATH="${APP_DIR}/app.sock" \
+      GATEWAY_BACKEND_PORT="${PORT}" \
+      GATEWAY_PID_FILE="$GW_PID_FILE" \
+      GATEWAY_STATE_FILE="${VAR_DIR}/gateway_state.json" \
+      EIO_ADMIN_USER="admin" \
+      EIO_ADMIN_PASS="admin" \
+        nohup python3 "${APP_DIR}/gateway/emby-gateway.py" \
+        >> "$GW_LOG_FILE" 2>&1 &
+      echo $! > "$GW_PID_FILE"
+      sleep 1
+      if ! gw_running || [ ! -S "${APP_DIR}/app.sock" ]; then
+        echo "gateway sidecar start failed - check ${GW_LOG_FILE}" >&2
+        stop_app
+        exit 1
+      fi
+    fi
+
+    echo "emby-in-one started on port ${PORT} (gateway socket: ${APP_DIR}/app.sock)"
+    ;;
+  stop)
+    stop_gw
+    stop_app
+    ;;
+  status)
+    # main + gateway 双活才 exit 0，防 sidecar 挂了但 main 活着的「UI 停用」误判
+    is_running && gw_running && exit 0 || exit 3
+    ;;
+  *)
+    exit 0
+    ;;
+esac
