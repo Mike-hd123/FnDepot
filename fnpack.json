@@ -229,6 +229,17 @@
               "size": 4476032
             }
           }
+        },
+        "1.4.4-5": {
+          "changelog": "1.4.4-5（2026-09-29）：网关前缀统一 /app/emby-in-one —— 根治 fnOS 桌面图标路由失效（ui/config gatewayPrefix 与 sidecar _PREFIX、fnOS 注册层三方分叉，装机侧已热修、本次源码对齐防升级复发）；cmd/main 注入 GATEWAY_PREFIX；NUC7 现网实测门户可打开。二进制内嵌版本 1.4.4-5（静态编译 timetzdata）。",
+          "updated_at": "2026-09-29T15:00:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.23/emby-in-one-1.4.4-5-x86.fpk",
+              "sha256": "4f7e507aeec8ae0d9277d7f8c3eb0616c35764fd3a9a3f10dff7902a4412462a",
+              "size": 4581857
+            }
+          }
         }
       }
     }

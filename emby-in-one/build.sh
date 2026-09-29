@@ -5,7 +5,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 cd "$HERE"
 
 APP_NAME="emby-in-one"
-VERSION="1.4.4-4"
+VERSION="1.4.4-5"
 ARCH="x86"
 OUT="${1:-/vol2/1000/download/${APP_NAME}-${VERSION}-${ARCH}.fpk}"
 
