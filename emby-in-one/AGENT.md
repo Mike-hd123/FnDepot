@@ -3,14 +3,14 @@
 > 通用规矩见根 [AGENT.md](../AGENT.md)。本文件讲 emby-in-one 特有的架构、定制清单与血泪坑。
 
 ## 定位
-Emby 多账号聚合反向代理（基于 [ArizeSky/Emby-In-One](https://github.com/ArizeSky/Emby-In-One) GPL-3.0，v1.4.4-rc1）。解决上游 Emby Boost CDN 签名 URL 900 秒过期导致 TV 端拖拽 403。本机现役服务端口 **18096**，桌面入口 `/app/emby/admin/`（socket 模式）。
+Emby 多账号聚合反向代理（基于 [ArizeSky/Emby-In-One](https://github.com/ArizeSky/Emby-In-One) GPL-3.0，v1.4.4-rc1）。解决上游 Emby Boost CDN 签名 URL 900 秒过期导致 TV 端拖拽 403。本机现役服务端口 **18096**，桌面入口 `/app/emby-in-one/admin/`（socket 模式）。
 
 ## 架构（v1.4.4-3 起 = Go 后端 + Python socket sidecar 双进程）
 ```
 fnOS 桌面图标 → trim 网关 → app.sock（sidecar）→ 127.0.0.1:18096（Go 后端）
 TV/客户端     → 直连 TCP 18096（不走 sidecar）
 ```
-- `app/gateway/emby-gateway.py`：Unix socket 反代 sidecar，剥 `/app/emby` 前缀、根路径 302 → `/app/emby/admin/`
+- `app/gateway/emby-gateway.py`：Unix socket 反代 sidecar，剥 `/app/emby-in-one` 前缀、根路径 302 → `/app/emby-in-one/admin/`
 - **管理员自动重登（v1.4.4-4）**：后端 admin token 是纯内存态，服务重启即废。sidecar 拦 `/admin/api/*` 的 401 → 查 stale_map 旧→新映射 → 无则用 `EIO_ADMIN_USER/PASS`（默认 admin/admin）调 `POST /Users/AuthenticateByName` 拿新 token 重放（≤2 发、30s 失败退避、登录互斥锁）。映射落盘 `GATEWAY_STATE_FILE`（`@appdata/gateway_state.json`），sidecar 重启不丢。非 `/admin/api` 路径（TV 播放/客户端登录）零干预。
 - Go 二进制不在 git：build 前从 `/vol2/1000/workspace/emby-in-one/repo/`（fork，含定制）静态编译 `CGO_ENABLED=1 go build -tags timetzdata -trimpath -ldflags '-s -w -extldflags "-static"' -o app/emby-in-one ./cmd/embyinone`，产物 10MB，`app/emby-in-one` 被 .gitignore 屏蔽
 - `cmd/main`：status/start/stop 三连；start = Go 后端 + sidecar 双拉起；stop 用 pgrep 兜底（as_user 子 shell `$!` 错位坑）；status = main 脚本参数 + pgrep 双进程校活

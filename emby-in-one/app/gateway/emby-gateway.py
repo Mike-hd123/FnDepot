@@ -2,19 +2,19 @@
 """Emby-In-One fnOS gateway sidecar — 剥前缀 HTTP 反代。
 
 emby-in-one (Go) 监听 TCP 18096 (loopback)，本 sidecar 把 APPDEST/app.sock → 127.0.0.1:18096。
-fnOS 桌面走 /app/emby/ 前缀，sidecar 剥前缀后转发后端。
+fnOS 桌面走 /app/emby-in-one/ 前缀，sidecar 剥前缀后转发后端。
 
 路径重写规则（emby admin SPA 不支持 base URL，JS 里全是绝对路径）:
-- 剥前缀: /app/emby/<x> → /<x>; 无尾斜杠精确 /app/emby → 301 带斜杠
-- 根路径 / → 302 → /app/emby/admin/（admin 后台才是桌面入口）
+- 剥前缀: /app/emby-in-one/<x> → /<x>; 无尾斜杠精确 /app/emby-in-one → 301 带斜杠
+- 根路径 / → 302 → /app/emby-in-one/admin/（admin 后台才是桌面入口）
 - JS 响应体: 绝对路径重写
-    /admin/api/  → /app/emby/admin/api/
-    /admin/      → /app/emby/admin/  (非 /admin/api 的其他 admin 引用)
-    /Users/      → /app/emby/Users/  (Emby 客户端登录 API)
-    /libraries   → /app/emby/libraries
-    /reconnect   → /app/emby/reconnect
-- HTML 响应体: href="/admin" → href="/app/emby/admin"（/emby/ 占位页里的跳转链接）
-- Location 头: 后端绝对路径 → 补 /app/emby 前缀
+    /admin/api/  → /app/emby-in-one/admin/api/
+    /admin/      → /app/emby-in-one/admin/  (非 /admin/api 的其他 admin 引用)
+    /Users/      → /app/emby-in-one/Users/  (Emby 客户端登录 API)
+    /libraries   → /app/emby-in-one/libraries
+    /reconnect   → /app/emby-in-one/reconnect
+- HTML 响应体: href="/admin" → href="/app/emby-in-one/admin"（/emby/ 占位页里的跳转链接）
+- Location 头: 后端绝对路径 → 补 /app/emby-in-one 前缀
 - Origin → http://127.0.0.1:18096 (CORS)
 - 转发剥 Accept-Encoding (强制后端返明文 + CL)
 - SSE 流式: event-stream 走原始 socket 增量泵
@@ -35,7 +35,7 @@ BACKEND_PORT = int(os.environ.get("GATEWAY_BACKEND_PORT", "18096"))
 BACKEND_HOST = os.environ.get("GATEWAY_BACKEND_HOST", "127.0.0.1")
 PID_FILE = os.environ.get("GATEWAY_PID_FILE", "")
 
-_PREFIX = os.environ.get("GATEWAY_PREFIX", "/app/emby")
+_PREFIX = os.environ.get("GATEWAY_PREFIX", "/app/emby-in-one")
 IO_TIMEOUT = 600
 
 # ── 管理员自动重登（后端重启内存 token 作废 → 网关无感续命）──
@@ -70,9 +70,9 @@ _JS_PATTERNS = [
 
 # ── HTML 绝对路径重写 ──
 _HTML_PATTERNS = [
-    # href="/admin" → href="/app/emby/admin"
+    # href="/admin" → href="/app/emby-in-one/admin"
     (re.compile(rb'href="(/admin)"'), lambda m: b'href="' + _PREFIX.encode() + m.group(1) + b'"'),
-    # href="/admin/..." → href="/app/emby/admin/..."
+    # href="/admin/..." → href="/app/emby-in-one/admin/..."
     (re.compile(rb'href="(/admin/)"'), lambda m: b'href="' + _PREFIX.encode() + m.group(1) + b'"'),
 ]
 
@@ -348,7 +348,7 @@ def handle(sock):
         path = split_q[0]
         query = "?" + split_q[1] if len(split_q) > 1 else ""
 
-        # 精确 /app/emby → 301 → /app/emby/
+        # 精确 /app/emby-in-one → 301 → /app/emby-in-one/
         if path == _PREFIX:
             body = ("<html><body><a href='%s/'>Go to %s/</a></body></html>"
                     % (_PREFIX, _PREFIX)).encode("utf-8")
@@ -362,7 +362,7 @@ def handle(sock):
 
         fwd_path = _strip_prefix(path)
 
-        # 根路径 / → 302 → /app/emby/admin/（admin 后台是桌面入口）
+        # 根路径 / → 302 → /app/emby-in-one/admin/（admin 后台是桌面入口）
         if fwd_path == "/":
             body = ("<html><body><a href='%s/admin/'>Emby Admin Panel</a></body></html>"
                     % _PREFIX).encode("utf-8")

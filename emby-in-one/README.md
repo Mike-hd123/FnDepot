@@ -7,7 +7,7 @@ Emby 多账号聚合反向代理，解决上游 Emby Boost CDN 签名 URL 900 �
 ## 架构
 - **形态**: 原生 fnOS 应用 = Go 单二进制后端（静态编译 CGO+SQLite）+ Python socket 网关 sidecar
 - **后端端口**: TCP 18096（TV/Emby 客户端直连此端口）
-- **桌面入口**: 飞牛桌面图标 → fnOS 网关 Unix socket（`app.sock`）→ sidecar 反代 → 18096，路径 `/app/emby/admin/`
+- **桌面入口**: 飞牛桌面图标 → fnOS 网关 Unix socket（`app.sock`）→ sidecar 反代 → 18096，路径 `/app/emby-in-one/admin/`
 - **数据目录**: `@appdata/emby-in-one/`（config.yaml + mappings.db + tokens.json + gateway_state.json + 日志）
 - **运行用户**: user（非 root）
 

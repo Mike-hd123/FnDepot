@@ -16,20 +16,20 @@
 照抄 hyatlas `gateway_proxy.py` 模式改造，核心机制：
 
 - **Unix socket 反代**: `APPDEST/app.sock` → `127.0.0.1:18096`（emby-in-one Go 后端）
-- **剥前缀**: fnOS 桌面走 `/app/emby/<path>` 前缀，sidecar 剥掉前缀后转发后端裸路径
-- **根路径重定向**: `/app/emby/` → 302 → `/app/emby/admin/`（admin 后台是桌面入口，不是 Emby 客户端占位页）
+- **剥前缀**: fnOS 桌面走 `/app/emby-in-one/<path>` 前缀，sidecar 剥掉前缀后转发后端裸路径
+- **根路径重定向**: `/app/emby-in-one/` → 302 → `/app/emby-in-one/admin/`（admin 后台是桌面入口，不是 Emby 客户端占位页）
 - **JS 响应体绝对路径重写**（emby SPA 不支持 base URL，JS 里全是绝对路径）：
 
 | 原始路径 | 重写后 | 用途 |
 |---|---|---|
-| `/admin/api/*` | `/app/emby/admin/api/*` | admin 后台 API |
-| `/Users/*` | `/app/emby/Users/*` | Emby 认证 API (AuthenticateByName) |
-| `/admin/` (非 api) | `/app/emby/admin/` | admin 其他引用 |
-| `/libraries` | `/app/emby/libraries` | Emby 客户端 API |
-| `/reconnect` | `/app/emby/reconnect` | Emby 客户端重连 |
+| `/admin/api/*` | `/app/emby-in-one/admin/api/*` | admin 后台 API |
+| `/Users/*` | `/app/emby-in-one/Users/*` | Emby 认证 API (AuthenticateByName) |
+| `/admin/` (非 api) | `/app/emby-in-one/admin/` | admin 其他引用 |
+| `/libraries` | `/app/emby-in-one/libraries` | Emby 客户端 API |
+| `/reconnect` | `/app/emby-in-one/reconnect` | Emby 客户端重连 |
 
-- **HTML 响应体重写**: `/emby/` 占位页的 `href="/admin"` → `href="/app/emby/admin"`
-- **Location 头补全**: 后端返回的绝对路径 Location 自动补 `/app/emby` 前缀
+- **HTML 响应体重写**: `/emby/` 占位页的 `href="/admin"` → `href="/app/emby-in-one/admin"`
+- **Location 头补全**: 后端返回的绝对路径 Location 自动补 `/app/emby-in-one` 前缀
 - **Origin 改写**: 强制 `http://127.0.0.1:18096`（CORS）
 - **Accept-Encoding 剥离**: 强制后端返明文 + Content-Length（hyatlas 同款）
 - **SSE 流式**: event-stream 走原始 socket 增量泵
@@ -56,17 +56,17 @@
 {
   "type": "iframe",
   "protocol": "",
-  "gatewayPrefix": "/app/emby",
+  "gatewayPrefix": "/app/emby-in-one",
   "gatewaySocket": "app.sock",
-  "url": "/app/emby/admin/",
+  "url": "/app/emby-in-one/admin/",
   "allUsers": true
 }
 ```
 
 - **去掉 `port` 字段** — 不再裸 TCP 直连
 - `gatewaySocket` = `app.sock`（相对于 @appcenter/emby-in-one/ 根目录解析）
-- `gatewayPrefix` = `/app/emby`（fnOS 桌面统一前缀）
-- `url` = `/app/emby/admin/`（桌面入口直指 admin 后台）
+- `gatewayPrefix` = `/app/emby-in-one`（fnOS 桌面统一前缀）
+- `url` = `/app/emby-in-one/admin/`（桌面入口直指 admin 后台）
 
 ### 4. 版本号联动
 
@@ -86,7 +86,7 @@
 ### 实测 curl 证据（2026-09-28，对 127.0.0.1:18096 只读 GET）
 
 ```
-=== Test 1: GET /app/emby/admin/ ===
+=== Test 1: GET /app/emby-in-one/admin/ ===
 HTTP 200
 
 === Test 2: HTML 资源引用（全相对路径）===
@@ -101,23 +101,23 @@ vendor/tailwind.css: HTTP 200
 admin.js: HTTP 200
 
 === Test 4: admin.js API 路径全被重写 ===
-'/app/emby/Users/AuthenticateByName'      ← 原 /Users/AuthenticateByName
-'/app/emby/admin/api/client-info'         ← 原 /admin/api/client-info
-'/app/emby/admin/api/logs'                 ← 原 /admin/api/logs
-'/app/emby/admin/api/proxies'              ← 原 /admin/api/proxies
-'/app/emby/admin/api/settings'             ← 原 /admin/api/settings
-'/app/emby/admin/api/users'                ← 原 /admin/api/users
-'/app/emby/libraries'                      ← 原 /libraries
-'/app/emby/reconnect'                      ← 原 /reconnect
+'/app/emby-in-one/Users/AuthenticateByName'      ← 原 /Users/AuthenticateByName
+'/app/emby-in-one/admin/api/client-info'         ← 原 /admin/api/client-info
+'/app/emby-in-one/admin/api/logs'                 ← 原 /admin/api/logs
+'/app/emby-in-one/admin/api/proxies'              ← 原 /admin/api/proxies
+'/app/emby-in-one/admin/api/settings'             ← 原 /admin/api/settings
+'/app/emby-in-one/admin/api/users'                ← 原 /admin/api/users
+'/app/emby-in-one/libraries'                      ← 原 /libraries
+'/app/emby-in-one/reconnect'                      ← 原 /reconnect
 
-=== Test 5: /app/emby (无尾斜杠) → 301 ===
-HTTP 301 Location: /app/emby/
+=== Test 5: /app/emby-in-one (无尾斜杠) → 301 ===
+HTTP 301 Location: /app/emby-in-one/
 
-=== Test 6: /app/emby/ 根 → 302 ===
-HTTP 302 Location: /app/emby/admin/
+=== Test 6: /app/emby-in-one/ 根 → 302 ===
+HTTP 302 Location: /app/emby-in-one/admin/
 
 === Test 7: /emby/ 占位页 href 重写 ===
-href="/app/emby/admin"  ← 原 href="/admin"
+href="/app/emby-in-one/admin"  ← 原 href="/admin"
 ```
 
 ### 重写规则设计依据
@@ -125,7 +125,7 @@ href="/app/emby/admin"  ← 原 href="/admin"
 1. **admin SPA 资源全用相对路径**（vendor/、admin.js）→ sidecar 不需要重写 HTML 里的 src/href（除 /emby/ 占位页的绝对链接）
 2. **admin.js fetch 全用绝对路径** → sidecar 在 JS 响应体里做正则重写，按最长前缀优先匹配（`/admin/api/` 优先于 `/admin/`，避免误吞）
 3. **emby-in-one 二进制不支持 base URL** → 不能靠后端配前缀，只能 sidecar 拦截响应体
-4. **`/` 返回 Emby 客户端占位页**（不是 admin 后台）→ sidecar 根路径 302 重定向到 `/app/emby/admin/`
+4. **`/` 返回 Emby 客户端占位页**（不是 admin 后台）→ sidecar 根路径 302 重定向到 `/app/emby-in-one/admin/`
 
 ---
 

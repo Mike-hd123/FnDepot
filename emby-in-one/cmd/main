@@ -1,7 +1,7 @@
 #!/bin/bash
 # cmd/main — Emby-In-One (Go) 进程管理 + gateway sidecar
 # 应用监听 TCP 18096；gateway sidecar 监听 APPDEST/app.sock → 127.0.0.1:18096
-# 桌面入口走 socket 模式（/app/emby 前缀），电视端 App 走裸 TCP 18096，两者共存。
+# 桌面入口走 socket 模式（/app/emby-in-one 前缀），电视端 App 走裸 TCP 18096，两者共存。
 # v1.4.4-3: 新增 sidecar 起停/探活；is_running 加 pgrep 兜底（防 nohup & 的 $! 过渡 PID 坑）
 set -u
 

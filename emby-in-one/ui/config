@@ -5,9 +5,9 @@
       "icon": "images/icon-{0}.png",
       "type": "iframe",
       "protocol": "",
-      "gatewayPrefix": "/app/emby",
+      "gatewayPrefix": "/app/emby-in-one",
       "gatewaySocket": "app.sock",
-      "url": "/app/emby/admin/",
+      "url": "/app/emby-in-one/admin/",
       "allUsers": true
     }
   }
