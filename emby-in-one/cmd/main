@@ -18,6 +18,38 @@ mkdir -p "${VAR_DIR}" "${APP_DIR}/config" "${APP_DIR}/data"
 # 二进制以相对路径找 config/config.yaml 与 data/，必须先切到安装目录
 cd "${APP_DIR}" || { echo "FATAL: cannot cd to ${APP_DIR}" >&2; exit 1; }
 
+# 从持久化 config.yaml 读 admin.username/password（sidecar 自动重登凭据），读不到回退 admin/admin
+read_admin_creds() {
+  local user="admin" pass="admin" out u p
+  if [ -f "${VAR_DIR}/config.yaml" ]; then
+    out=$(python3 -c '
+import sys
+u = p = ""
+admin = False
+for ln in open(sys.argv[1], encoding="utf-8"):
+    s = ln.strip()
+    if s == "admin:":
+        admin = True
+        continue
+    if admin and s and not ln[:1].isspace():
+        break
+    if admin and s:
+        if s.startswith("username:"):
+            u = s.split(":", 1)[1].strip().strip("\u0027\"")
+        elif s.startswith("password:"):
+            p = s.split(":", 1)[1].strip().strip("\u0027\"")
+print(u)
+print(p)
+' "${VAR_DIR}/config.yaml" 2>/dev/null || true)
+    u=$(printf '%s\n' "$out" | sed -n '1p')
+    p=$(printf '%s\n' "$out" | sed -n '2p')
+    [ -n "$u" ] && user="$u"
+    [ -n "$p" ] && pass="$p"
+  fi
+  EIO_ADMIN_USER="$user"
+  EIO_ADMIN_PASS="$pass"
+}
+
 is_running() {
   if [ -f "$PID_FILE" ]; then
     local pid
@@ -113,14 +145,15 @@ case "${1:-}" in
       fi
     fi
 
-    # 启动 gateway sidecar
+    # 启动 gateway sidecar（admin 凭据从持久化 config 读，读不到回退 admin/admin）
     if ! gw_running; then
+      read_admin_creds
       GATEWAY_SOCK_PATH="${APP_DIR}/app.sock" \
       GATEWAY_BACKEND_PORT="${PORT}" \
       GATEWAY_PID_FILE="$GW_PID_FILE" \
       GATEWAY_STATE_FILE="${VAR_DIR}/gateway_state.json" \
-      EIO_ADMIN_USER="admin" \
-      EIO_ADMIN_PASS="admin" \
+      EIO_ADMIN_USER="${EIO_ADMIN_USER:-admin}" \
+      EIO_ADMIN_PASS="${EIO_ADMIN_PASS:-admin}" \
         nohup python3 "${APP_DIR}/gateway/emby-gateway.py" \
         >> "$GW_LOG_FILE" 2>&1 &
       echo $! > "$GW_PID_FILE"

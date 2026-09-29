@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -118,8 +119,13 @@ func (a *App) Close() error {
 
 func (a *App) Run() error {
 	cfg := a.ConfigStore.Snapshot()
+	// host 为空时退回 ":"+port（全接口），配置了 host 则只监听该地址（如 127.0.0.1）
+	addr := ":" + intToString(cfg.Server.Port)
+	if h := strings.TrimSpace(cfg.Server.Host); h != "" {
+		addr = h + ":" + intToString(cfg.Server.Port)
+	}
 	server := &http.Server{
-		Addr:              ":" + intToString(cfg.Server.Port),
+		Addr:              addr,
 		Handler:           a.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 		// bodyLimitMiddleware caps a request body at 2 MB but not the time it may take to

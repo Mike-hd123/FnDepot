@@ -16,7 +16,7 @@ for f in cmd/main cmd/install_init cmd/install_callback cmd/upgrade_init cmd/upg
   [ -e "$f" ] || { echo "FATAL: 缺必需文件 $f" >&2; exit 1; }
 done
 for f in ICON.PNG ICON_256.PNG ui/images/icon-64.png ui/images/icon-256.png; do
-  [ -e "$f" ] || echo "⚠️ 提示: 无 $f"
+  [ -e "$f" ] || { echo "FATAL: 缺图标 $f" >&2; exit 1; }
 done
 command -v fnpack >/dev/null || { echo "FATAL: fnpack 不在 PATH" >&2; exit 1; }
 
@@ -35,8 +35,8 @@ sed -i "s/<上游版本>-<本地版本号>/$VERSION/" manifest 2>/dev/null || tr
 # ---- 3. fnpack 打包 ----
 echo "=== fnpack build ==="
 fnpack build -d "$HERE"
-FPK="$(ls ${APP_NAME}-*.fpk 2>/dev/null | head -1)"
-[ -n "$FPK" ] || { echo "FATAL: fnpack 未产出 ${APP_NAME}-*.fpk" >&2; exit 1; }
+FPK="$(ls ${APP_NAME}*.fpk 2>/dev/null | head -1)"
+[ -n "$FPK" ] || { echo "FATAL: fnpack 未产出 ${APP_NAME}*.fpk" >&2; exit 1; }
 cp "$FPK" "$OUT"
 
 # ---- 4. 自检 ----

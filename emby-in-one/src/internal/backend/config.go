@@ -22,6 +22,7 @@ type Config struct {
 }
 
 type ServerConfig struct {
+	Host       string // listen host; empty = all interfaces (":port"), "127.0.0.1" = loopback only
 	Port       int
 	Name       string
 	ID         string
@@ -452,6 +453,8 @@ func assignSectionField(cfg *Config, section, key, value string) {
 	switch section {
 	case "server":
 		switch key {
+		case "host":
+			cfg.Server.Host = parseStringValue(value)
 		case "port":
 			cfg.Server.Port = parseIntValue(value)
 		case "name":
@@ -570,6 +573,9 @@ func joinQuoted(items []string) string {
 func renderConfigYAML(cfg *Config) string {
 	var b strings.Builder
 	b.WriteString("server:\n")
+	if cfg.Server.Host != "" {
+		fmt.Fprintf(&b, "  host: %s\n", yamlStr(cfg.Server.Host))
+	}
 	fmt.Fprintf(&b, "  port: %d\n", cfg.Server.Port)
 	fmt.Fprintf(&b, "  name: %s\n", yamlStr(cfg.Server.Name))
 	fmt.Fprintf(&b, "  id: %s\n", yamlStr(cfg.Server.ID))
