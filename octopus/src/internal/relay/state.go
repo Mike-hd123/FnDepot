@@ -43,7 +43,7 @@ type RequestState struct {
 
 	Round          int            `json:"round"`            // 最新一轮循环的递增序号, 人工中止按此匹配以免误杀下一轮。
 	RoundStartedAt time.Time      `json:"round_started_at"` // 最新一轮上游请求的开始时间。
-	TargetChannel  string         `json:"target_channel"`   // 最新一轮选中的渠道名称。
+	TargetChannelKey string       `json:"target_channel_key"` // 最新一轮选中的渠道名称和 Key 名称, 以空格分隔。
 	TargetModel    string         `json:"target_model"`     // 最新一轮实际请求上游的模型名称。
 	TargetProtocol model.Protocol `json:"target_protocol"`  // 最新一轮实际请求上游的协议, 与 Protocol 不同即本轮做了跨协议转换; 0 表示尚未选出。
 	Sending        bool           `json:"sending"`          // 最新一轮是否仍在等待上游响应。
@@ -100,7 +100,7 @@ func newRequestState(ctx context.Context, modelName, reasoningEffort string, gro
 }
 
 // startRound 记录本轮选中的目标并进入上游请求, cancel 供人工中止本轮, 返回递增的轮次序号。
-func (r *RequestState) startRound(cancel context.CancelFunc, channel, modelName string, protocol model.Protocol) int {
+func (r *RequestState) startRound(cancel context.CancelFunc, channelKeyName, modelName string, protocol model.Protocol) int {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -108,7 +108,7 @@ func (r *RequestState) startRound(cancel context.CancelFunc, channel, modelName 
 	r.RoundStartedAt = time.Now()
 	r.OutputChars = 0 // 新一轮从头计数, 避免累计上一轮未提交的输出。
 	r.lastPublish = time.Time{}
-	r.TargetChannel = channel
+	r.TargetChannelKey = channelKeyName
 	r.TargetModel = modelName
 	r.TargetProtocol = protocol
 	r.Sending = true

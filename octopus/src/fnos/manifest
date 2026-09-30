@@ -1,6 +1,6 @@
 appname                    = octopus
-version                    = 0.13.8-1
-desc                       = One Hub All LLMs For You —— LLM API 聚合网关，Go 单二进制，SQLite 存储，原生宿主机运行。上游 v0.13.8（创建渠道错误弹窗提醒 + 思考等级支持，日志布局优化）+ 本地 gateway sidecar v8 剥前缀 HTTP 反代（SSE 流式透传 + 单模块图单实例），手机端 /app/octopus 全链路可路由。
+version                    = 0.13.9-1
+desc                       = One Hub All LLMs For You —— LLM API 聚合网关，Go 单二进制，SQLite 存储，原生宿主机运行。上游 v0.13.9（更多模板预设 + 日志显示所用渠道 key，无 breaking change）+ 本地 gateway sidecar v8 剥前缀 HTTP 反代（SSE 流式透传 + 单模块图单实例），手机端 /app/octopus 全链路可路由。
 display_name               = Octopus
 platform                   = x86
 source                     = thirdparty
@@ -16,4 +16,4 @@ service_port               = 8081
 desktop_uidir              = ui
 desktop_applaunchname      = octopus.panel
 disable_authorization_path = false
-changelog                  = v1（2026-09-23）：同步上游 v0.13.8（commit 9357a32：创建渠道错误时弹窗提醒、增加思考等级、优化日志布局；axonhub/llm 依赖升级）。本地 gateway sidecar v8 补丁保留不变；二进制为上游官方 CI 产物（zip sha256 与 Release SHA256SUMS 一致，反解 version=v0.13.8/commit 9357a32）。
+changelog                  = v1（2026-09-30）：同步上游 v0.13.9（commit a94a740：更多模板预设 35778 + 日志显示所用渠道 key 8e93f，无 breaking change）。本地 gateway sidecar v8 补丁保留不变；二进制为上游官方 CI 产物原样（octopus-linux-amd64.zip sha256 50c646ee，与 Release SHA256SUMS 一致，反解 version=v0.13.9/commit a94a740/Built 2026-09-30 11:01:44 +0800）。

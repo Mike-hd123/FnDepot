@@ -110,7 +110,7 @@ function LogMetrics({ log, now, brandColor, variant }: { log: RelayLogOverview; 
 // ObservedRound 保存弹窗打开期间观察到的一轮上游请求状态。
 interface ObservedRound {
     round: number; // 当前请求内递增的轮次序号。
-    channel: string; // 本轮实际请求的渠道名称。
+    channelKey: string; // 本轮实际请求的渠道名称和 Key 名称, 以空格分隔。
     error: string; // 本轮最近一次上游错误。
     sending: boolean; // 本轮是否仍在等待上游响应。
     startedAt: string; // 服务端记录的本轮开始时间。
@@ -195,7 +195,7 @@ function LogDetail({ log, now, errorRounds }: { log: RelayLogOverview; now: numb
 
     // 按轮次记录本次打开期间观察到的上游请求状态, 最新一轮排在最前。
     // 轮次来自逐次推送的日志, 需在渲染期比对已记录的快照累积, 不能仅由当前 log 推导。
-    const roundKey = log.round === 0 ? '' : `${log.round}:${log.target_channel}:${log.sending}:${errorText}`;
+    const roundKey = log.round === 0 ? '' : `${log.round}:${log.target_channel_key}:${log.sending}:${errorText}`;
     if (roundKey !== '' && roundKey !== observedRoundKey) {
         setObservedRoundKey(roundKey);
         setRounds((current) => {
@@ -205,7 +205,7 @@ function LogDetail({ log, now, errorRounds }: { log: RelayLogOverview; now: numb
             return [
                 {
                     round: log.round,
-                    channel: log.target_channel,
+                    channelKey: log.target_channel_key,
                     error: errorText,
                     sending: log.sending,
                     startedAt,
@@ -240,7 +240,7 @@ function LogDetail({ log, now, errorRounds }: { log: RelayLogOverview; now: numb
                         className="text-xs px-1.5 py-0"
                         style={{ backgroundColor: `${brandColor}15`, color: brandColor }}
                     >
-                        {log.target_channel || '-'}
+                        {log.target_channel_key || '-'}
                     </Badge>
                     <span className="text-muted-foreground">{actualModel}</span>
                 </span>
@@ -409,7 +409,7 @@ function LogDetail({ log, now, errorRounds }: { log: RelayLogOverview; now: numb
                                                 <div className="flex items-center gap-2">
                                                     <span className="shrink-0 tabular-nums text-muted-foreground">{formatRoundStartedAt(round.startedAt)}</span>
                                                     <span className="shrink-0 text-muted-foreground">{t('retryIndex', { index: round.round })}</span>
-                                                    <span className="shrink-0 font-semibold text-foreground">{round.channel || '-'}</span>
+                                                    <span className="shrink-0 font-semibold text-foreground">{round.channelKey || '-'}</span>
                                                     {round.sending ? (
                                                         <Loader2 className="ml-auto size-3.5 animate-spin text-muted-foreground" />
                                                     ) : round.error ? (
@@ -474,7 +474,7 @@ function LogCardBody({ log }: { log: RelayLogOverview }) {
     const [displayError, setDisplayError] = useState(log.error ?? ''); // 保留重试期间最近一次错误, 直到响应真正开始。
     const [errorRounds, setErrorRounds] = useState<ObservedRound[]>(() => log.error ? [{
         round: log.round,
-        channel: log.target_channel,
+        channelKey: log.target_channel_key,
         error: log.error,
         sending: log.sending,
         startedAt: log.round_started_at,
@@ -506,14 +506,14 @@ function LogCardBody({ log }: { log: RelayLogOverview }) {
         setErrorRounds((current) => [
             {
                 round: log.round,
-                channel: log.target_channel,
+                channelKey: log.target_channel_key,
                 error: errorText,
                 sending: log.sending,
                 startedAt: log.round_started_at,
             },
             ...current.filter((round) => round.round !== log.round),
         ].slice(0, 5));
-    }, [errorText, log.round, log.target_channel, log.sending, log.round_started_at]);
+    }, [errorText, log.round, log.target_channel_key, log.sending, log.round_started_at]);
 
     return (
         <>
@@ -546,7 +546,7 @@ function LogCardBody({ log }: { log: RelayLogOverview }) {
                                     className="shrink-0 text-xs px-1.5 py-0"
                                     style={{ backgroundColor: `${brandColor}15`, color: brandColor }}
                                 >
-                                    {log.target_channel || '-'}
+                                    {log.target_channel_key || '-'}
                                 </Badge>
                                 <span className="text-muted-foreground truncate">
                                     {actualModel}

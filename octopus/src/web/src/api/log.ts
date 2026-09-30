@@ -35,7 +35,7 @@ export interface RelayLogOverview {
     output_chars: number;
     round: number;
     round_started_at: string;
-    target_channel: string;
+    target_channel_key: string; // 本轮选中的渠道名称和 Key 名称, 以空格分隔。
     target_model: string;
     target_protocol: number;
     sending: boolean;
