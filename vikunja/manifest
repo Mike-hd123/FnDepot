@@ -1,7 +1,7 @@
 appname                    = vikunja
-version                    = 2.6.0-14
+version                    = 2.7.0-1
 display_name               = 待办
-desc                       = 自托管待办管理面板 —— Vikunja v2.6.0，Go 单二进制静态链接，SQLite 存储，原生宿主机运行。桌面/手机统一走 /app/vikunja 网关 socket（剥前缀反代 + 前端 router base 注入）。Hermes 全自动读写（API token）。
+desc                       = 自托管待办管理面板 —— Vikunja v2.7.0，Go 单二进制静态链接，SQLite 存储，原生宿主机运行。桌面/手机统一走 /app/vikunja 网关 socket（剥前缀反代 + 前端 router base 注入）。Hermes 全自动读写（API token）。
 platform                   = x86
 source                     = thirdparty
 maintainer                 = kolaente
@@ -16,5 +16,4 @@ service_port               = 3456
 desktop_uidir              = ui
 desktop_applaunchname      = vikunja.panel
 disable_authorization_path = false
-changelog                  = """v14: 修复升级路径 publicurl 仍写死内网IP(192.168.5.2)致手机走域名/外网进不去——upgrade_callback 新增安全复位 service.publicurl 为空(.bak_日期备份,仅非空才动零扰动),按 Host 自适应相对 /api/v1;v14 起新装与升级统一 publicurl:""。v11: 应用改名「待办」(display_name/ui title 去括号英文)；v10: 修复编辑待办样式崩/加载失败——vite 动态 chunk 的 preload base 硬编码根绝对 /assets 经网关丢 /app/vikunja 前缀致 404(Unable to preload CSS)。sidecar 网关流量改 preload base 为模块相对(../)+CSS url 打前缀，桌面直连零影响。v9: 修复网关路径下地址栏丢失 /app/vikunja 前缀（刷新掉回 fnOS 根）——移除 SPA shim，改为网关流量动态改写 vue-router base（history:<fn>(`/`)→(`/app/vikunja/`)）；sidecar 改 systemd 单元托管(vikunja-sidecar)，开机自启/崩溃自拉。v8: sidecar 升级剥前缀 HTTP 反代（SSE 流式、API_URL 重写、SW 自杀注入）。"""
-checksum                   = 96294b8dd66299c4661b2135234c7837
+changelog                  = """2.7.0-1: 同步上游 v2.7.0（856 commits / 317 fixes / 62 features / 58 依赖升级；6 个安全修复——登录 cookie 跨站与会话劫持面、已吊销会话仍收 live 推送、被移除协作者的 webhook 残留、子项目只读共享被忽略(2.6.0 回归)、写权限成员可删 admin link share、saved filter 可被撑爆库；新增 MCP server、新 date picker、前端整体切 v2 API、出网 HTTP(S)_PROXY 支持；性能 P99 260ms→22ms）。本地打包定制存活清单已逐条实测：sidecar v9/v10 四个改写锚点在 2.7.0 前端产物全部命中并生效(router base history:ai(`/`)、vite preload return`/`+e、CSS url(/assets/) 9 处、HTML window.API_URL 注入+55 处绝对引用加前缀)；新前端 base 推导用 /\/api\/v[12]$/ 同时剥 v1/v2 后缀，故 sidecar 注入的 /app/vikunja/api/v1 仍正确解析为 /app/vikunja/api/v2，网关路径零改动。SQLite 净室实测 2.6.0→2.7.0 就地升级：12 个新迁移全跑通零报错、表计数前后一致、api_tokens 整表重建(rename→create→copy→drop，事务内)后既有 tk_ token 在 v1 与 v2 路由均鉴权 200。迁移为单向(含 parent_project_id 0→NULL、orphan label_tasks 清理)，升级前先备份 vikunja.db。二进制=上游官方 linux-amd64-full 原样(zip sha256 569861fd…、ELF sha256 9745ad79…，静态链接未重编译)。版本命名沿用「上游版本-本地修订号」：跨上游大版本修订号归 1，故 2.6.0 系第 14 次重打包 → 2.7.0 系 2.7.0-1。 """

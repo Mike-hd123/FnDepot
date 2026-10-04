@@ -3,7 +3,7 @@
 > 项目说明见 [README.md](./README.md)。本文件只讲 agent 该做什么 / 红线 / 坑。
 
 ## 定位
-上游 [go-vikunja/vikunja](https://github.com/go-vikunja/vikunja)（官方 Go 重写版）v2.6.0 的 fnOS 发行：自托管待办面板。当前发布 **2.6.0-14**，桌面端口 **3456** + 手机 `/app/vikunja` 双通道。
+上游 [go-vikunja/vikunja](https://github.com/go-vikunja/vikunja)（官方 Go 重写版）v2.7.0 的 fnOS 发行：自托管待办面板。当前发布 **2.7.0-1**，桌面端口 **3456** + 手机 `/app/vikunja` 双通道。
 
 ## 架构
 - 上游 release 资产解压得**静态 ELF**（59MB，not a dynamic executable），前端 SPA 打进二进制——**不改上游源码**，本地价值=打包层（`manifest` 在应用根，`src/` 存档）

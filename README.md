@@ -20,7 +20,7 @@ https://github.com/Mike-hd123/FnDepot
 | HyAtlas(混元记忆) `hyatlas` | 4.1.1-7 | AI 长期记忆系统。v4 纯 Go 单二进制：内置 ONNX Runtime int8 向量引擎(bge-large-zh 1024d)，移除 llama.cpp 18080 依赖；dashboard 全量汉化 + 移动端响应式；chromem-go 存储，socket 型 fnOS 入口 /app/hyatlas，端口 19528。v6 新增 index 写入合并(异步 coalesce，SSD 写入从 ~11GB/天降至 ~0.5GB/天) + 全删接口护栏 + L7 防膨胀。**源码不在本仓库**，见上游 | [tuancookiez-hub/HyAtlas-Memory](https://github.com/tuancookiez-hub/HyAtlas-Memory) |
 | Octopus `octopus` | 0.13.8-1 | LLM API 聚合网关，Go 单二进制 + 内嵌前端 + SQLite，多渠道/多模型管理，支持单渠道多 Key，端口 8081 | [bestruirui/octopus](https://github.com/bestruirui/octopus) |
 | EZ记账 `ezbookkeeping` | 2.0.1-1 | 家庭记账：本地优先 SQLite 存储，多账本/预算/报表，支持微信/支付宝/信用卡账单导入，gzip 压缩提速，移动端触屏优化。v2 新增信用卡额度/可用额度环、洞察报表自定义图表、S3 对象存储，1.x→2.x 数据自动迁移无损 | [mayswind/ezbookkeeping](https://github.com/mayswind/ezbookkeeping) |
-| 待办(Vikunja) `vikunja` | 2.6.0-14 | 自托管待办面板：Go 静态 ELF 单二进制 + SQLite，中文 UI + CalDAV，API token 全自动读写（Hermes 提醒引擎），桌面 3456 + 手机 /app/vikunja 双通道 | [go-vikunja/vikunja](https://github.com/go-vikunja/vikunja) |
+| 待办(Vikunja) `vikunja` | 2.7.0-1 | 自托管待办面板：Go 静态 ELF 单二进制 + SQLite，中文 UI + CalDAV，API token 全自动读写（Hermes 提醒引擎），桌面 3456 + 手机 /app/vikunja 双通道。v2.7.0 同步：6 安全修复+MCP server+前端切 v2 API（sidecar 锚点存活实测）+12 条 sqlite 迁移净室验证 tk_ token 不破 | [go-vikunja/vikunja](https://github.com/go-vikunja/vikunja) |
 | Emby `emby-in-one` | 1.4.4-4 | Emby 多账号聚合反向代理：Go 静态二进制 + Python socket 网关 sidecar，治 Emby Boost CDN 签名 URL 900 秒过期拖拽 403；后台 token 失效自动重登无感续命；桌面入口 /app/emby/admin/，TV 直连 18096 | [ArizeSky/Emby-In-One](https://github.com/ArizeSky/Emby-In-One) |
 | `app-template` | — | 打包模板（非应用）：从现役应用结构提炼的标准骨架，新应用上架 = 复制模板 → 全局替换占位符 → fnpack build | — |
 

@@ -11,7 +11,7 @@
 | `hyatlas/` | HyAtlas(混元记忆) | 4.1.1-8 | tuancookiez-hub/HyAtlas-Memory | [AGENT.md](./hyatlas/AGENT.md) |
 | `octopus/` | Octopus(LLM 网关) | 0.13.8-1 | bestruirui/octopus | [AGENT.md](./octopus/AGENT.md) |
 | `ezbookkeeping/` | EZ记账 | 2.0.1-1 | mayswind/ezbookkeeping | [AGENT.md](./ezbookkeeping/AGENT.md) |
-| `vikunja/` | 待办(Vikunja) | 2.6.0-14 | go-vikunja/vikunja | [AGENT.md](./vikunja/AGENT.md) |
+| `vikunja/` | 待办(Vikunja) | 2.7.0-1 | go-vikunja/vikunja | [AGENT.md](./vikunja/AGENT.md) |
 | `emby-in-one/` | Emby | 1.4.4-4 | ArizeSky/Emby-In-One (GPL-3.0) | [AGENT.md](./emby-in-one/AGENT.md) |
 | `app-template/` | 打包模板（非应用） | — | — | [AGENT.md](./app-template/AGENT.md) |
 

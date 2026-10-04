@@ -190,7 +190,7 @@
     },
     "vikunja": {
       "display_name": "待办",
-      "desc": "自托管待办管理面板 —— Vikunja v2.6.0，Go 单二进制静态链接，SQLite 存储，原生宿主机运行。桌面/手机统一走端口直连 :3456（v13 起 install_callback 自动把 fnOS entry 切到端口模式，无 /app 路径前缀，无 WS 426）。Hermes 全自动读写（API token）。",
+      "desc": "自托管待办管理面板 —— Vikunja v2.7.0，Go 单二进制静态链接，SQLite 存储，原生宿主机运行。桌面/手机统一走端口直连 :3456（v13 起 install_callback 自动把 fnOS entry 切到端口模式，无 /app 路径前缀，无 WS 426）。Hermes 全自动读写（API token）。",
       "platform": [
         "x86"
       ],
@@ -216,6 +216,17 @@
               "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.23/vikunja-2.6.0-14-x86.fpk",
               "sha256": "a0495a245da5cafd17318557f4b01b53aed26cf01951025313ab4ceb542dcb5f",
               "size": 45989308
+            }
+          }
+        },
+        "2.7.0-1": {
+          "changelog": "2.7.0-1 同步上游 v2.7.0（858 commits：6 安全修复+MCP server+新 date picker+前端整体切 v2 API+出网 HTTP(S)_PROXY 支持+性能 P99 260ms→22ms）。本地打包定制零改动存活并逐条实测：sidecar v9/v10 四个改写锚点(router base history:ai(`/`)、vite preload return`/`+e、CSS url(/assets/)×9、HTML window.API_URL 注入+55 处绝对引用)在 2.7.0 前端产物全部命中；新前端 base 推导用 /\\/api\\/v[12]$/ 同时剥 v1/v2 后缀，sidecar 注入的 /app/vikunja/api/v1 仍正确解析为 /app/vikunja/api/v2，网关路径零改动。SQLite 净室实测 2.6.0→2.7.0 就地升级：12 个新迁移全跑通零报错、表计数前后一致、api_tokens 整表重建(事务内 rename→create→copy→drop)后既有 tk_ token 在 v1/v2 路由均鉴权 200。迁移单向(parent_project_id 0→NULL、orphan label_tasks 清理)，升级前先 .backup 备份 vikunja.db。二进制=上游官方 linux-amd64-full 原样(zip sha256 569861fd…、ELF sha256 9745ad79…、静态链接未重编译)。命名沿用「上游版本-本地修订号」，跨大版本修订号归 1(2.6.0 系第 14 次→2.7.0 系 2.7.0-1)。注：v2026.09.23 上既有 vikunja-2.6.0-14-x86.fpk 资产经解剖为 v8 时代错版(内层 manifest version=2.6.0、ui/config 旧路径反代、cmd 零 v13/v14 痕迹)，本次以仓库 src/ 为权威基线重建纠正，push 时需替换/下架错版。",
+          "updated_at": "2026-10-04T11:47:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.23/vikunja-2.7.0-1-x86.fpk",
+              "sha256": "a133fdfc7c00826483b81832b9e7868813ea8acac4350849b7c84827e4f18455",
+              "size": 48926361
             }
           }
         }

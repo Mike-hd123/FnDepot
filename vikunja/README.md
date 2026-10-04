@@ -1,12 +1,12 @@
-# Vikunja — 待办管理面板（v2.6.0 · x86）
+# Vikunja — 待办管理面板（v2.7.0 · x86）
 
 飞牛 fnOS 原生应用封装：自托管待办，Go 单二进制**静态链接**（零 GLIBC 依赖），SQLite 存储。
 
 ## 上级项目
 
-- **上游**: [go-vikunja/vikunja](https://github.com/go-vikunja/vikunja) v2.6.0（Vikunja 官方 Go 重写）
+- **上游**: [go-vikunja/vikunja](https://github.com/go-vikunja/vikunja) v2.7.0（Vikunja 官方 Go 重写）
 - **发布者**: Mike（fnOS 打包发行，非上游开发者）
-- 上游 release 资产 `vikunja-v2.6.0-linux-amd64-full.zip`，解压得静态 ELF `vikunja`（59MB，实测 `not a dynamic executable`）
+- 上游 release 资产 `vikunja-v2.7.0-linux-amd64-full.zip`，解压得静态 ELF `vikunja`（65.7MB，实测 `not a dynamic executable`）
 
 ## 功能特性
 
@@ -20,7 +20,7 @@
 
 ```ini
 appname               = vikunja
-version               = 2.6.0
+version               = 2.7.0
 install_type          = volume      # 数据落 /volN/@appdata（用户数据）
 service_port          = 3456
 maintainer            = kolaente    # 上游 owner
@@ -128,3 +128,40 @@ cd project && fnpack build -d .
 **产物**：`vikunja-2.6.0-13-x86.fpk`（sha256 `1a8c2ea270ce8d8d173c120659580044f27e519a0f89794f9d181d2e1bcad1d9`，45885108 B，staging 打包，app.tgz/ICON 等 v11 复用——本次仅改 install_callback + manifest version）。
 
 **参考**：`skills/fnos-app-admin/references/entry-direct-port-migration.md`——该文档「从 manifest 预测 URL 模式 = 死路」结论方向正确，但「唯一可靠路径 = SQL + 三服务重启」不完整（缺延时 UPDATE 对抗 appcenter 自动 start 回滚这一步）。v13 实测补充见上。
+
+## v2.7.0-1 变更（2026-10-04，同步上游 v2.7.0）
+
+**上游**：v2.6.0 → v2.7.0（2026-10-02 发布，858 commits：317 fixes / 62 features / 58 依赖升级）。要点：6 个安全修复（登录 cookie 跨站与会话劫持面、已吊销会话仍收 live 推送、被移除协作者的 webhook 残留、子项目只读共享被忽略(2.6.0 回归)、写权限成员可删 admin link share、saved filter 可被撑爆库）；新增 MCP server（AI 助手可直连 Vikunja）、新 date picker、**前端整体切 v2 API**（旧 v1 客户端代码移除，v1 服务端仍在但建议迁移）、出网 HTTP(S)_PROXY 支持；性能 P99 260ms→22ms（Postgres 连接复用查询计划 / 连接寿命 10s→30min / 嵌套项目权限查询改查表 / 只读请求不占连接 / API token 校验近零成本）。
+
+**数据库迁移（12 个新增 migration，单向不可降级）**：
+
+| migration | 行为 | sqlite 影响 |
+|---|---|---|
+| 20260901001942 | 新表 `project_task_counters` + 按项目回填最大 task index | 增表+回填，批 500 防 32766 绑参上限 |
+| 20260901220330 | 新表 `task_index_aliases` | 增表 |
+| 20260903104500 | 根项目 `parent_project_id` 0→NULL + 部分索引 | 数据改写（语义：根=NULL） |
+| 20260903120000 | tasks 索引 `(done,due_date)` → `(project_id,done,due_date)` | DROP/CREATE INDEX（幂等吸收重跑） |
+| 20260906010000 | projects.parent_project_id 部分索引（非 MySQL） | 增索引 |
+| 20260906180128 | **api_tokens 整表重建**：rename→Sync(加 token_sha256)→copy→drop，事务内 | 旧 token 行保留，token_hash/token_salt/token_last_eight 改 nullable；新行写 token_sha256 |
+| 20260908202544 | 新表 `project_ancestors`（祖先后代闭包）+ 回填 | 增表+回填（嵌套权限 O(1) 查表） |
+| 20260911150507 | 新表 `user_invite_links` / `user_invite_link_teams` | 增表（邀请链接功能） |
+| 20260911193534 | migration_status 加 `heartbeat_at` | 增列 |
+| 20260911193552 | migration_status 加 `error_kind` / `error_message` | 增列 |
+| 20260914185746 | migration_status 加 `upload_file_id` | 增列（后台导入队列） |
+| 20260928140648 | `DELETE FROM label_tasks WHERE label_id NOT IN (SELECT id FROM labels)` | 删孤儿行（不可逆，仅清理） |
+
+**净室实测（/tmp 独立 sqlite，官方 2.6.0 二进制造库→播种 17 任务+1 tk_ token→官方 2.7.0 二进制就地升级）**：12 个迁移全部 `Ran all migrations successfully`、零 error/panic；表计数前后一致（users=1 projects=4 tasks=17 api_tokens=1）；**api_tokens 整表重建后既有 tk_ token 在 `/api/v1/tasks` 与 `/api/v2/tasks` 两条路由均鉴权 200**（Hermes 集成安全）；root 项目 parent_project_id 0→NULL 生效；tasks 索引 swap 生效；project_task_counters/project_ancestors 回填完成。
+
+**本地打包定制存活清单（逐条实测，零改动）**：sidecar `gateway_proxy.py`（v9/v10）四个改写锚点在 2.7.0 前端产物中全部命中——router base `history:ai(\`/\`)`、vite preload `return\`/\`+e`、CSS `url(/assets/`（9 处）、HTML `window.API_URL` 注入 + 55 处绝对引用加前缀；起真实网关反代打流量，patch 计数日志全部命中（router×1 / preload×1 / css×9），经前缀的 `/app/vikunja/api/v2/tasks` + tk_ 鉴权返回 200。关键兼容点：新前端 base 推导函数 `d()` 用 `/\/api\/v[12]$/` 同时剥 v1/v2 后缀，故 sidecar 注入的 `window.API_URL='/app/vikunja/api/v1'` 仍被正确解析为 `/app/vikunja/api/v2`，无需改 sidecar。
+
+**二进制**：上游官方 `vikunja-v2.7.0-linux-amd64-full.zip` 原样（zip sha256 `569861fd…`、内层 `.sha256` 校验 ELF `9745ad79…`、`file` 报 statically linked），未重编译。包内二进制逐字节等于上游官方。
+
+**产物**：`vikunja-2.7.0-1-x86.fpk`（48926361 B / 46 MB，sha256 `a133fdfc7c00826483b81832b9e7868813ea8acac4350849b7c84827e4f18455`，md5 `1eef0d346877cd52866b912b80d87c53`），落 `/vol2/1000/download/`。
+
+**版本命名依据**：包版本沿用「上游版本-本地修订号」惯例，跨上游大版本修订号归 1（2.6.0 系打到第 14 次重打包 → 2.7.0 系第 1 次 = `2.7.0-1`），与 ezbookkeeping 2.0.1-1 / octopus 0.13.9-1 一致。
+
+**升级建议**：升级前先 `sqlite3 /vol2/@appdata/vikunja/vikunja.db ".backup '/vol2/@appdata/vikunja/vikunja.db.bak_$(date +%Y%m%d_%H%M%S)'"` 全量备份（迁移单向、含数据改写与孤儿删除）。升级即换包安装，新二进制首启自动跑迁移，无需手动操作。
+
+**待实测验证点**：① 生产库升级后 `/api/v1/info` 返回 v2.7.0、任务数=22 不变；② Hermes 提醒引擎用 tk_ token 增删改查正常；③ 桌面直连 :3456 与手机 `/app/vikunja` 双通道渲染无 404；④ CalDAV 订阅仍可用；⑤ 首启 boot.log 无 migration error。
+
+**⚠️ 历史包错版提示**：GitHub Release `v2026.09.23` 上名为 `vikunja-2.6.0-14-x86.fpk` 的资产经解剖，内层 manifest 实写 `version = 2.6.0`、ui/config 仍是旧 `vikunja.Application` + gatewaySocket 路径反代、cmd 脚本零 v13/v14 痕迹、gateway_proxy.py 为 v8 版（15801B vs 仓库 v10 版 15978B）——即该发布资产是 v8 时代构建的错版，与仓库 src/（v13/v14 权威）及 fnpack.json 记录的 sha 不自洽。本次 2.7.0-1 以仓库 src/ 为权威基线重建，已纠正此偏差；待 push 时需把 `v2026.09.23` 上的错版 `vikunja-2.6.0-14-x86.fpk` 一并替换/下架。
