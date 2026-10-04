@@ -47,6 +47,17 @@
               "size": 15569411
             }
           }
+        },
+        "1.5.1-1": {
+          "changelog": "1.5.1-1（2026-10-04 发布，用户已实测通过）：合并上游 v1.5.1——上传/下载改流式（400MB 文件此前面板内存涨约1.2GB）、新增 QQ 实例类型（官方 Linux 版运行时下载，仅大陆网络）、实例名可留空自动命名、KasmVNC「正在连接」卡死自愈(WOC_STUCK_HEAL)、无感输入候选框跟随+防越用越卡、粘图后发字变「v」修复、微信下载卡死续传、登录限速按真实来源(WOC_TRUSTED_PROXIES)、X-Forwarded-Host 防 DNS 重绑定、改密码踢其他会话、Chromium 149→154。ipvlan woc-lan/数据bind/移动端等本地定制全部存活。",
+          "updated_at": "2026-10-04T14:05:00+08:00",
+          "packages": {
+            "all": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.23/wechat-on-cloud-1.5.1-1.fpk",
+              "sha256": "0a8936a5c30313f568d4743e14648a15ae0039f110d2b66cd40c2875f501b404",
+              "size": 15598576
+            }
+          }
         }
       }
     },
