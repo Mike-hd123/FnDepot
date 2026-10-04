@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Cropper from 'react-easy-crop';
-import { api, APP_LABELS, appProfile, type PanelUser, type InstanceWithStatus, type VolEntry, type AppType, type VersionInfo } from '../api';
+import { api, APP_LABELS, appProfile, fmtUploadSize, type PanelUser, type InstanceWithStatus, type VolEntry, type AppType, type VersionInfo } from '../api';
 import { pickSharedFolder, pickAndAuthorizeSharedFolder, detectHost } from '../trim-sdk';
 import { InstanceIcon, ICON_CHOICES } from '../AppIcon';
 import { useUI, PasswordInput } from '../ui';
@@ -1859,8 +1859,8 @@ function InstanceIconEditor({ inst, onClose, onDone }: { inst: InstanceWithStatu
 }
 
 // 数据卷管理（仅管理员）：整卷备份/恢复 + 文件浏览器（浏览/上传/解压/下载/改名/移动/删除）。
-// 主要场景：把 PC 微信数据迁移上来、跨实例迁移、离线备份。全程在「运行中」的实例上操作
-// （浏览/改名/删除靠 docker exec，需容器运行）。整卷恢复会覆盖全部数据，强提示并建议恢复后重启实例。
+// 主要场景：把 PC 微信数据迁移上来、跨实例迁移、离线备份。文件浏览在「运行中」的实例上操作
+// （浏览/改名/删除靠 docker exec，需容器运行）。整卷恢复会覆盖数据，强提示；服务端校验通过后自动停止→写入→启动实例。
 function VolumeManager({ inst, onClose, onChanged }: { inst: InstanceWithStatus; onClose: () => void; onChanged: () => void }) {
   const { toast, confirm } = useUI();
   const [path, setPath] = useState('');
@@ -1949,24 +1949,41 @@ function VolumeManager({ inst, onClose, onChanged }: { inst: InstanceWithStatus;
     await run('删除中…', () => api.volumeDelete(inst.id, join(path, en.name)), '已删除');
   };
 
+  // 上传进度 → 进行中文案；传完后服务端还要处理（改名 / 校验 / 写入），文案随阶段更新
+  const progress = (name: string) => (loaded: number, total: number) =>
+    setBusy(
+      loaded < total
+        ? `上传 ${name}：${Math.floor((loaded / total) * 100)}%（${fmtUploadSize(loaded)} / ${fmtUploadSize(total)}）`
+        : `已上传 ${name}，正在处理…`,
+    );
+  const stage = (s: string) => setBusy(`${s}…`);
+
   const onPick = (kind: 'upload' | 'extract' | 'restore') => async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
     if (kind === 'restore') {
+      const running = inst.runtime === 'running';
       const ok = await confirm({
         title: '恢复整卷备份？',
-        body: `将用「${file.name}」覆盖该实例 /config 的全部数据（含登录态、聊天库），不可撤销。建议仅用于本系统导出的备份；恢复后请在卡片上「重启」实例以加载数据。`,
+        body: `将用「${file.name}」覆盖该实例 /config 中的数据（含登录态、聊天库），不可撤销。只接受本系统导出的整卷备份。${
+          running ? '实例正在运行，写入前会自动停止、写完自动启动。' : ''
+        }`,
         danger: true,
         confirmText: '覆盖恢复',
       });
       if (!ok) return;
-      await run(`恢复 ${file.name}…`, () => api.volumeRestore(inst.id, file), '恢复完成，请重启实例以加载数据', true);
+      await run(
+        `上传 ${file.name}…`,
+        () => api.volumeRestore(inst.id, file, progress(file.name), stage),
+        running ? '恢复完成，实例已重新启动' : '恢复完成（实例保持停止，启动后生效）',
+        true,
+      );
       onChanged();
       return;
     }
-    if (kind === 'upload') await run(`上传 ${file.name}…`, () => api.volumeUpload(inst.id, path, file), '上传完成');
-    else await run(`解压 ${file.name}…`, () => api.volumeExtract(inst.id, path, file), '解压完成');
+    if (kind === 'upload') await run(`上传 ${file.name}…`, () => api.volumeUpload(inst.id, path, file, progress(file.name)), '上传完成');
+    else await run(`上传 ${file.name}…`, () => api.volumeExtract(inst.id, path, file, progress(file.name), stage), '解压完成');
   };
 
   const disabled = !!busy;
@@ -1987,6 +2004,8 @@ function VolumeManager({ inst, onClose, onChanged }: { inst: InstanceWithStatus;
           </div>
           <div className="vol-hint">整卷含聊天记录，用于跨实例迁移 / 离线备份。</div>
         </div>
+
+        {busy && <div className="vol-busy">{busy}</div>}
 
         {offline ? (
           <div className="vol-warn">
@@ -2030,8 +2049,6 @@ function VolumeManager({ inst, onClose, onChanged }: { inst: InstanceWithStatus;
                 <button className="btn btn-primary" disabled={disabled || !mkdirName.trim()} onClick={doMkdir}>创建</button>
               </div>
             )}
-
-            {busy && <div className="vol-busy">{busy}</div>}
 
             {/* 文件列表 */}
             <div className="vol-list">
@@ -2213,6 +2230,7 @@ function CreateUser({ instances, onClose, onDone }: { instances: InstanceWithSta
 const APP_OPTIONS: { type: AppType; desc: string; ready: boolean }[] = [
   { type: 'wechat', desc: '默认', ready: true },
   { type: 'chromium', desc: '浏览器', ready: true },
+  { type: 'qq', desc: '腾讯 QQ', ready: true },
   { type: 'custom', desc: '即将支持', ready: false },
 ];
 
@@ -2362,7 +2380,7 @@ function CreateInstance({ subs, onClose, onDone }: { subs: PanelUser[]; onClose:
             </button>
           ))}
         </div>
-        <input className="input" placeholder="实例名称（留空自动命名）" value={name} onChange={(e) => setName(e.target.value)} />
+        <input className="input" placeholder="实例名称（留空自动命名）" maxLength={30} value={name} onChange={(e) => setName(e.target.value)} />
         {appType === 'chromium' && (
           <div className="muted small">Chromium 浏览器随镜像就绪，创建后直接「进入实例」即可（无需下载安装）。</div>
         )}
@@ -2386,6 +2404,9 @@ function CreateInstance({ subs, onClose, onDone }: { subs: PanelUser[]; onClose:
         <div className="muted small">
           目录只能点选、不可手输；已授权目录在选择器里无法再次被选，可从上方点选。提交时校验授权，未授权会红字提示。数据存到 <code>{'{目录}'}/woc-data-{'{id}'}</code>（自动创建）。
         </div>
+        {appType === 'qq' && (
+          <div className="muted small">QQ 为腾讯官方 Linux 版，创建后点「下载并安装」从腾讯官方下载（约 180MB）。腾讯只对中国大陆网络开放下载，境外网络会被拒绝。</div>
+        )}
         <div className="field-label">允许访问的子账号（管理员默认可访问全部）</div>
         <ChipMultiSelect
           options={subs.map((u) => ({ id: u.id, label: u.username }))}
@@ -2419,7 +2440,7 @@ function CreateInstance({ subs, onClose, onDone }: { subs: PanelUser[]; onClose:
           <button type="button" className="btn" onClick={onClose}>
             取消
           </button>
-          <button className="btn btn-primary" disabled={busy || !name.trim()}>
+          <button className="btn btn-primary" disabled={busy}>
             创建
           </button>
         </div>

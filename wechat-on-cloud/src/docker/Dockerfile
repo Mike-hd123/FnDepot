@@ -12,10 +12,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 # Debian 源只保留最新版 chromium，而新版本在本容器栈（KasmVNC/Xvnc + 软件渲染）上反复引入致命崩溃：
 #   · 149 收紧变换矩阵断言（叠加 DPI bug 全面崩溃，v1.4.0 已修 DPI）；
 #   · 150 「非首次启动」路径与 --start-maximized 直接 SIGTRAP → 浏览器实例必黑屏（无任何 flag 可绕）。
-# 故从 snapshot.debian.org 的固定快照安装验证过的版本。升级 chromium = 显式改下面两行（快照时间戳 +
-# 版本号），并跑通 doc/dev/发布门禁.md 的全部探针后才允许合并。
-ARG CHROMIUM_SNAPSHOT=20260704T180435Z
-ARG CHROMIUM_VERSION=149.0.7827.196-1~deb12u1
+# 故从 snapshot.debian.org 的固定快照安装验证过的版本。升级 chromium = 改下面两行（快照时间戳 + 版本号），
+# 并跑通 doc/dev/发布门禁.md 的全部探针、实际打开 Chromium 实例并重启一次看画面后才允许合并。
+# 两行不用手查：scripts/bump-chromium.py 会找 bookworm 最新构建、定出 amd64/arm64 都齐的快照并核对后改好。
+# 154.0.8037.57：门禁三项探针、同一 profile 反复重启（--start-maximized 正式参数）、容器重启后画面均正常。
+ARG CHROMIUM_SNAPSHOT=20260925T171425Z
+ARG CHROMIUM_VERSION=154.0.8037.57-1~deb12u1
 # ⚠️ CI 的 QEMU arm64 模拟下 apt-get update OOM（"Cannot allocate memory"，触发点是解析
 # download.docker.com InRelease）导致实例镜像发不出去。根因是 apt 要解析一大堆【构建根本用不到】
 # 的源（deb-src 源码索引、backports、docker、nodesource），内存峰值在模拟环境里爆掉。

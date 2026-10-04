@@ -1,5 +1,5 @@
 appname                    = wechat-on-cloud
-version                    = 1.5.0-1
+version                    = 1.5.1-1
 display_name               = 云微
 desc                       = WeChatOnCloud 官方 Linux 微信面板（原生部署）
 platform                   = all
@@ -16,7 +16,8 @@ service_port               = 8080
 desktop_uidir              = ui
 desktop_applaunchname      = wechat-on-cloud.panel
 disable_authorization_path = false
+; 1.5.1 上游实例网络隔离（本包仍走 ipvlan 显式网络，不受影响）
 ; 1.5.0 纯 ipvlan 单网卡 + 数据卷 bind 主机目录
 ; 1.4.9 跟随上游版本号；本地改动含创建实例可选数据目录 + 多实例IP自增
-changelog                  = 1.5.0-1: 合并上游 v1.5.0（WOC_DATA_ROOT 数据目录、本机截图/文件 Ctrl+V 粘贴、弹窗溢出与移动端工具栏修复、宿主禁 IPv6 时 nginx 起不来修复、安装 92% 卡死修复、私聊验证码等）；保留本地定制：ipvlan woc-lan 单网卡、WOC_DATA_DIR bind 数据目录+孤儿 bind 目录扫描/复用/删除、移动端不抢焦点、电源下拉菜单、host-guard
+changelog                  = 1.5.1-1: 合并上游 v1.5.1（新增 QQ 实例类型、上传/下载改流式不再吃内存（400MB 文件此前涨约 1.2GB）、粘贴图片后下条文字变「v」修复、无感输入候选框跟随+越用越卡修复、桌面「正在连接」KasmVNC 卡死自动重启、下载微信卡死续传、Chromium 149→154、实例名可留空自动命名、登录限速按真实来源计数、Host 白名单防 DNS 重绑定、改密码踢掉其它设备会话、上传解压属主改应用用户）；保留本地定制：ipvlan woc-lan 单网卡、WOC_DATA_DIR bind 数据目录+孤儿 bind 目录扫描/复用/删除、移动端不抢焦点、更多下拉菜单（含上传进度）、电源下拉菜单、host-guard、trim 网关/开放API
 checksum                    = de58c35878bbd92aa2b4ea383973e14e

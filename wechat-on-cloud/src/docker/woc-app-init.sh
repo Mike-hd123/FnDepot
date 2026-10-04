@@ -7,7 +7,7 @@ APP_TYPE="${WOC_APP_TYPE:-}"
 
 # 仅允许已知的简单标识，杜绝写入异常内容
 case "$APP_TYPE" in
-  wechat | telegram | chromium | custom) ;;
+  wechat | telegram | chromium | qq | custom) ;;
   *) exit 0 ;;
 esac
 

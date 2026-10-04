@@ -5,8 +5,11 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { appendInstanceLog, deleteInstanceLog, appendPanelLog, readInstanceLog, readPanelLog, filterSince } from './logs.js';
 import http from 'node:http';
+import { PassThrough } from 'node:stream';
 import zlib from 'node:zlib';
+import { randomBytes } from 'node:crypto';
 import Docker from 'dockerode';
+import { tarArchive, tarEntry, tarFileStream, tarSingleFile, openTarStream, scanArchive, sniffArchive } from './tar.js';
 import { instanceAppType, getDesktopDark, getOrphanScanDirs, listInstances, setInstanceLanIP, type Instance } from './store.js';
 
 // 实例镜像引用。版本耦合（架构守则 R1）：面板与实例镜像同一 release 同步出包、按同版本号
@@ -122,8 +125,39 @@ function realisticMac(id: string): string {
 
 const docker = new Docker(); // 默认连 /var/run/docker.sock
 
-// 面板自身所在的 docker 网络名；新实例都 attach 到它，便于按容器名互访。
-let networkName: string | null = process.env.WOC_DOCKER_NETWORK || null;
+// 启动时等 Docker 可用。socket-proxy 加固部署下，宿主重启或 compose 同时重建代理和面板时，面板常比代理先起来，
+// 头几秒解析不到 / 连不上代理；不等的话启动流程全部落空：没接上实例专用网络（实例桌面 502，要等之后的定期复查
+// 才补上）、实例镜像解析不到等。直连 docker.sock 时第一下就能连上，不耽误启动。
+export async function waitForDocker(maxMs = 30_000): Promise<boolean> {
+  if (!process.env.DOCKER_HOST && !existsSync('/var/run/docker.sock')) return false; // 本地开发没有 Docker
+  const t0 = Date.now();
+  let lastErr: any;
+  while (Date.now() - t0 < maxMs) {
+    try {
+      await docker.ping();
+    } catch (e: any) {
+      lastErr = e;
+      if (!e?.statusCode) {
+        await new Promise((r) => setTimeout(r, 1000));
+        continue;
+      }
+      // 有 HTTP 响应（代理没放行 /_ping 之类）：Docker 是通的
+    }
+    const waited = Date.now() - t0;
+    if (waited > 1500) appendPanelLog('INFO', `等了 ${Math.round(waited / 1000)} 秒才连上 Docker（socket-proxy 刚启动？）`);
+    return true;
+  }
+  appendPanelLog(
+    'ERROR',
+    `${Math.round(maxMs / 1000)} 秒内连不上 Docker（${lastErr?.message || lastErr}），实例相关功能暂不可用；请检查 docker.sock 挂载或 socket-proxy 容器`,
+  );
+  return false;
+}
+
+// 实例接入的 docker 网络名。默认是实例专用网络（见 ensureNetwork）；WOC_DOCKER_NETWORK 显式指定时用指定的。
+const EXPLICIT_NETWORK = (process.env.WOC_DOCKER_NETWORK || '').trim() || null;
+const INSTANCE_NETWORK = (process.env.WOC_INSTANCE_NETWORK || '').trim() || 'woc-instances';
+let networkName: string | null = null;
 
 // ============ NAS 单网卡固化（2026-08-29, task t_5183cce1） ============
 // v1.5.0：删 woc-net bridge，容器只挂 woc-lan（ipvlan l2）单网卡。
@@ -263,30 +297,259 @@ export async function ensureWocLan(inst: Instance): Promise<void> {
 
 export type RuntimeState = 'running' | 'stopped' | 'missing';
 
-// 启动时探测面板自身网络（容器内 hostname = 容器短 id）。失败不致命：
-// 退回 WOC_DOCKER_NETWORK 或 null（null 时用 docker 默认 bridge，靠 IP 不靠名字会有问题，故尽量探测成功）。
-export async function ensureNetwork(): Promise<string | null> {
-  if (networkName) return networkName;
-  // 找到「面板自身容器」以读取它所在网络，新建实例就接到同一网络，反代才能按容器名访问到实例。
-  // 候选依次：① 容器 hostname（默认 = 自身短 ID）② 已知面板容器名。
-  // 关键兜底：面板经「一键更新」自更新后，其 hostname 可能被复刻成【旧容器 ID】（已删除），① 会 404，
-  // 这时必须按容器名 ② 找到自己，否则探测失败→新建/重启的实例落到默认 bridge 网络→反代按名访问不到→502 黑屏。
-  const candidates = [hostname(), process.env.WOC_PANEL_CONTAINER || 'woc-panel'];
+// 面板自身容器的完整 ID：docker 把 /etc/hostname、/etc/hosts、/etc/resolv.conf 从
+// <数据目录>/containers/<id>/ 绑定挂进容器，mountinfo 里带着这个 ID，与容器名、hostname 都无关。
+// （podman 的路径是 .../overlay-containers/<id>/userdata/hostname，同样认得出。）
+function selfIdFromMounts(): string | null {
+  try {
+    const m = readFileSync('/proc/self/mountinfo', 'utf8').match(
+      /\/([0-9a-f]{64})\/(?:userdata\/)?(?:hostname|hosts|resolv\.conf) \/etc\//,
+    );
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+// 找到「面板自身容器」。新建/重建实例要接到它所在的网络（反代按容器名访问实例），自更新要知道重建哪个容器。
+// 候选依次：① mountinfo 里的容器 ID ② 容器 hostname（默认 = 自身短 ID）③ 已知面板容器名。
+// ② ③ 都会落空的情形：compose 里自定义了 hostname 且容器不叫 woc-panel；或容器被 1Panel/Portainer 之类
+// 工具「重建」时复刻了旧容器的 Hostname（= 已删除的旧容器 ID）。此前只有 ② ③，落空后实例落到默认
+// bridge → 反代按名找不到 → 502 黑屏（#103），① 不受这些影响。
+export async function inspectSelf(): Promise<any | null> {
+  const candidates = [selfIdFromMounts(), hostname(), process.env.WOC_PANEL_CONTAINER || 'woc-panel'];
   for (const cand of candidates) {
     if (!cand) continue;
     try {
-      const info = await docker.getContainer(cand).inspect();
-      const nets = Object.keys(info.NetworkSettings?.Networks || {}).filter((n) => n !== 'none' && n !== 'host');
-      if (nets.length > 0) {
-        networkName = nets[0];
-        return networkName;
-      }
+      return await docker.getContainer(cand).inspect();
     } catch {
       /* 该候选找不到/读不到，尝试下一个 */
     }
   }
+  return null;
+}
+
+// 面板所在的网络（去掉 none/host），按名字排序。
+const netsOf = (self: any): string[] =>
+  Object.keys(self?.NetworkSettings?.Networks || {})
+    .filter((n) => n !== 'none' && n !== 'host')
+    .sort();
+async function selfNetworks(): Promise<string[] | null> {
+  const self = await inspectSelf();
+  return self ? netsOf(self) : null;
+}
+
+// socket-proxy 拒绝时 docker 报错里带着它整页的 HTML（多行），写进面板日志前去掉标签、压成一行
+const oneLine = (s: string): string => s.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300);
+
+// 探测结果只在面板日志里提示一次（ensureNetwork 探测失败时每次建实例都会重试）。
+const networkWarned = new Set<string>();
+function warnNetworkOnce(key: string, msg: string): void {
+  if (networkWarned.has(key)) return;
+  networkWarned.add(key);
+  appendPanelLog('WARN', msg);
+}
+
+// ---------- 实例专用网络 ----------
+// 实例只接入一个专用网络（默认 woc-instances），面板自己也接上它，按容器名访问实例。此前实例直接接到面板所在的
+// 网络：面板部署在 1Panel 的 1panel-network、反代所在网络这类共享网络上时，跑着微信 / 浏览器等不可信内容的实例
+// 能直接访问同网络里的数据库、其它服务。专用网络建不起来（socket-proxy 加固部署没开放网络接口、地址池耗尽等）时
+// 退回旧做法并在面板日志提示。已有实例在下次重启 / 升级 / 自愈重建时迁过来（重建沿用同一个伪装 MAC），不主动重启。
+let isolatedNet: { subnet: string; gateway: string } | null = null; // 专用网络生效时的网段（拦截来自实例的请求用）
+
+async function attachSelfToInstanceNetwork(self: any): Promise<void> {
+  const net = docker.getNetwork(INSTANCE_NETWORK);
+  let info: any = await net.inspect().catch((e: any) => {
+    if (e?.statusCode === 404) return null;
+    throw e;
+  });
+  if (!info) {
+    await docker
+      .createNetwork({ Name: INSTANCE_NETWORK, Driver: 'bridge', CheckDuplicate: true, Labels: { 'com.wechatoncloud.role': 'instances' } } as any)
+      .catch((e: any) => {
+        if (e?.statusCode !== 409) throw e; // 409 = 同时被别处建好了
+      });
+    info = await net.inspect();
+    appendPanelLog('INFO', `已创建实例专用网络 ${INSTANCE_NETWORK}，之后新建 / 重启的实例都接到这里，与面板所在的其它网络隔离`);
+  }
+  if (!netsOf(self).includes(INSTANCE_NETWORK)) {
+    // GwPriority < 0：面板的默认网关（出网、端口映射）仍走原来的网络；不设的话网络名排序靠前时默认网关会换到这边
+    try {
+      await net.connect({ Container: self.Id, EndpointConfig: { GwPriority: -1 } } as any);
+    } catch (e: any) {
+      if (!/already exists|already attached/i.test(String(e?.message))) throw e;
+    }
+  }
+  const cfg = (info?.IPAM?.Config || []).find((c: any) => c?.Subnet && !String(c.Subnet).includes(':'));
+  isolatedNet = cfg ? { subnet: String(cfg.Subnet), gateway: String(cfg.Gateway || '') } : null;
+}
+
+// 请求是否来自实例（专用网络网段内、且不是网关——经宿主转发进来的请求源地址是网关）。实例从不需要访问面板，
+// 拦掉可以让被攻破的实例碰不到面板的登录与接口。
+export function isFromInstanceNetwork(addr: string | undefined): boolean {
+  if (!isolatedNet || !addr) return false;
+  const ip = addr.replace(/^::ffff:/, '');
+  if (!ip || ip === isolatedNet.gateway || ip.includes(':')) return false;
+  const [base, bits] = isolatedNet.subnet.split('/');
+  const toInt = (x: string) => x.split('.').reduce((a, o) => (a << 8) + (Number(o) & 255), 0) >>> 0;
+  const n = Number(bits);
+  if (!(n >= 0 && n <= 32)) return false;
+  const mask = n === 0 ? 0 : (~0 << (32 - n)) >>> 0;
+  return ((toInt(ip) & mask) >>> 0) === ((toInt(base) & mask) >>> 0);
+}
+
+export function instanceNetworkName(): string | null {
+  return isolatedNet ? INSTANCE_NETWORK : null;
+}
+
+// 本机 Docker 网络的网段（登录限速判断「对端是不是反代」用）：宿主上的反代（NAS 自带的反代、frpc）经网关地址进来，
+// 容器里的反代（Nginx Proxy Manager、1Panel 的 OpenResty、cloudflared 等）是某个 Docker 网络里的地址。
+// 实例专用网络只算网关（经宿主转发进来的请求源地址是它）：实例不是反代。
+export async function dockerProxySubnets(): Promise<string[]> {
+  const out: string[] = [];
+  try {
+    const nets: any[] = await docker.listNetworks();
+    for (const n of nets) {
+      for (const c of n?.IPAM?.Config || []) {
+        if (n?.Name === INSTANCE_NETWORK) {
+          if (c?.Gateway) out.push(String(c.Gateway));
+        } else if (c?.Subnet) out.push(String(c.Subnet));
+      }
+    }
+  } catch {
+    // 列不出网络（socket-proxy 没开放网络接口）：退而求其次，只认面板自己所在网络
+    const self = await inspectSelf().catch(() => null);
+    for (const [name, ep] of Object.entries<any>(self?.NetworkSettings?.Networks || {})) {
+      if (ep?.Gateway) out.push(String(ep.Gateway));
+      if (name !== INSTANCE_NETWORK && ep?.IPAddress && ep?.IPPrefixLen) out.push(`${ep.IPAddress}/${ep.IPPrefixLen}`);
+    }
+  }
+  return out;
+}
+
+// 面板容器被外部工具重建（compose up、1Panel / Portainer 的「重建」、飞牛应用更新）后，运行时接上的网络会丢失，
+// 已迁到专用网络的实例就连不上了（502）。启动时 ensureNetwork 会接回去；这里定期复查兜底。
+// 启动时 Docker 一直没连上（waitForDocker 等满了）的也在这里补上：没接上的补接；面板重启（不是重建）时网络还在、
+// 但专用网络的网段没读到，拦截实例访问面板的那层防护不生效，也要补。
+export function watchInstanceNetwork(): void {
+  if (EXPLICIT_NETWORK) return;
+  const tick = async () => {
+    const self = await inspectSelf().catch(() => null);
+    if (!self) return;
+    const attached = netsOf(self).includes(INSTANCE_NETWORK);
+    if (attached && isolatedNet && networkName === INSTANCE_NETWORK) return;
+    const was = networkName === INSTANCE_NETWORK;
+    try {
+      await attachSelfToInstanceNetwork(self);
+      networkName = INSTANCE_NETWORK;
+      if (!attached) {
+        appendPanelLog(
+          was ? 'WARN' : 'INFO',
+          was
+            ? `面板不在实例专用网络 ${INSTANCE_NETWORK} 上了（容器被重建过？），已重新接上`
+            : `已接入实例专用网络 ${INSTANCE_NETWORK}，之后新建 / 重启的实例都接到这里`,
+        );
+      }
+    } catch (e: any) {
+      if (was) appendPanelLog('ERROR', `面板重新接入实例专用网络 ${INSTANCE_NETWORK} 失败：${oneLine(String(e?.message || e))}`);
+    }
+  };
+  setTimeout(() => void tick(), 15_000).unref();
+  setInterval(() => void tick(), 2 * 60 * 1000).unref();
+}
+
+// 新建/重建的实例接到哪个网络。优先实例专用网络；WOC_DOCKER_NETWORK 显式指定时用指定的；
+// 都不行时退回面板自身所在的网络。失败不致命：返回 null（实例落到 docker 默认 bridge，反代按名访问不到）。
+let ensuring: Promise<string | null> | null = null;
+export function ensureNetwork(): Promise<string | null> {
+  if (networkName) return Promise.resolve(networkName);
+  if (!ensuring) ensuring = resolveNetwork().finally(() => (ensuring = null));
+  return ensuring;
+}
+async function resolveNetwork(): Promise<string | null> {
+  if (EXPLICIT_NETWORK) return (networkName = EXPLICIT_NETWORK);
+  const self = await inspectSelf();
+  if (self) {
+    try {
+      await attachSelfToInstanceNetwork(self);
+      return (networkName = INSTANCE_NETWORK);
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      warnNetworkOnce(
+        'isolation',
+        `没能建立实例专用网络 ${INSTANCE_NETWORK}（${oneLine(msg)}），实例暂时仍接到面板所在的网络、与同网络的其它容器互通。` +
+          (/403|forbidden|denied/i.test(msg) ? '多见于 socket-proxy 加固部署没开放 NETWORKS 权限，见 doc/安全加固.md' : ''),
+      );
+    }
+  }
+  const nets = self ? netsOf(self) : null;
+  // 默认 bridge 不支持按容器名解析。面板同时在 bridge 和自定义网络上时必须选自定义网络——旧逻辑取排序后
+  // 第一个，网络名排在 "bridge" 之后（如 proxy、traefik）就会选中 bridge，实例全部 502。
+  const pick = nets?.find((n) => n !== 'bridge') || nets?.[0] || null;
+  if (pick === 'bridge') {
+    warnNetworkOnce(
+      'bridge',
+      '面板在 Docker 默认 bridge 网络上，该网络不能按容器名互访，实例桌面会打不开（502）。' +
+        '请用 docker compose 部署（自带独立网络），或把面板接到自定义网络后重建面板',
+    );
+  }
+  if (pick) {
+    networkName = pick;
+    return networkName;
+  }
   console.warn('[docker] 无法探测面板网络（本地开发或缺少 docker.sock 时正常）');
-  return networkName;
+  warnNetworkOnce(
+    'none',
+    nets
+      ? '面板容器没有可用的 Docker 网络，新建/重启的实例将落到默认 bridge，桌面会打不开（502）'
+      : '找不到面板自身容器，无法确定它所在的 Docker 网络，新建/重启的实例将落到默认 bridge，桌面可能打不开（502）。' +
+          '可在 .env 设 WOC_DOCKER_NETWORK=<面板所在网络名> 后 docker compose up -d',
+  );
+  return null;
+}
+
+// 启动时体检一次（只记日志、不动实例）：① 显式指定的 WOC_DOCKER_NETWORK 面板自己不在上面；
+// ② 运行中的实例和面板不在任何一个共同的自定义网络上（旧版探测失败时建到了 bridge 的实例，#103）；
+// ③ 专用网络生效后，还留在共享网络上的老实例（下次重建时自动迁移）。
+// ① ② 表现为桌面 502 / 一直重连；② 点「重启」即会把实例重建到面板网络（数据保留）。
+export async function checkInstanceNetworks(instances: Instance[]): Promise<void> {
+  const nets = await selfNetworks();
+  if (!nets) return;
+  if (EXPLICIT_NETWORK && !nets.includes(EXPLICIT_NETWORK)) {
+    warnNetworkOnce(
+      'explicit',
+      `WOC_DOCKER_NETWORK=${EXPLICIT_NETWORK}，但面板自己不在这个网络上（面板所在：${nets.join(', ') || '无'}），` +
+        '实例会接到面板访问不到的网络。请改成面板所在的网络名，或清空它让面板自动探测',
+    );
+  }
+  const shared = new Set(nets.filter((n) => n !== 'bridge'));
+  if (!shared.size) return; // 面板自己就不在自定义网络上：ensureNetwork 已提示
+  const stray: string[] = [];
+  const pending: string[] = [];
+  for (const inst of instances) {
+    try {
+      const info: any = await docker.getContainer(inst.containerName).inspect();
+      const own = Object.keys(info.NetworkSettings?.Networks || {});
+      if (isolatedNet && !own.includes(INSTANCE_NETWORK)) pending.push(`「${inst.name}」`);
+      if (!info.State?.Running) continue;
+      if (!own.some((n) => shared.has(n))) stray.push(`「${inst.name}」(${own.join('/') || '无网络'})`);
+    } catch {
+      /* 容器不存在：启动流程会按当前配置新建 */
+    }
+  }
+  if (pending.length) {
+    appendPanelLog(
+      'INFO',
+      `实例${pending.join('、')} 还在面板所在的共享网络上，下次重启 / 升级时会自动迁到专用网络 ${INSTANCE_NETWORK}（数据与设备标识不变）；想立即隔离可在管理页点「重启」`,
+    );
+  }
+  if (stray.length) {
+    appendPanelLog(
+      'WARN',
+      `实例${stray.join('、')} 与面板（${[...shared].join(', ')}）不在同一 Docker 网络，面板连不到它们，桌面会打不开。` +
+        '在面板里点这些实例的「重启」即可重建到面板网络（数据保留）',
+    );
+  }
 }
 
 // 摄像头直通：把宿主的 v4l2 视频设备映射进实例容器
@@ -525,7 +788,18 @@ export async function describeInstanceVolume(name: string): Promise<string> {
 // 绝不因"本地 :latest 恰好被某次拉取更新过"就悄悄换镜像（那等于一次没人要求的隐式升级；
 // 若本地新镜像恰好是坏的，一次看门狗自愈就能弄坏一个用户从没升级过的实例）。
 // 换镜像只允许发生在显式「升级实例」（不带 keepImage）。
-export async function runInstance(inst: Instance, opts?: { keepImage?: boolean }): Promise<void> {
+// 同一实例的重建串行执行：手动重启、看门狗自愈、卡死自愈、升级可能撞在一起，并发时两边都「删旧建新」，
+// 实测同时点两次重启必有一次报「容器名已被占用」失败（运气差时还会删掉另一边刚建好、尚未启动的容器）。
+const lifecycleChains = new Map<string, Promise<unknown>>();
+function withLifecycle<T>(instId: string, fn: () => Promise<T>): Promise<T> {
+  const run = (lifecycleChains.get(instId) || Promise.resolve()).then(fn, fn);
+  lifecycleChains.set(instId, run.catch(() => undefined));
+  return run;
+}
+export function runInstance(inst: Instance, opts?: { keepImage?: boolean }): Promise<void> {
+  return withLifecycle(inst.id, () => runInstanceNow(inst, opts));
+}
+async function runInstanceNow(inst: Instance, opts?: { keepImage?: boolean }): Promise<void> {
   const net = await ensureNetwork();
   // WOC_DATA_DIR 模式下预建主机目录（mike uid=1000，与容器内 abc 兼容）。
   // 已存在则校验属主；目录权限由容器 /config chown 兜底。
@@ -540,20 +814,23 @@ export async function runInstance(inst: Instance, opts?: { keepImage?: boolean }
       appendPanelLog('WARN', `数据目录 ${dataDir} 预建失败：${e?.message || e}`);
     }
   }
-  let imageOverride: string | undefined;
-  try {
-    const existing = docker.getContainer(inst.containerName);
-    const info = await existing.inspect();
-    if (opts?.keepImage && info.Image) imageOverride = String(info.Image);
-    // 删除前先把旧容器最后日志快照进持久日志，否则随容器删除就看不到"上次为何停/崩"。
-    await snapshotContainerLog(inst, '容器重建（重启/升级/自愈），保留上一容器最后日志');
-    await existing.remove({ force: true });
-  } catch {
-    /* 不存在，正常 */
-  }
+  const existing = docker.getContainer(inst.containerName);
+  const info: any = await existing.inspect().catch(() => null);
+  const imageOverride: string | undefined = opts?.keepImage && info?.Image ? String(info.Image) : undefined;
   // 沿用旧镜像重建时无需 ensureImage（镜像 id 一定在本地——容器刚在用它）；
   // 也避免"离线 + 本地无 :latest"时连重启都失败。
+  // 必须先确保目标镜像在本地、再删旧容器：此前先删后拉，升级时拉不到新镜像（面板刚更新、本地只有旧版本号的镜像、
+  // 网络又不通）就会把旧容器删掉却建不出新的，实例直接没了；现在拉取失败时旧容器原样保留。
   if (!imageOverride) await ensureImage();
+  if (info) {
+    try {
+      // 删除前先把旧容器最后日志快照进持久日志，否则随容器删除就看不到"上次为何停/崩"。
+      await snapshotContainerLog(inst, '容器重建（重启/升级/自愈），保留上一容器最后日志');
+      await existing.remove({ force: true });
+    } catch {
+      /* 已被移走，正常 */
+    }
+  }
   await ensureInstanceVolume(inst, imageOverride || WECHAT_IMAGE);
   // 摄像头设备（探测不到则为空数组 → 仅摄像头不可用，音频/麦克风照常）
   const vids = videoDevices();
@@ -634,11 +911,20 @@ export async function runInstance(inst: Instance, opts?: { keepImage?: boolean }
 }
 
 // 确保实例容器在运行：缺失则按需创建（不会重建已有卷），停止则启动。
+// 只有容器确实不存在（404）才新建：Docker 一时连不上（socket-proxy 还没起来）时若也当成「不存在」去重建，
+// 重建那一刻网络多半也没探测到，实例会落到默认 bridge、桌面 502。
 export async function ensureRunning(inst: Instance): Promise<void> {
+  const c = docker.getContainer(inst.containerName);
+  let info: any;
   try {
-    const c = docker.getContainer(inst.containerName);
-    const info = await c.inspect();
-    if (!info.State?.Running) await c.start();
+    info = await c.inspect();
+  } catch (e: any) {
+    if (e?.statusCode !== 404) throw e;
+    return runInstance(inst);
+  }
+  if (info.State?.Running) return;
+  try {
+    await c.start();
   } catch {
     await runInstance(inst);
   }
@@ -668,6 +954,13 @@ export async function upgradeInstance(inst: Instance, opts?: { skipPull?: boolea
       return '';
     }
   })();
+  // 拉取失败、本地的目标镜像又正是实例现在用的：没有可升级的东西，别白白重建（实例会重启一次、所有人断线）
+  if (pullErr && before) {
+    const target = await docker.getImage(WECHAT_IMAGE).inspect().then((i: any) => String(i.Id || '')).catch(() => '');
+    if (target === before) {
+      throw new Error(`拉取新镜像失败（${pullErr?.message || pullErr}），实例未改动（未升级）。请检查网络/镜像源后重试`);
+    }
+  }
   // 升级不改变用户的运行状态：原本停止的实例，升级（重建）后停回去，而不是悄悄拉起。
   const wasStopped = (await instanceRuntime(inst)) === 'stopped';
   await runInstance(inst);
@@ -714,7 +1007,7 @@ export async function pruneOldWocImages(): Promise<void> {
     const curInstance = await latestInstanceImageId();
     if (curInstance) keep.add(curInstance);
     try {
-      const panelC: any = await docker.getContainer(process.env.WOC_PANEL_CONTAINER || 'woc-panel').inspect();
+      const panelC: any = await inspectSelf();
       if (panelC?.Image) keep.add(String(panelC.Image));
     } catch {
       /* 面板容器名不同/查不到 → 跳过，下面的容器遍历仍会覆盖到 */
@@ -1099,6 +1392,18 @@ export async function instanceRuntime(inst: Instance): Promise<RuntimeState> {
   }
 }
 
+// 实例容器本次已运行多少秒（State.StartedAt 起算）；没在跑 / 读不到时返回 null。
+export async function instanceUptimeSec(inst: Instance): Promise<number | null> {
+  try {
+    const info = await docker.getContainer(inst.containerName).inspect();
+    if (!info.State?.Running) return null;
+    const t = Date.parse(String(info.State.StartedAt || ''));
+    return Number.isFinite(t) ? Math.max(0, (Date.now() - t) / 1000) : null;
+  } catch {
+    return null;
+  }
+}
+
 // 本地「最新实例镜像」的 Id（新建/升级实例会用到的镜像）。查不到（未拉取过）返回 null。
 export async function latestInstanceImageId(): Promise<string | null> {
   try {
@@ -1411,54 +1716,10 @@ async function doPullImage(onProgress?: (line: any) => void): Promise<void> {
 // 反向：把微信收到的文件另存到桌面，即可在面板里下载。
 const TRANSFER_DIR = '/config/Desktop';
 
-// 极简单文件 tar 编码（putArchive 需要 tar；避免引入第三方依赖）。
-function tarSingleFile(name: string, content: Buffer): Buffer {
-  const h = Buffer.alloc(512, 0);
-  h.write(name.slice(0, 100), 0, 'utf8'); // name
-  h.write('0000644\0', 100); // mode
-  h.write('0001750\0', 108); // uid 1000(octal 1750)
-  h.write('0001750\0', 116); // gid 1000
-  h.write(content.length.toString(8).padStart(11, '0') + '\0', 124); // size
-  // mtime 必须写当前时间：此前写死 0，上传进实例的文件全是 1970 年，
-  // 微信文件选择器、面板文件列表按时间排序时，刚上传的文件反而沉到最底下。
-  h.write(Math.floor(Date.now() / 1000).toString(8).padStart(11, '0') + '\0', 136); // mtime
-  h.write('        ', 148); // checksum 占位（8 空格）
-  h.write('0', 156); // typeflag 普通文件
-  h.write('ustar\0', 257);
-  h.write('00', 263);
-  let sum = 0;
-  for (let i = 0; i < 512; i++) sum += h[i];
-  h.write(sum.toString(8).padStart(6, '0') + '\0 ', 148); // 真实校验和
-  const pad = (512 - (content.length % 512)) % 512;
-  return Buffer.concat([h, content, Buffer.alloc(pad, 0), Buffer.alloc(1024, 0)]);
-}
-
 // ---------- 诊断包 ----------
-// 单个 tar entry（USTAR header + 内容 + 512 对齐填充），复用与 tarSingleFile 相同的格式。
-function tarEntry(name: string, content: Buffer): Buffer {
-  const h = Buffer.alloc(512, 0);
-  h.write(name.slice(0, 100), 0, 'utf8');
-  h.write('0000644\0', 100);
-  h.write('0001750\0', 108);
-  h.write('0001750\0', 116);
-  h.write(content.length.toString(8).padStart(11, '0') + '\0', 124);
-  h.write(Math.floor(Date.now() / 1000).toString(8).padStart(11, '0') + '\0', 136); // mtime（同 tarSingleFile，别写 0）
-  h.write('        ', 148); // checksum 占位
-  h.write('0', 156); // typeflag 普通文件
-  h.write('ustar\0', 257);
-  h.write('00', 263);
-  let sum = 0;
-  for (let i = 0; i < 512; i++) sum += h[i];
-  h.write(sum.toString(8).padStart(6, '0') + '\0 ', 148);
-  const pad = (512 - (content.length % 512)) % 512;
-  return Buffer.concat([h, content, Buffer.alloc(pad, 0)]);
-}
-
-// 多文件 tar.gz（内存构建；诊断包通常仅数 MB）。文件名用 ASCII 路径避免 utf8 超 100 字节。
+// 多文件 tar.gz（内存构建；诊断包通常仅数 MB）。
 function buildTarGz(entries: { name: string; content: string | Buffer }[]): Buffer {
-  const parts = entries.map((e) => tarEntry(e.name, Buffer.isBuffer(e.content) ? e.content : Buffer.from(e.content, 'utf8')));
-  parts.push(Buffer.alloc(1024, 0)); // 两个空块标记归档结束
-  return zlib.gzipSync(Buffer.concat(parts));
+  return zlib.gzipSync(tarArchive(entries.map((e) => tarEntry(e.name, Buffer.isBuffer(e.content) ? e.content : Buffer.from(e.content, 'utf8')))));
 }
 
 // 汇总诊断包：系统信息 + 面板全局日志 + 每个实例（容器状态 + 持久日志 + 实时日志）+ 全部 woc-* 容器清单。
@@ -1587,9 +1848,13 @@ export async function buildDiagnostics(instances: Instance[], sinceMs: number, m
   return buildTarGz(entries);
 }
 
-// 校验文件名为安全 basename（防路径穿越）。
+// 校验文件名为安全 basename（防路径穿越）。长度按字节算：Linux 文件名上限 255 字节，一个汉字占 3 字节。
 function safeName(name: string): boolean {
-  return !!name && name.length <= 200 && !name.includes('/') && !name.includes('\0') && name !== '.' && name !== '..';
+  return !!name && Buffer.byteLength(name, 'utf8') <= 255 && !name.includes('/') && !name.includes('\0') && name !== '.' && name !== '..';
+}
+function assertSafeName(name: string): void {
+  if (Buffer.byteLength(name || '', 'utf8') > 255) throw new Error('文件名太长（最多 255 字节，约 85 个汉字），请改短后再上传');
+  if (!safeName(name)) throw new Error('文件名不合法');
 }
 
 // 壁纸/字体文件名：在 safeName 基础上，额外拒绝 shell 元字符。这些名字会被拼进 `sh -c '...${name}...'`
@@ -1599,11 +1864,70 @@ function safeMediaName(name: string): boolean {
   return safeName(name) && !/['"$`\\;&|<>\r\n]/.test(name);
 }
 
-export async function uploadToInstance(inst: Instance, name: string, content: Buffer): Promise<void> {
-  if (!safeName(name)) throw new Error('文件名不合法');
-  await execCapture(inst, ['sh', '-c', `mkdir -p ${TRANSFER_DIR}`]); // abc 家目录可写
-  const c = docker.getContainer(inst.containerName);
-  await c.putArchive(tarSingleFile(name, content), { path: TRANSFER_DIR });
+// ---------- 流式写入单个文件 ----------
+// 边收边打成 tar 交给 docker，面板内存不随文件大小增长。先写到 /config/.woc-upload 下的临时名，完整收到后才改名到
+// 目标位置：上传中途断开（关页面、断网、取消）时 docker 已经写下了半截文件，此前这个半截文件就顶着正式文件名留在
+// 桌面上，看着和正常文件一样，发出去才发现打不开。临时目录与目标同在 /config 卷上，改名是原子操作。
+const UPLOAD_TMP_DIR = '/config/.woc-upload';
+
+// putArchive 的响应体是空的，读掉以释放连接
+async function putArchiveStream(inst: Instance, tar: NodeJS.ReadableStream, path: string): Promise<void> {
+  const res: any = await docker.getContainer(inst.containerName).putArchive(tar, { path });
+  if (res && typeof res.resume === 'function') res.resume();
+}
+
+// 目标所在磁盘的可用空间（字节）；查不到返回 null（不拦）
+async function freeBytesIn(inst: Instance, dir: string): Promise<number | null> {
+  try {
+    const out = await execCapture(inst, ['df', '-Pk', dir]);
+    const kb = Number(out.trim().split('\n').pop()?.trim().split(/\s+/)[3]);
+    return Number.isFinite(kb) ? kb * 1024 : null;
+  } catch {
+    return null;
+  }
+}
+
+const fmtBytes = (n: number) => (n >= 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(1)} GB` : `${Math.max(1, Math.round(n / 1024 ** 2))} MB`);
+
+async function assertFreeSpace(inst: Instance, dir: string, need: number): Promise<void> {
+  const free = await freeBytesIn(inst, dir);
+  if (free !== null && need + 64 * 1024 ** 2 > free) {
+    throw Object.assign(new Error(`实例数据盘空间不足：需要 ${fmtBytes(need)}，只剩 ${fmtBytes(free)}`), { statusCode: 507 });
+  }
+}
+
+// docker / 命令行的英文报错翻成能看懂的
+function friendlyWriteError(e: any): Error {
+  const msg = String(e?.message || e);
+  if (/no space left on device/i.test(msg)) return Object.assign(new Error('实例数据盘空间不足，文件没能写完'), { statusCode: 507 });
+  if (/is not running|container .* is restarting/i.test(msg)) return new Error('实例未运行，请先启动实例');
+  if (/cannot overwrite directory|Is a directory/i.test(msg)) return new Error('目标位置已有同名文件夹');
+  if (/File name too long/i.test(msg)) return new Error('文件名太长');
+  return e instanceof Error ? e : new Error(msg);
+}
+
+async function putFileStream(inst: Instance, dir: string, name: string, size: number, body: AsyncIterable<Buffer>): Promise<void> {
+  assertSafeName(name);
+  await execCapture(inst, ['mkdir', '-p', dir, UPLOAD_TMP_DIR]).catch((e) => {
+    throw friendlyWriteError(e);
+  });
+  // 顺手清掉面板被重启等情况下没来得及删的临时文件；正在写的临时文件 mtime 一直在刷新，不会误删
+  await execCapture(inst, ['find', UPLOAD_TMP_DIR, '-maxdepth', '1', '-type', 'f', '-mmin', '+180', '-delete'], 'root').catch(() => {});
+  await assertFreeSpace(inst, UPLOAD_TMP_DIR, size);
+  const tmp = `${UPLOAD_TMP_DIR}/part-${Date.now()}-${randomBytes(4).toString('hex')}`;
+  const tar = tarFileStream(tmp.slice(UPLOAD_TMP_DIR.length + 1), size, body);
+  try {
+    await putArchiveStream(inst, tar, UPLOAD_TMP_DIR);
+    await execCapture(inst, ['mv', '-fT', '--', tmp, `${dir}/${name}`], 'root');
+  } catch (e) {
+    tar.destroy();
+    await execCapture(inst, ['rm', '-f', '--', tmp], 'root').catch(() => {});
+    throw friendlyWriteError(e);
+  }
+}
+
+export async function uploadToInstance(inst: Instance, name: string, size: number, body: AsyncIterable<Buffer>): Promise<void> {
+  await putFileStream(inst, TRANSFER_DIR, name, size, body);
 }
 
 export interface TransferFile {
@@ -1635,17 +1959,56 @@ export async function deleteInstanceFile(inst: Instance, name: string): Promise<
   await execCapture(inst, ['rm', '-f', `${TRANSFER_DIR}/${name}`]);
 }
 
-export async function downloadFromInstance(inst: Instance, name: string): Promise<Buffer> {
-  if (!safeName(name)) throw new Error('文件名不合法');
-  const c = docker.getContainer(inst.containerName);
-  const stream = (await c.getArchive({ path: `${TRANSFER_DIR}/${name}` })) as NodeJS.ReadableStream;
-  const chunks: Buffer[] = [];
-  await new Promise<void>((resolve, reject) => {
-    stream.on('data', (d: Buffer) => chunks.push(d));
-    stream.on('end', () => resolve());
-    stream.on('error', reject);
+// 以流的形式读出容器里的一个普通文件，不整个读进内存。微信收到的视频、文件动辄几百 MB 到 GB，此前先把整个 tar 读进
+// 内存再解出文件，面板进程峰值约为文件大小的两倍，NAS 上容易被 OOM 杀掉，所有人的桌面跟着断。
+// 走 docker exec cat：输出按 docker 的 stdout/stderr 分帧，这里自己拆帧，并在下游写不动时暂停读取（慢速客户端不在内存里堆积）。
+// 先 stat：只放行普通文件（不跟随符号链接，与 getArchive 一致），出错能在发出响应头之前报。
+export async function streamRegularFile(inst: Instance, absPath: string): Promise<{ size: number; stream: NodeJS.ReadableStream }> {
+  const st = await execCapture(inst, ['stat', '-c', '%F|%s', '--', absPath], 'root').catch(() => '');
+  if (!st) throw new Error('文件不存在或已被删除');
+  const [kind, size] = st.trim().split('|');
+  if (kind !== 'regular file' && kind !== 'regular empty file') throw new Error('不是普通文件');
+  const exec = await execCreate(docker.getContainer(inst.containerName), {
+    Cmd: ['cat', '--', absPath],
+    AttachStdout: true,
+    AttachStderr: true,
+    Tty: false,
+    User: 'root',
   });
-  return extractSingleFileFromTar(Buffer.concat(chunks));
+  const raw = (await exec.start({ hijack: true, stdin: false })) as NodeJS.ReadableStream & { destroy?: () => void };
+  const out = new PassThrough();
+  let buf: Buffer = Buffer.alloc(0);
+  let need = 0; // 当前帧还剩多少字节
+  let type = 0; // 1 = stdout，2 = stderr
+  raw.on('data', (chunk: Buffer) => {
+    buf = buf.length ? Buffer.concat([buf, chunk]) : chunk;
+    for (;;) {
+      if (need === 0) {
+        if (buf.length < 8) break;
+        type = buf[0];
+        need = buf.readUInt32BE(4);
+        buf = buf.subarray(8);
+        continue;
+      }
+      if (!buf.length) break;
+      const part = buf.subarray(0, need);
+      buf = buf.subarray(part.length);
+      need -= part.length;
+      if (type === 1 && !out.write(part)) {
+        raw.pause();
+        out.once('drain', () => raw.resume());
+      }
+    }
+  });
+  raw.on('end', () => out.end());
+  raw.on('error', (e) => out.destroy(e as Error));
+  out.on('close', () => raw.destroy?.()); // 客户端中途断开：停掉 cat
+  return { size: Number(size) || 0, stream: out };
+}
+
+export async function downloadFromInstance(inst: Instance, name: string): Promise<{ size: number; stream: NodeJS.ReadableStream }> {
+  if (!safeName(name)) throw new Error('文件名不合法');
+  return streamRegularFile(inst, `${TRANSFER_DIR}/${name}`);
 }
 
 // 从 docker getArchive 返回的 tar 中取出第一个普通文件的内容。Docker(Go archive/tar) 在 mtime 含纳秒精度等
@@ -1701,23 +2064,123 @@ export async function snapshotContainerLog(inst: Instance, reason: string): Prom
   }
 }
 
+// 在实例 X 桌面里跑命令的公共开头：定位 DISPLAY，确认镜像里有 xclip / xdotool。
+// 服务端按键一律「先松开 xdotool 自己按住的修饰键，再按」，不用 --clearmodifiers（#151）。
+// --clearmodifiers 会在按键前松开当前按着的修饰键、按完再「恢复」。用户按 Ctrl+V 粘贴时，粘贴桥截下 V、服务端替他按
+// Ctrl+V，这时用户往往还按着 Ctrl：xdotool 按完后用它自己的虚拟键盘（XTEST）把 Ctrl 按回去，而用户松手是从 VNC 键盘
+// 来的，XTEST 这边的 Ctrl 就一直按着。下一次 xdotool 再按 Ctrl 被当成重复按键吞掉，应用收到的是光秃秃的 v——
+// 实测粘完图片接着打中文，发出去的是「v」。先 keyup 一遍既能清掉这种残留（包括旧版本留下的），又不会再按回去。
+const XDO_RELEASE_MODS = 'xdotool keyup Control_L Control_R Shift_L Shift_R Alt_L Alt_R Meta_L Meta_R Super_L Super_R ISO_Level3_Shift';
+const xdoKey = (key: string) => `${XDO_RELEASE_MODS}\nxdotool key ${key}`;
+
+const X_PRELUDE = [
+  'set -e',
+  'display="${DISPLAY:-}"',
+  'if [ -z "$display" ]; then for x in /tmp/.X11-unix/X*; do [ -e "$x" ] || continue; display=":${x##*X}"; break; done; fi',
+  'export DISPLAY="${display:-:1}"',
+  'command -v xclip >/dev/null 2>&1 || { echo "xclip not installed in instance image" >&2; exit 127; }',
+  'command -v xdotool >/dev/null 2>&1 || { echo "xdotool not installed in instance image" >&2; exit 127; }',
+];
+
+// ---------- 打字借用剪贴板，打完归还 ----------
+// typeInInstance 靠「写容器剪贴板 + Ctrl+V」把文字贴进应用，副作用是容器剪贴板被换成刚打的字，KasmVNC 的无缝剪贴板
+// 还会把它同步到用户本机剪贴板。实测：本机复制一个链接 → 进桌面打「看看」→ 本机、容器剪贴板都成了「看看」→
+// Ctrl+V 贴出「看看」，链接没了；在应用里复制一条消息、打几个字再粘贴也一样。
+// 做法：一轮打字的第一段先把容器剪贴板存下（只存一种最常用的格式：图片 > 文件列表 > 文字，应用私有格式还原不了），
+// 最后一段打完 1 秒后，若剪贴板仍是我们放进去的字就原样放回；这期间用户自己复制了别的，就不动。
+// 经面板按的 Ctrl+V（粘贴桥）会先立刻归还再粘贴；有意写入新内容的粘贴（本机图片 / 本机文字）则直接作废存档。
+const CLIP_DIR = '/tmp/.woc-clip';
+const CLIP_RESTORE_MS = 1000;
+const CLIP_SAVE = `D=${CLIP_DIR}; mkdir -p "$D"
+if [ ! -e "$D/saved.type" ] || [ $(( $(date +%s) - $(stat -c %Y "$D/saved.type") )) -gt 20 ]; then
+  rm -f "$D"/saved.*; ty=none
+  tg=$(timeout 1 xclip -o -selection clipboard -t TARGETS 2>/dev/null || true)
+  for t in image/png text/uri-list x-special/gnome-copied-files UTF8_STRING text/plain STRING; do
+    if printf '%s\\n' "$tg" | grep -qxF "$t"; then ty=$t; break; fi
+  done
+  if [ "$ty" != none ] && ! timeout 2 xclip -o -selection clipboard -t "$ty" > "$D/saved.data" 2>/dev/null; then ty=none; fi
+  echo "$ty" > "$D/saved.type"
+else
+  touch "$D/saved.type"
+fi`;
+const CLIP_RESTORE = `D=${CLIP_DIR}
+[ -e "$D/saved.type" ] || exit 0
+ty=$(cat "$D/saved.type")
+cur=$(timeout 1 xclip -o -selection clipboard -t UTF8_STRING 2>/dev/null || true)
+if [ "$ty" != none ] && [ -e "$D/typed.txt" ] && [ "$cur" = "$(cat "$D/typed.txt")" ]; then
+  xclip -selection clipboard -t "$ty" -i "$D/saved.data" >/dev/null 2>&1
+fi
+rm -f "$D"/saved.* "$D/typed.txt"`;
+const CLIP_DISCARD = `rm -f ${CLIP_DIR}/saved.* ${CLIP_DIR}/typed.txt`;
+
+// 同一实例的剪贴板操作（打字 / 归还 / 粘贴）串行执行，免得归还插在两段打字之间
+const clipChains = new Map<string, Promise<unknown>>();
+function withClipLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+  const run = (clipChains.get(id) || Promise.resolve()).then(fn, fn);
+  clipChains.set(id, run.catch(() => undefined));
+  return run;
+}
+const clipTimers = new Map<string, ReturnType<typeof setTimeout>>();
+function cancelClipRestore(id: string): boolean {
+  const t = clipTimers.get(id);
+  if (!t) return false;
+  clearTimeout(t);
+  clipTimers.delete(id);
+  return true;
+}
+async function restoreClipboard(inst: Instance): Promise<void> {
+  await execCapture(inst, ['bash', '-c', [...X_PRELUDE, CLIP_RESTORE].join('\n')]).catch(() => {});
+}
+function scheduleClipRestore(inst: Instance): void {
+  cancelClipRestore(inst.id);
+  const t = setTimeout(() => {
+    clipTimers.delete(inst.id);
+    void withClipLock(inst.id, () => restoreClipboard(inst));
+  }, CLIP_RESTORE_MS);
+  t.unref?.();
+  clipTimers.set(inst.id, t);
+}
+
 // 通过 xdotool 在实例容器内输入文字（绕过 VNC keysym 限制，解决中文 IME 吞字问题）。
-// 用 base64 传递文本避免 shell 转义问题，xclip 写入剪贴板后 xdotool 模拟 Ctrl+V 粘贴。
+// 用 base64 传递文本避免 shell 转义问题，xclip 写入剪贴板后 xdotool 模拟 Ctrl+V 粘贴；剪贴板打完归还（见上）。
 export async function typeInInstance(inst: Instance, text: string): Promise<void> {
   const b64 = Buffer.from(text, 'utf8').toString('base64');
   const cmd = [
-    'set -e',
-    'display="${DISPLAY:-}"',
-    'if [ -z "$display" ]; then for x in /tmp/.X11-unix/X*; do [ -e "$x" ] || continue; display=":${x##*X}"; break; done; fi',
-    'export DISPLAY="${display:-:1}"',
-    'command -v xclip >/dev/null 2>&1 || { echo "xclip not installed in instance image" >&2; exit 127; }',
-    'command -v xdotool >/dev/null 2>&1 || { echo "xdotool not installed in instance image" >&2; exit 127; }',
+    ...X_PRELUDE,
+    CLIP_SAVE,
+    `echo '${b64}' | base64 -d > ${CLIP_DIR}/typed.txt`,
     // xclip -i 会 daemon 化常驻持有剪贴板选区，并继承 exec 的 stdout/stderr；不重定向的话 docker exec
     // 要等这俩 fd 关闭，实测每次卡 ~2s。重定向到 /dev/null 后台后，整条链路从 ~2.1s 降到 ~0.08s。
-    `echo '${b64}' | base64 -d | xclip -selection clipboard -i >/dev/null 2>&1`,
-    'xdotool key --clearmodifiers ctrl+v',
-  ].join('; ');
-  await execCapture(inst, ['bash', '-c', cmd]);
+    `xclip -selection clipboard -i ${CLIP_DIR}/typed.txt >/dev/null 2>&1`,
+    xdoKey('ctrl+v'),
+  ].join('\n');
+  await withClipLock(inst.id, async () => {
+    cancelClipRestore(inst.id);
+    try {
+      await execCapture(inst, ['bash', '-c', cmd]);
+    } finally {
+      scheduleClipRestore(inst);
+    }
+  });
+}
+
+// 把本机剪贴板里的文字粘进应用：粘贴桥判断本机剪贴板比容器的新时走这里（在别处复制后回来直接 Ctrl+V、
+// 局域网 http 下浏览器不同步剪贴板）。与打字不同，这是用户有意换内容，贴完文字就留在容器剪贴板里。
+// 文字可能很长，经文件传入（单个命令行参数有 128KB 上限）。
+export async function pasteTextInInstance(inst: Instance, text: string): Promise<void> {
+  const name = `woc-paste-${Date.now()}.txt`;
+  await withClipLock(inst.id, async () => {
+    cancelClipRestore(inst.id);
+    await docker.getContainer(inst.containerName).putArchive(tarSingleFile(name, Buffer.from(text, 'utf8')), { path: '/tmp' });
+    const cmd = [
+      ...X_PRELUDE,
+      CLIP_DISCARD,
+      `xclip -selection clipboard -i /tmp/${name} >/dev/null 2>&1`,
+      `rm -f /tmp/${name}`,
+      xdoKey('ctrl+v'),
+    ].join('\n');
+    await execCapture(inst, ['bash', '-c', cmd]);
+  });
 }
 
 // 把本机剪贴板里的图片（截图等）粘进应用（issue #91）：写入容器的 X 剪贴板（目标类型即图片 MIME），
@@ -1734,20 +2197,19 @@ export async function pasteImageInInstance(inst: Instance, mime: string, content
   const ext = PASTE_IMAGE_TYPES[mime];
   if (!ext) throw new Error('不支持的图片类型');
   const name = `woc-paste-${Date.now()}.${ext}`;
-  await docker.getContainer(inst.containerName).putArchive(tarSingleFile(name, content), { path: '/tmp' });
-  const cmd = [
-    'set -e',
-    'display="${DISPLAY:-}"',
-    'if [ -z "$display" ]; then for x in /tmp/.X11-unix/X*; do [ -e "$x" ] || continue; display=":${x##*X}"; break; done; fi',
-    'export DISPLAY="${display:-:1}"',
-    'command -v xclip >/dev/null 2>&1 || { echo "xclip not installed in instance image" >&2; exit 127; }',
-    'command -v xdotool >/dev/null 2>&1 || { echo "xdotool not installed in instance image" >&2; exit 127; }',
-    "find /tmp -maxdepth 1 -name 'woc-paste-*' -mmin +10 -delete 2>/dev/null || true",
-    // 同 typeInInstance：xclip 常驻后台持有选区，必须重定向 fd，否则 docker exec 要等它退出（~2s）
-    `xclip -selection clipboard -t ${mime} -i /tmp/${name} >/dev/null 2>&1`,
-    'xdotool key --clearmodifiers ctrl+v',
-  ].join('; ');
-  await execCapture(inst, ['bash', '-c', cmd]);
+  await withClipLock(inst.id, async () => {
+    cancelClipRestore(inst.id); // 有意换成这张图，之前打字借用的剪贴板不再归还
+    await docker.getContainer(inst.containerName).putArchive(tarSingleFile(name, content), { path: '/tmp' });
+    const cmd = [
+      ...X_PRELUDE,
+      CLIP_DISCARD,
+      "find /tmp -maxdepth 1 -name 'woc-paste-*' -mmin +10 -delete 2>/dev/null || true",
+      // 同 typeInInstance：xclip 常驻后台持有选区，必须重定向 fd，否则 docker exec 要等它退出（~2s）
+      `xclip -selection clipboard -t ${mime} -i /tmp/${name} >/dev/null 2>&1`,
+      xdoKey('ctrl+v'),
+    ].join('\n');
+    await execCapture(inst, ['bash', '-c', cmd]);
+  });
 }
 
 // 通过 xdotool 在实例容器内模拟一次按键（如 Return / BackSpace）。
@@ -1762,9 +2224,17 @@ export async function keyInInstance(inst: Instance, key: string): Promise<void> 
     'if [ -z "$display" ]; then for x in /tmp/.X11-unix/X*; do [ -e "$x" ] || continue; display=":${x##*X}"; break; done; fi',
     'export DISPLAY="${display:-:1}"',
     'command -v xdotool >/dev/null 2>&1 || { echo "xdotool not installed in instance image" >&2; exit 127; }',
-    `xdotool key --clearmodifiers ${key}`,
-  ].join('; ');
-  await execCapture(inst, ['bash', '-c', cmd]);
+    xdoKey(key),
+  ].join('\n');
+  if (!/^ctrl\+v$/i.test(key)) {
+    await execCapture(inst, ['bash', '-c', cmd]);
+    return;
+  }
+  // 粘贴：打字借用的剪贴板若还没归还，先归还再按，免得贴出刚打的字
+  await withClipLock(inst.id, async () => {
+    if (cancelClipRestore(inst.id)) await restoreClipboard(inst);
+    await execCapture(inst, ['bash', '-c', cmd]);
+  });
 }
 
 // ---------- 数据卷管理（仅管理员；路由层用 requireAdmin 限制） ----------
@@ -1774,7 +2244,7 @@ export async function keyInInstance(inst: Instance, key: string): Promise<void> 
 const VOL_ROOT = '/config';
 
 // 把用户给的相对路径安全解析为 /config 下的绝对路径；禁止 .. 与 NUL；剥离前导 /。
-function safeVolPath(rel: string): string {
+export function safeVolPath(rel: string): string {
   const raw = (rel ?? '').replace(/\\/g, '/');
   if (raw.includes('\0')) throw new Error('路径不合法');
   const parts: string[] = [];
@@ -1786,9 +2256,6 @@ function safeVolPath(rel: string): string {
   return parts.length ? `${VOL_ROOT}/${parts.join('/')}` : VOL_ROOT;
 }
 const relOf = (abs: string): string => (abs === VOL_ROOT ? '' : abs.slice(VOL_ROOT.length + 1));
-// gzip 魔数自动识别（用户上传可能是 .tar 或 .tar.gz；本系统备份恒为 .gz）。
-const maybeGunzip = (buf: Buffer): Buffer =>
-  buf.length > 2 && buf[0] === 0x1f && buf[1] === 0x8b ? zlib.gunzipSync(buf) : buf;
 
 export interface VolEntry {
   name: string;
@@ -1842,33 +2309,90 @@ export async function volDelete(inst: Instance, rel: string): Promise<void> {
   await execCapture(inst, ['rm', '-rf', abs]);
 }
 
-// 上传单个文件到指定目录（tarSingleFile 写入 uid/gid 1000，落地即 abc 属主，微信可读）。
-export async function volUploadFile(inst: Instance, rel: string, name: string, content: Buffer): Promise<void> {
-  if (!safeName(name)) throw new Error('文件名不合法');
-  const dir = safeVolPath(rel);
-  await execCapture(inst, ['mkdir', '-p', dir]);
-  await docker.getContainer(inst.containerName).putArchive(tarSingleFile(name, content), { path: dir });
+// 上传单个文件到指定目录（tar 头写 uid/gid 1000，落地即 abc 属主，微信可读）。流式写入，见 putFileStream。
+export async function volUploadFile(inst: Instance, rel: string, name: string, size: number, body: AsyncIterable<Buffer>): Promise<void> {
+  await putFileStream(inst, safeVolPath(rel), name, size, body);
+}
+
+// 上传的压缩包（已暂存在面板数据目录）写进实例前的整体校验：格式对、没被截断、gzip 没坏、路径不越出目标目录、
+// 没有设备文件；整卷恢复还要求所有条目都在 config/ 下（本系统备份的格式）。此前不校验直接解到容器根目录，
+// 传错了包（比如把 PC 微信文件夹的压缩包当备份传上去）就散落进容器的系统目录。
+// 返回解压后普通文件的总字节数，用来预先检查目标盘空间。
+export interface ArchiveInfo {
+  gzip: boolean;
+  bytes: number;
+  tops: string[] | null; // 解出来的顶层条目名（解压后改属主用）；太多时为 null
+}
+export async function volCheckArchive(path: string, mode: 'extract' | 'restore'): Promise<ArchiveInfo> {
+  const kind = await sniffArchive(path);
+  if (kind === 'zip') throw new Error('暂不支持 zip，请打包成 .tar 或 .tar.gz 后再上传');
+  if (kind === 'other') throw new Error('不是 .tar / .tar.gz 压缩包（或文件已损坏）');
+  const gzip = kind === 'gzip';
+  let entries = 0;
+  let bytes = 0;
+  const tops = new Set<string>();
+  let manyTops = false;
+  await scanArchive(path, gzip, (e) => {
+    entries++;
+    const segs = e.name.split('/').filter((x) => x && x !== '.');
+    if (segs.length && !manyTops) {
+      tops.add(segs[0]);
+      if (tops.size > 200) manyTops = true;
+    }
+    if (segs.includes('..') || (e.type === '1' && e.linkname.split('/').includes('..'))) {
+      throw new Error(`压缩包里有越出目标目录的路径（${e.name}），已拒绝`);
+    }
+    if (e.type === '3' || e.type === '4' || e.type === '6') throw new Error(`压缩包里有设备文件或管道（${e.name}），已拒绝`);
+    if (mode === 'restore' && segs[0] !== 'config') {
+      throw new Error(`这不是本系统导出的整卷备份：「${e.name}」不在 config/ 目录下。要导入别处的数据请用「上传并解压」`);
+    }
+    bytes += e.size;
+  });
+  if (!entries) throw new Error('压缩包是空的');
+  return { gzip, bytes, tops: manyTops ? null : [...tops] };
 }
 
 // 上传压缩包并解压到指定目录（PC 微信数据迁移：用户把文件夹打成 .tar/.tar.gz 上传）。
-// putArchive 把 tar 内容解到 dir 下，Docker 解包限制在 dir 内、防 .. 穿越。
-export async function volExtractArchive(inst: Instance, rel: string, archive: Buffer): Promise<void> {
+// putArchive 把 tar 内容解到 dir 下，Docker 解包限制在 dir 内、防 .. 穿越。gzip 在面板里流式解开。
+export async function volExtractArchive(inst: Instance, rel: string, archivePath: string, info: ArchiveInfo): Promise<void> {
   const dir = safeVolPath(rel);
-  await execCapture(inst, ['mkdir', '-p', dir]);
-  await docker.getContainer(inst.containerName).putArchive(maybeGunzip(archive), { path: dir });
+  await execCapture(inst, ['mkdir', '-p', dir]).catch((e) => {
+    throw friendlyWriteError(e);
+  });
+  await assertFreeSpace(inst, dir, info.bytes);
+  const tar = openTarStream(archivePath, info.gzip);
+  try {
+    await putArchiveStream(inst, tar, dir);
+  } catch (e) {
+    throw friendlyWriteError(e);
+  } finally {
+    tar.destroy();
+  }
+  // putArchive 按压缩包里记录的属主落地：在 NAS 上用 root 打的包解出来是 root，Mac 上打的是 501。应用以 abc 运行，
+  // 写不了这些文件——迁移过来的微信数据库打不开 / 写不进去。解完把这次解出来的东西改成 abc（-h：符号链接只改它自己，
+  // 不跟过去）；实例的设备标识文件 .woc-machine-id 本来就属于 root，不动。
+  const own = ['chown', '-R', '-h', 'abc:abc', '--'];
+  let run: string[] | null;
+  if (info.tops) {
+    const paths = info.tops.filter((t) => !(dir === VOL_ROOT && t === '.woc-machine-id')).map((t) => `${dir}/${t}`);
+    run = paths.length ? [...own, ...paths] : null;
+  } else if (dir === VOL_ROOT) {
+    // 顶层条目太多（>200）没记全：卷根下除设备标识外全部改一遍（卷里本来就都该是 abc 的）
+    run = ['find', VOL_ROOT, '-mindepth', '1', '-maxdepth', '1', '!', '-name', '.woc-machine-id', '-exec', ...own.slice(0, -1), '{}', '+'];
+  } else {
+    run = [...own, dir];
+  }
+  if (run) {
+    await execCapture(inst, run, 'root').catch((e) => {
+      throw new Error(`文件已解压，但没能把属主改成应用用户（${e?.message || e}），应用可能改不了这些文件，请重试`);
+    });
+  }
 }
 
-export async function volDownloadFile(inst: Instance, rel: string): Promise<Buffer> {
+export async function volDownloadFile(inst: Instance, rel: string): Promise<{ size: number; stream: NodeJS.ReadableStream }> {
   const abs = safeVolPath(rel);
   if (abs === VOL_ROOT) throw new Error('不能下载整个根目录，请用整卷备份');
-  const stream = (await docker.getContainer(inst.containerName).getArchive({ path: abs })) as NodeJS.ReadableStream;
-  const chunks: Buffer[] = [];
-  await new Promise<void>((resolve, reject) => {
-    stream.on('data', (d: Buffer) => chunks.push(d));
-    stream.on('end', () => resolve());
-    stream.on('error', reject);
-  });
-  return extractSingleFileFromTar(Buffer.concat(chunks));
+  return streamRegularFile(inst, abs);
 }
 
 // 整卷备份：把 /config 打成 tar 流并经 gzip 输出（路由直接 pipe 给响应，避免大文件入内存）。
@@ -1880,9 +2404,48 @@ export async function volBackupStream(inst: Instance): Promise<NodeJS.ReadableSt
   return tar.pipe(gzip);
 }
 
-// 整卷恢复：仅适用于本系统导出的备份（条目前缀 config/），解到容器根 → 落回 /config。要求实例已停止。
-export async function volRestoreArchive(inst: Instance, archive: Buffer): Promise<void> {
-  await docker.getContainer(inst.containerName).putArchive(maybeGunzip(archive), { path: '/' });
+// 整卷恢复：仅适用于本系统导出的备份（条目前缀 config/），解到容器根 → 落回 /config。
+// 写之前先停掉实例、写完再启动（原本在运行的话）：此前在微信运行时直接覆盖它正开着的数据库文件，
+// 容易把聊天库写坏，而且界面上只是提示「恢复后请重启」。停止期间 docker 照样能往卷里写（docker cp 同理）。
+// 与重启 / 升级 / 自愈共用同一把生命周期锁，恢复中途不会被别的操作把容器拉起来。
+export async function volRestoreArchive(
+  inst: Instance,
+  archivePath: string,
+  info: { gzip: boolean; bytes: number },
+  onStage: (stage: string) => void,
+): Promise<void> {
+  await withLifecycle(inst.id, async () => {
+    const c = docker.getContainer(inst.containerName);
+    const state: any = await c.inspect().catch(() => null);
+    if (!state) throw new Error('实例容器不存在：请先在卡片上启动一次实例，再恢复');
+    const wasRunning = !!state.State?.Running;
+    if (wasRunning) {
+      onStage('停止实例');
+      try {
+        await c.stop({ t: 10 } as any);
+      } catch (e: any) {
+        if (e?.statusCode !== 304) throw e; // 304 = 已经停了
+      }
+      appendInstanceLog(inst.id, '整卷恢复：已停止实例，开始写入备份');
+    }
+    const tar = openTarStream(archivePath, info.gzip);
+    try {
+      onStage('写入数据');
+      await putArchiveStream(inst, tar, '/');
+      appendInstanceLog(inst.id, '整卷恢复：备份已写入');
+    } catch (e) {
+      appendInstanceLog(inst.id, `整卷恢复失败：${(e as any)?.message || e}`);
+      throw friendlyWriteError(e);
+    } finally {
+      tar.destroy();
+      if (wasRunning) {
+        onStage('启动实例');
+        await c.start().catch((e: any) => {
+          if (e?.statusCode !== 304) appendInstanceLog(inst.id, `整卷恢复后启动实例失败：${e?.message || e}`);
+        });
+      }
+    }
+  });
 }
 
 // ---------- 桌面壁纸 ----------

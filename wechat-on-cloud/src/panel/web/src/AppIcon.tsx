@@ -45,6 +45,7 @@ export const BUILTIN_ICONS: Record<string, Glyph> = {
   wechat: G('#07c160', chat),
   chromium: G('#4285f4', globe),
   telegram: G('#2aabee', plane),
+  qq: G('#12b7f5', txt('QQ', 17)),
   xiaohongshu: G('#ff2442', txt('书')),
   douyin: G('#111111', txt('抖')),
   bilibili: G('#fb7299', txt('B', 26)),
@@ -59,6 +60,7 @@ export const ICON_CHOICES: { key: string; label: string }[] = [
   { key: 'wechat', label: '微信' },
   { key: 'chromium', label: 'Chromium' },
   { key: 'telegram', label: 'Telegram' },
+  { key: 'qq', label: 'QQ' },
   { key: 'xiaohongshu', label: '小红书' },
   { key: 'douyin', label: '抖音' },
   { key: 'bilibili', label: 'B站' },
@@ -71,6 +73,7 @@ const DEFAULT_BY_APP: Record<AppType, string> = {
   wechat: 'wechat',
   chromium: 'chromium',
   telegram: 'telegram',
+  qq: 'qq',
   custom: 'app',
 };
 

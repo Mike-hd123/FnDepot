@@ -2412,6 +2412,8 @@ button {
   font-size: 13px;
   color: var(--wx-green-dark);
   font-weight: 600;
+  margin: 6px 0;
+  overflow-wrap: anywhere;
 }
 /* 列表容器：凹槽（inset），内部条目为浮起 bump（hover） */
 .vol-list {

@@ -83,11 +83,11 @@ export function destroySession(token?: string) {
   if (token && sessions.delete(token)) save();
 }
 
-// 禁用/删除账号后，立即踢掉其所有在线会话
-export function destroyUserSessions(userId: string) {
+// 禁用/删除账号、重置密码后，立即踢掉其所有在线会话；exceptToken：自助改密时保留发起者当前这一个
+export function destroyUserSessions(userId: string, exceptToken?: string) {
   let changed = false;
   for (const [token, s] of sessions) {
-    if (s.userId === userId) {
+    if (s.userId === userId && token !== exceptToken) {
       sessions.delete(token);
       changed = true;
     }

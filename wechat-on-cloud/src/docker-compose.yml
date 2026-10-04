@@ -28,10 +28,16 @@ services:
       - WOC_DISABLE_IPV6=${WOC_DISABLE_IPV6:-}
       # 新建实例的数据放到指定的宿主目录（大容量盘 / 方便直接取微信收到的文件），见 .env.example
       - WOC_DATA_ROOT=${WOC_DATA_ROOT:-}
+      # 实例接入的 Docker 网络：默认自动建一个实例专用网络（woc-instances）并把面板接上，实例与面板所在的其它网络隔离；一般不用填，见 .env.example
+      - WOC_DOCKER_NETWORK=${WOC_DOCKER_NETWORK:-}
+      - WOC_INSTANCE_NETWORK=${WOC_INSTANCE_NETWORK:-}
       - WOC_INSTANCE_MEM_GB=${WOC_INSTANCE_MEM_GB:-}
       - WOC_INSTANCE_MEM_SOFT_MB=${WOC_INSTANCE_MEM_SOFT_MB:-1500}
       - WOC_INSTANCE_MEM_HARD_MB=${WOC_INSTANCE_MEM_HARD_MB:-2500}
       - WOC_WATCHDOG_INTERVAL_SEC=${WOC_WATCHDOG_INTERVAL_SEC:-300}
+      - WOC_WATCHDOG_HEALTH_FAILS=${WOC_WATCHDOG_HEALTH_FAILS:-0}
+      # 桌面连接 / 页面反复无应答（KasmVNC 卡死）时自动重启实例；设 0 只断开并记日志、不自动重启
+      - WOC_STUCK_HEAL=${WOC_STUCK_HEAL:-1}
       # 设备伪装：os-release 伪装成 deepin（默认开，=0 关恢复 Debian）。详见 .env.example / doc/设备伪装.md。
       - WOC_SPOOF_OS=${WOC_SPOOF_OS:-1}
       # 登录会话时长（天，默认 30）。会话已落盘持久化：面板重启/自更新不再踢人。调小更安全、调大更省事。
@@ -46,6 +52,8 @@ services:
       # DNS-rebinding 防护：套 HTTPS 反代部署时把对外域名加进 .env（详见 .env.example）。
       # 默认仅放行 loopback + RFC1918 私网，直连 NAS / 局域网无需改动。
       - PANEL_ALLOWED_HOSTS=${PANEL_ALLOWED_HOSTS:-}
+      # 反代不在本机（比如路由器、另一台机器上的 nginx）时，把它的地址填进来，登录限速才按真实来源计数（见 .env.example）
+      - WOC_TRUSTED_PROXIES=${WOC_TRUSTED_PROXIES:-}
 
     volumes:
       # 面板账号数据（用户、实例元信息、密码哈希）

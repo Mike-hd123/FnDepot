@@ -1,3 +1,5 @@
+import { isIP } from 'node:net';
+
 // Host-header allowlist for DNS-rebinding protection.
 //
 // Background: the panel binds 0.0.0.0:8080 and ships default credentials
@@ -108,16 +110,27 @@ export function isAllowedHost(host: string, allowlist: string[]): boolean {
   return false;
 }
 
+// 反代连面板时用的内部地址：IP 字面量、localhost、容器名 / 主机名这类单段名。
+// DNS 重绑定只能借攻击者控制的多段域名（evil.example.com）发起，Host 不可能是这几类。
+function isInternalUpstreamHost(host: string): boolean {
+  if (!host) return false;
+  const bare = host.startsWith('[') ? host.slice(1, -1) : host;
+  return isLoopbackHost(host) || isIP(bare) !== 0 || !bare.includes('.');
+}
+
 // 反代/CDN（Cloudflare、nginx、Caddy 等）部署时，真实对外域名可能在 X-Forwarded-Host 里，
-// 而 Host 被改写成内部地址。综合判定：Host 或 X-Forwarded-Host 任一在白名单即放行。
-// 安全性：DNS-rebinding 攻击者直连面板时，浏览器 fetch 无法设置 X-Forwarded-Host（禁止首部），
-// 故该首部只会由可信反代设置，不会被攻击者利用。
+// 而 Host 被改写成内部地址。Host 在白名单即放行；Host 是反代连面板用的内部地址时，再看 X-Forwarded-Host。
+// 安全性：X-Forwarded-Host 不是浏览器的禁止首部，DNS 重绑定页面的脚本（Host = 攻击者域名）自己就能加上
+// X-Forwarded-Host: 192.168.x.x。此前「Host 或 X-Forwarded-Host 任一在白名单即放行」，实测据此能用默认账号
+// 登录拿到会话、调用管理接口。所以 Host 是外部域名时一律不看 X-Forwarded-Host。
 export function isRequestHostAllowed(
   hostHeader: string | undefined,
   forwardedHostHeader: string | string[] | undefined,
   allowlist: string[],
 ): boolean {
-  if (isAllowedHost(parseHost(hostHeader), allowlist)) return true;
+  const host = parseHost(hostHeader);
+  if (isAllowedHost(host, allowlist)) return true;
+  if (!isInternalUpstreamHost(host)) return false;
   let xfh = Array.isArray(forwardedHostHeader) ? forwardedHostHeader[0] : forwardedHostHeader;
   if (xfh) {
     xfh = xfh.split(',')[0]; // 多级代理链取第一个（最初的客户端 Host）

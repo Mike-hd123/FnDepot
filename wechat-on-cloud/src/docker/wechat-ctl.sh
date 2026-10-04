@@ -142,12 +142,16 @@ do_install() {
 
   write_status downloading 0 "正在下载微信安装包"
   # 断点续传下载（-C -）：网络半路中断/被中间设备掐断时，下次从已下字节【继续】而非从 0 重来
-  #（这正是"反复卡在同一百分比退出"的解药）。--retry-all-errors 对传输中断也重试；外层再多轮兜底。
-  # 关键：绝不在重试前删 $tmp —— 保留部分文件才能续传。
+  #（这正是"反复卡在同一百分比退出"的解药）。关键：绝不在重试前删 $tmp —— 保留部分文件才能续传。
+  # --speed-limit/--speed-time：60 秒内平均不到 1KB/s 即判定卡住并中断。连接还在但数据不再来
+  #（中间设备半开、CDN 节点僵住）时 curl 否则会一直挂着：进度永远停在某个百分比，面板在「下载中」又收起了
+  # 卡片上的全部按钮，删不掉也重启不了（#99）。
+  # 不用 curl 自带的 --retry：它重试前会把本次已下的部分截掉、从本次起点重下（实测卡在 35% 后进度回到 0%，
+  # 大包卡在 80% 就要重下八成）。中断 / 卡住一律由这里的循环接手：每次都按已下字节续传，并在主备地址间轮换。
   while [ "$attempt" -lt 6 ]; do
     attempt=$((attempt+1))
     for base in "$CDN_MAIN" "$CDN_FALLBACK"; do
-      curl -fSL -C - --retry 3 --retry-all-errors --retry-delay 2 --connect-timeout 20 \
+      curl -fSL -C - --connect-timeout 20 --speed-limit 1024 --speed-time 60 \
            -A "$UA" -o "$tmp" "$base/$file" & pid=$!
       while kill -0 "$pid" 2>/dev/null; do
         if [ "${total:-0}" -gt 0 ] 2>/dev/null; then
@@ -166,10 +170,10 @@ do_install() {
     # 已下满（校验用 total）也算成功——防某些实现在收尾时给非 0 退出码
     cur="$(stat -c%s "$tmp" 2>/dev/null || echo 0)"
     if [ "${total:-0}" -gt 0 ] && [ "$cur" -ge "$total" ]; then rc=0; break; fi
-    # 首轮两个地址都一个字节没拿到、且是连接类错误 → 这台机器压根连不上腾讯下载服务器。
-    # 续传重试只对「下到一半断了」有意义；这种情况再跑 5 轮只会让用户多等半小时
+    # 前两轮（两个地址各试两次）都一个字节没拿到、且是连接类错误 → 这台机器压根连不上腾讯下载服务器。
+    # 续传重试只对「下到一半断了」有意义；这种情况再跑几轮只会让用户多等半小时
     # （issue #142 实测约 40 分钟才报错）。直接失败，把原因说清楚。
-    if [ "$attempt" -eq 1 ] && [ "${cur:-0}" -eq 0 ] && is_unreachable_rc "$rc"; then
+    if [ "$attempt" -ge 2 ] && [ "${cur:-0}" -eq 0 ] && is_unreachable_rc "$rc"; then
       unreachable=1; break
     fi
     write_status downloading -1 "下载中断，正在续传重试（$attempt/6）"
@@ -185,7 +189,7 @@ do_install() {
         28) why="连接超时" ;;
         35) why="TLS 握手失败" ;;
       esac
-      log "首轮两个下载地址均连不上（rc=$rc $why），快速失败"
+      log "前两轮两个下载地址均连不上（rc=$rc $why），快速失败"
       # 顺带说明镜像不含微信本体：用户常以为「拉好镜像就该有微信」（issue #142）
       write_status error 0 "连不上腾讯微信下载服务器 dldir1.qq.com（${why}）。云微镜像不含微信本体，首次需从腾讯官方地址下载，请确认这台机器能访问 dldir1.qq.com（检查 DNS、防火墙或代理）后重试"
       return

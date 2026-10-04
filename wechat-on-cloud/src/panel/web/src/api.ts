@@ -19,11 +19,12 @@ export interface WechatStatus {
 }
 
 export type RuntimeState = 'running' | 'stopped' | 'missing';
-export type AppType = 'wechat' | 'telegram' | 'chromium' | 'custom';
+export type AppType = 'wechat' | 'telegram' | 'chromium' | 'qq' | 'custom';
 export const APP_LABELS: Record<AppType, string> = {
   wechat: '微信',
   telegram: 'Telegram',
   chromium: 'Chromium',
+  qq: 'QQ',
   custom: '自定义应用',
 };
 
@@ -41,6 +42,7 @@ export const APP_PROFILES: Record<AppType, AppProfile> = {
   wechat: { label: '微信', needsInstall: true, enterHint: '首次进入请扫码登录微信', updateLabel: '更新微信' },
   telegram: { label: 'Telegram', needsInstall: true, enterHint: '首次进入请登录 Telegram', updateLabel: '更新 Telegram' },
   chromium: { label: 'Chromium', needsInstall: false, enterHint: '浏览器已就绪，直接使用即可', updateLabel: '' },
+  qq: { label: 'QQ', needsInstall: true, enterHint: '首次进入请用手机 QQ 扫码登录', updateLabel: '更新 QQ' },
   custom: { label: '自定义应用', needsInstall: true, enterHint: '', updateLabel: '更新' },
 };
 export const appProfile = (t?: AppType): AppProfile => APP_PROFILES[t ?? 'wechat'] ?? APP_PROFILES.wechat;
@@ -123,17 +125,83 @@ async function apiFetch(input: string, init: RequestInit = {}): Promise<Response
   return res;
 }
 
-// 原始二进制上传（File 直传 application/octet-stream），用于数据卷上传/解压/恢复
-async function rawUpload(url: string, file: File): Promise<any> {
-  const res = await apiFetch(url, {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'content-type': 'application/octet-stream' },
-    body: file,
+// ---------- 大文件上传 ----------
+// 与服务端 index.ts 的 UPLOAD_LIMIT_* 一致。前端先比一下：超限时服务端会直接回 413 并断开连接，
+// 浏览器此时往往只报「网络错误」，看不到原因。
+const GB = 1024 ** 3;
+export const UPLOAD_LIMITS = { transfer: 4 * GB, volumeFile: 20 * GB, archive: 100 * GB };
+export function assertUploadSize(file: Blob, limit: number) {
+  if (file.size > limit) throw new Error(`文件太大（${fmtUploadSize(file.size)}，上限 ${fmtUploadSize(limit)}）`);
+}
+export function fmtUploadSize(n: number): string {
+  if (n >= GB) return `${(n / GB).toFixed(1)} GB`;
+  if (n >= 1024 ** 2) return `${Math.round(n / 1024 ** 2)} MB`;
+  return `${Math.max(1, Math.round(n / 1024))} KB`;
+}
+export type UploadProgress = (loaded: number, total: number) => void;
+
+function uploadHttpError(status: number): string {
+  if (status === 413) return '文件太大：超过了上传上限，或反向代理限制了上传大小（nginx 需调大 client_max_body_size）';
+  if (status === 502 || status === 504) return `上传失败（HTTP ${status}）：反向代理超时，或面板正在重启`;
+  return `上传失败（HTTP ${status}）`;
+}
+
+// 原始二进制上传（File 直传 application/octet-stream），带上传进度（fetch 拿不到上传进度，这里用 XHR）
+async function rawUpload(url: string, file: Blob, onProgress?: UploadProgress): Promise<any> {
+  // 先发个普通请求探路：登录已失效、或反代身份网关要重新认证（apiFetch 会整页重载去认证）时，在这里就拦下，
+  // 不至于几个 GB 传完才发现被挡在门外
+  const probe = await apiFetch('/api/auth/me', { credentials: 'same-origin' });
+  if (probe.status === 401) {
+    location.assign('/login');
+    throw new Error('登录已失效，请重新登录');
+  }
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', url);
+    xhr.setRequestHeader('content-type', 'application/octet-stream');
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) onProgress?.(e.loaded, e.total);
+    };
+    xhr.onload = () => {
+      let data: any = null;
+      try {
+        data = JSON.parse(xhr.responseText || 'null');
+      } catch {
+        /* 反代的错误页不是 JSON */
+      }
+      if (xhr.status >= 200 && xhr.status < 300) {
+        // 2xx 却不是面板的回应（被网关换成了登录页之类）：不能当成功
+        if (data && data.ok) resolve(data);
+        else reject(new Error('上传结果未知（收到的不是面板的响应），请刷新页面后检查'));
+        return;
+      }
+      reject(new Error(data?.error || uploadHttpError(xhr.status)));
+    };
+    xhr.onerror = () => reject(new Error('上传失败：连接中断（网络断开，或反向代理限制了上传大小 / 时长）'));
+    xhr.onabort = () => reject(new Error('上传已取消'));
+    xhr.send(file);
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error((data as any).error || `请求失败 (${res.status})`);
-  return data;
+}
+
+// 解压 / 整卷恢复在服务端是后台任务：上传完拿到任务号，轮询到结束
+async function waitVolumeJob(id: string, job: string, onStage?: (stage: string) => void): Promise<void> {
+  let misses = 0;
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 1000));
+    let st: { state: 'running' | 'done' | 'error'; stage: string; error: string | null };
+    try {
+      st = await req(`/api/admin/instances/${id}/volume/jobs/${job}`);
+      misses = 0;
+    } catch (e: any) {
+      const msg = e?.message || '';
+      if (/任务不存在/.test(msg)) throw new Error('任务状态丢失（面板可能重启过），请检查数据后决定是否重试');
+      if (++misses > 60) throw new Error(`查询进度失败：${msg}`); // 网络抖动 / 面板重启中：多等一会儿
+      continue;
+    }
+    onStage?.(st.stage);
+    if (st.state === 'done') return;
+    if (st.state === 'error') throw new Error(st.error || '操作失败');
+  }
 }
 
 async function req<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
@@ -283,15 +351,9 @@ export const api = {
 
   // 文件中转
   listFiles: (id: string) => req<{ files: { name: string; size: number; mtime?: number }[] }>(`/api/instances/${id}/files`),
-  uploadFile: async (id: string, file: File) => {
-    const res = await apiFetch(`/api/instances/${id}/upload?name=${encodeURIComponent(file.name)}`, {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/octet-stream' },
-      body: file,
-    });
-    if (!res.ok) throw new Error(((await res.json().catch(() => ({}))) as any).error || '上传失败');
-    return res.json();
+  uploadFile: async (id: string, file: File, onProgress?: UploadProgress) => {
+    assertUploadSize(file, UPLOAD_LIMITS.transfer);
+    return rawUpload(`/api/instances/${id}/upload?name=${encodeURIComponent(file.name)}`, file, onProgress);
   },
   // 本机剪贴板图片 → 容器 X 剪贴板 → Ctrl+V（issue #91）
   pasteImage: async (id: string, file: Blob) => {
@@ -319,18 +381,33 @@ export const api = {
   volumeDownloadUrl: (id: string, path: string) =>
     `/api/admin/instances/${id}/volume/download?path=${encodeURIComponent(path)}`,
   volumeBackupUrl: (id: string) => `/api/admin/instances/${id}/volume/backup`,
-  volumeUpload: (id: string, path: string, file: File) =>
-    rawUpload(`/api/admin/instances/${id}/volume/upload?path=${encodeURIComponent(path)}&name=${encodeURIComponent(file.name)}`, file),
-  volumeExtract: (id: string, path: string, file: File) =>
-    rawUpload(`/api/admin/instances/${id}/volume/extract?path=${encodeURIComponent(path)}`, file),
-  volumeRestore: (id: string, file: File) =>
-    rawUpload(`/api/admin/instances/${id}/volume/restore`, file),
+  volumeUpload: async (id: string, path: string, file: File, onProgress?: UploadProgress) => {
+    assertUploadSize(file, UPLOAD_LIMITS.volumeFile);
+    return rawUpload(
+      `/api/admin/instances/${id}/volume/upload?path=${encodeURIComponent(path)}&name=${encodeURIComponent(file.name)}`,
+      file,
+      onProgress,
+    );
+  },
+  // 上传（带进度）→ 服务端校验、写入（后台任务，onStage 报告阶段）
+  volumeExtract: async (id: string, path: string, file: File, onProgress?: UploadProgress, onStage?: (s: string) => void) => {
+    assertUploadSize(file, UPLOAD_LIMITS.archive);
+    const { job } = await rawUpload(`/api/admin/instances/${id}/volume/extract?path=${encodeURIComponent(path)}`, file, onProgress);
+    await waitVolumeJob(id, job, onStage);
+  },
+  volumeRestore: async (id: string, file: File, onProgress?: UploadProgress, onStage?: (s: string) => void) => {
+    assertUploadSize(file, UPLOAD_LIMITS.archive);
+    const { job } = await rawUpload(`/api/admin/instances/${id}/volume/restore`, file, onProgress);
+    await waitVolumeJob(id, job, onStage);
+  },
 
   // 多端协作：操作控制权
   controlStatus: (id: string) => req<{ free: boolean; mine: boolean; holder: string | null }>(`/api/instances/${id}/control`),
   controlBeat: (id: string) => req<{ mine: boolean; holder: string }>(`/api/instances/${id}/control/beat`, { method: 'POST' }),
   controlTake: (id: string) => req<{ mine: boolean; holder: string }>(`/api/instances/${id}/control/take`, { method: 'POST' }),
   typeInInstance: (id: string, text: string) => req(`/api/instances/${id}/type`, { method: 'POST', body: JSON.stringify({ text }) }),
+  // 本机剪贴板文字粘进应用（粘贴桥判断本机比容器新时用；贴完留在容器剪贴板）
+  pasteText: (id: string, text: string) => req(`/api/instances/${id}/paste-text`, { method: 'POST', body: JSON.stringify({ text }) }),
   keyInInstance: (id: string, key: string) => req(`/api/instances/${id}/key`, { method: 'POST', body: JSON.stringify({ key }) }),
 
   // 桌面壁纸

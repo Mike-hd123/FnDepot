@@ -4,7 +4,9 @@ import fstatic from '@fastify/static';
 import httpProxy from 'http-proxy';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import type { IncomingMessage } from 'node:http';
+import { randomUUID } from 'node:crypto';
+import { BlockList, isIP } from 'node:net';
+import type { ClientRequest, IncomingMessage } from 'node:http';
 import type { Socket } from 'node:net';
 import {
   initStore,
@@ -42,6 +44,12 @@ import {
 } from './store.js';
 import {
   ensureNetwork,
+  checkInstanceNetworks,
+  watchInstanceNetwork,
+  waitForDocker,
+  isFromInstanceNetwork,
+  dockerProxySubnets,
+  inspectSelf,
   ensureRunning,
   runInstance,
   stopInstance,
@@ -55,6 +63,7 @@ import {
   resolveInstanceImage,
   removeInstance as removeInstanceContainer,
   instanceRuntime,
+  instanceUptimeSec,
   instanceImageVersion,
   triggerWechat,
   wechatStatus,
@@ -68,6 +77,7 @@ import {
   typeInInstance,
   keyInInstance,
   pasteImageInInstance,
+  pasteTextInInstance,
   listOrphanVolumes,
   listOrphanBindings,
   removeOrphanBinding,
@@ -83,6 +93,8 @@ import {
   volDelete,
   volUploadFile,
   volExtractArchive,
+  volCheckArchive,
+  safeVolPath,
   volDownloadFile,
   volBackupStream,
   volRestoreArchive,
@@ -101,10 +113,16 @@ import {
   getFontFamily,
 } from './docker.js';
 import { createSession, getSession, destroySession, destroyUserSessions, SESSION_TTL_MS } from './sessions.js';
-import { parseHost, parseAllowedHosts, isRequestHostAllowed } from './host-guard.js';
+import {
+  parseHost,
+  parseAllowedHosts,
+  isRequestHostAllowed,
+  isLoopbackHost,
+} from './host-guard.js';
 import { trimApiAvailable, getSharedAccessibleFolders, delSharedAccessibleFolder } from './trim-api.js';
 import { CURRENT_VERSION, versionInfo, ensureChecked, checkForUpdate, startUpdateChecker } from './version.js';
 import { triggerSelfUpdate } from './self-update.js';
+import { GiB, MiB, readBody, receiveFile, spoolUpload, cleanSpoolDir, type Spooled } from './upload.js';
 import { appendInstanceLog, readInstanceLog, appendPanelLog, readPanelLog, pruneOldLogs, filterSince, rangeToMs, DIAG_RANGES } from './logs.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -124,8 +142,17 @@ function basicAuth(inst: Instance) {
 }
 
 initStore();
+cleanSpoolDir(); // 上次异常退出时没收完 / 没处理完的上传暂存
 
 const app = Fastify({ logger: true, trustProxy: true });
+
+// 实例从不需要访问面板：来自实例专用网络的请求一律拒绝，被攻破的实例碰不到面板的登录与接口（见 docker.ts ensureNetwork）
+app.addHook('onRequest', async (req, reply) => {
+  if (isFromInstanceNetwork(req.socket.remoteAddress)) {
+    reply.header('connection', 'close').code(403).send({ error: 'forbidden' });
+    return reply;
+  }
+});
 
 // DNS-rebinding gate: reject requests whose Host header is neither a loopback /
 // RFC1918 LAN address nor in PANEL_ALLOWED_HOSTS. Runs before every route so
@@ -139,15 +166,18 @@ app.addHook('onRequest', async (req, reply) => {
       error: 'Host header not allowed',
       host: parseHost(req.headers.host) || null,
       forwardedHost: req.headers['x-forwarded-host'] || null,
-      hint: '反代部署请把对外域名加入 PANEL_ALLOWED_HOSTS（.env 逗号分隔，支持 *.example.com），改完用 docker compose up -d 重建容器（不是 restart）使其生效',
+      // 要加的是面板收到的 Host：反代原样转发时就是对外域名；反代把 Host 改写成 nas.lan 这类多段内部域名时是它，
+      // 这时加对外域名没用（Host 是多段域名时不看 X-Forwarded-Host，见 host-guard.ts）
+      hint: '反代部署请把上面 host 的值（通常就是对外域名）加入 PANEL_ALLOWED_HOSTS（.env 逗号分隔，支持 *.example.com），改完用 docker compose up -d 重建容器（不是 restart）使其生效',
     });
     return reply; // 显式终止后续生命周期（async 钩子里已 send 时的规范写法，防继续进入路由）
   }
 });
 
 await app.register(cookie);
-// 文件上传走原始二进制（前端以 application/octet-stream 直传 File）
-app.addContentTypeParser('application/octet-stream', { parseAs: 'buffer' }, (_req, body, done) => done(null, body));
+// 文件上传走原始二进制（前端以 application/octet-stream 直传 File）。解析器不读取，把请求流原样交给路由，
+// 由路由边收边处理（见 upload.ts）；注意这种解析器不受 bodyLimit 约束，各路由自己限长。
+app.addContentTypeParser('application/octet-stream', (_req, payload, done) => done(null, payload));
 // Heartbeat and other no-body POST routes send no Content-Type; fall through to this wildcard
 // instead of being rejected with 415. Fastify's exact-match parsers above take priority.
 app.addContentTypeParser('*', { parseAs: 'buffer' }, (_req, _body, done) => done(null, null));
@@ -184,6 +214,20 @@ function requireAuth(req: FastifyRequest, reply: FastifyReply): User | null {
   return u;
 }
 
+// ---------- 上传 ----------
+const UPLOAD_LIMIT_TRANSFER = 4 * GiB; // 桌面文件中转（有实例访问权限的人都能传）
+const UPLOAD_LIMIT_VOL_FILE = 20 * GiB; // 数据卷里上传单个文件（管理员）
+const UPLOAD_LIMIT_ARCHIVE = 100 * GiB; // 上传并解压 / 整卷恢复（管理员；先暂存到面板数据目录，受那里的剩余空间约束）
+
+// 上传路由的响应一律带 connection: close：出错提前返回时，不必把客户端还在发的几个 GB 收完再回
+function uploadRoute(reply: FastifyReply): void {
+  reply.header('connection', 'close');
+}
+function sendUploadError(reply: FastifyReply, e: any, fallback: string) {
+  const code = Number(e?.statusCode);
+  return reply.code(code >= 400 && code < 600 ? code : 400).send({ error: e?.message || fallback });
+}
+
 function requireAdmin(req: FastifyRequest, reply: FastifyReply): User | null {
   const u = requireAuth(req, reply);
   if (!u) return null;
@@ -197,9 +241,52 @@ function requireAdmin(req: FastifyRequest, reply: FastifyReply): User | null {
 // ---------- 登录 / 会话 ----------
 // 登录限速：NAS 面板常被直接暴露公网，无限速 = 可被无脑爆破。
 // 双键计数：来源 IP+用户名（5 次/15 分钟）防单账号爆破；来源 IP（20 次/15 分钟）防换用户名轮询。
-// 用 socket 直连地址而非 X-Forwarded-For——trustProxy 开着，XFF 可伪造，直连地址不可伪造
-// （反代场景下直连地址是反代 IP，限速粒度变粗但依然有效兜底）。成功登录清零。纯内存，重启即清。
+// 来源按 loginSource 判定（不用 Fastify 的 req.ip：trustProxy 开着，它取 XFF 最左段，客户端可随意伪造）。
+// 成功登录清零。纯内存，重启即清。
 const loginFails = new Map<string, { n: number; resetAt: number }>();
+
+// 「来源」怎么认：直连面板时就是 socket 对端地址，不可伪造，XFF 一律不信。
+// 经反代访问时对端是反代自己，按它计数会让所有外网用户共用一个计数——扫描器或某人输错几次，外网就整体
+// 被锁 15 分钟，只能等或重启面板（「外网连不进去、重启容器才好」的一种可能）。
+// 故对端是可信反代且带 X-Forwarded-For 时，按 XFF 最右一段计数：那是紧挨面板的反代追加的来源地址，
+// 客户端伪造的只能排在它左边。另按对端地址做一道放宽的兜底（100 次 / 15 分钟），防止反代配置不当时有人
+// 轮换伪造来源无限试。
+// 可信反代 = 回环 + 本机 Docker 网络里的地址（宿主上的反代经网关进来，容器里的反代在某个 Docker 网络里；
+// 实例专用网络除外）+ WOC_TRUSTED_PROXIES。此前是「任何私网地址」：局域网里随便一台设备都能伪造 XFF，
+// 每次换个来源就绕过 20 次 / 15 分钟的限制，只剩 100 次的兜底。
+const LOGIN_PROXY_BACKSTOP = 100;
+const EXTRA_TRUSTED_PROXIES = (process.env.WOC_TRUSTED_PROXIES || '')
+  .split(/[\s,]+/)
+  .map((x) => x.trim())
+  .filter(Boolean);
+let trustedCache: { list: BlockList; at: number } | null = null;
+async function trustedProxies(): Promise<BlockList> {
+  if (trustedCache && Date.now() - trustedCache.at < 60_000) return trustedCache.list; // 网络会增减，一分钟刷新一次
+  const list = new BlockList();
+  for (const entry of [...(await dockerProxySubnets().catch(() => [] as string[])), ...EXTRA_TRUSTED_PROXIES]) {
+    const [addr, bits] = entry.split('/');
+    const type = isIP(addr) === 6 ? 'ipv6' : isIP(addr) === 4 ? 'ipv4' : null;
+    if (!type) continue;
+    try {
+      if (bits === undefined) list.addAddress(addr, type);
+      else list.addSubnet(addr, Number(bits), type);
+    } catch {
+      /* 写错的条目忽略 */
+    }
+  }
+  trustedCache = { list, at: Date.now() };
+  return list;
+}
+async function loginSource(req: FastifyRequest): Promise<{ key: string; peer: string; viaProxy: boolean }> {
+  const peer = (req.raw.socket?.remoteAddress || '?').replace(/^::ffff:/, '');
+  const type = isIP(peer) === 6 ? 'ipv6' : 'ipv4';
+  const fromProxy = isLoopbackHost(peer) || (isIP(peer) > 0 && (await trustedProxies()).check(peer, type));
+  const xff = req.headers['x-forwarded-for'];
+  const hops = (Array.isArray(xff) ? xff.join(',') : xff || '').split(',').map((s) => s.trim()).filter(Boolean);
+  const nearest = hops[hops.length - 1];
+  if (fromProxy && nearest) return { key: nearest, peer, viaProxy: true };
+  return { key: peer, peer, viaProxy: false };
+}
 const LOGIN_WINDOW_MS = 15 * 60 * 1000;
 function loginFailCheck(key: string, max: number): boolean {
   const e = loginFails.get(key);
@@ -215,10 +302,16 @@ function loginFailBump(key: string): void {
 }
 app.post('/api/auth/login', async (req, reply) => {
   const { username, password } = (req.body as any) ?? {};
-  const ip = req.raw.socket?.remoteAddress || '?';
-  const ipKey = `ip:${ip}`;
-  const userKey = `u:${ip}|${String(username || '')}`;
-  if (!loginFailCheck(ipKey, 20) || !loginFailCheck(userKey, 5)) {
+  const src = await loginSource(req);
+  const ip = src.viaProxy ? `${src.key}（经反代 ${src.peer}）` : src.key;
+  const ipKey = `ip:${src.key}`;
+  const userKey = `u:${src.key}|${String(username || '')}`;
+  const peerKey = `peer:${src.peer}`;
+  if (
+    !loginFailCheck(ipKey, 20) ||
+    !loginFailCheck(userKey, 5) ||
+    (src.viaProxy && !loginFailCheck(peerKey, LOGIN_PROXY_BACKSTOP))
+  ) {
     appendPanelLog('WARN', `登录限速触发：来源 ${ip} 尝试登录「${String(username || '')}」被暂时拒绝（15 分钟窗口内失败过多）`);
     return reply.code(429).send({ error: '登录失败次数过多，请 15 分钟后再试' });
   }
@@ -226,6 +319,7 @@ app.post('/api/auth/login', async (req, reply) => {
   if (!u || u.disabled || !verifyPassword(u, password ?? '')) {
     loginFailBump(ipKey);
     loginFailBump(userKey);
+    if (src.viaProxy) loginFailBump(peerKey);
     return reply.code(401).send({ error: '用户名或密码错误' });
   }
   loginFails.delete(ipKey);
@@ -270,7 +364,8 @@ app.post('/api/admin/version/check', async (req, reply) => {
 app.post('/api/admin/version/self-update', async (req, reply) => {
   if (!requireAdmin(req, reply)) return;
   try {
-    const { target } = await triggerSelfUpdate();
+    const self = await inspectSelf().catch(() => null);
+    const { target } = await triggerSelfUpdate(self?.Id);
     return { ok: true, target, message: '已开始更新：面板将在十几秒内重启为新版本，请稍候刷新页面' };
   } catch (e: any) {
     appendPanelLog('ERROR', `面板自更新失败：${e?.message || e}`);
@@ -303,6 +398,8 @@ app.post('/api/account/password', async (req, reply) => {
   if (!verifyPassword(u, oldPassword ?? '')) return reply.code(400).send({ error: '原密码错误' });
   if (!newPassword || String(newPassword).length < 6) return reply.code(400).send({ error: '新密码至少 6 位' });
   resetPassword(u.id, newPassword);
+  // 改密码多半是怀疑泄露：其他设备上已登录的会话一并作废（会话滑动续期，不踢掉的话一直用着就永不过期），当前这个保留
+  destroyUserSessions(u.id, req.cookies?.[COOKIE]);
   return { ok: true };
 });
 
@@ -458,9 +555,9 @@ app.post('/api/admin/instances', async (req, reply) => {
   if (!admin) return;
   const { name, reuseVolume, appType, dataDir } = (req.body as any) ?? {};
   const allowedUserIds = Array.isArray((req.body as any)?.allowedUserIds) ? (req.body as any).allowedUserIds : [];
-  if (!name || String(name).trim().length === 0 || String(name).length > 30) {
-    return reply.code(400).send({ error: '实例名称为 1-30 个字符' });
-  }
+  // 名称可留空（自动命名为「微信 1」这类，见 store.ts）；新建弹窗的占位文字一直写着「留空自动命名」，此前却必填
+  const instName = typeof name === 'string' ? name.trim() : '';
+  if (instName.length > 30) return reply.code(400).send({ error: '实例名称最多 30 个字符' });
   const type: AppType = APP_TYPES.includes(appType) ? appType : 'wechat';
   // 可选「数据父目录」：非空 → 数据 bind 挂载到 <dataDir>/woc-data-<id>（绝对路径）。
   // 校验：必须是绝对路径，且不含 .. 等穿越成分，避免任意路径写入。
@@ -483,8 +580,7 @@ app.post('/api/admin/instances', async (req, reply) => {
     }
     reuseVolumeName = reuseVolume;
   }
-  const inst = createInstance(String(name), admin.id, allowedUserIds, reuseVolumeName, type, dataDirPath);
-  appendPanelLog(
+  const inst = createInstance(instName, admin.id, allowedUserIds, reuseVolumeName, type, dataDirPath);  appendPanelLog(
     'INFO',
     `创建实例「${inst.name}」(${type}, id=${inst.id}) by ${admin.username}${reuseVolumeName ? ` · 复用卷 ${reuseVolumeName}` : ''}${dataDirPath ? ` · 数据目录 ${dataDirPath}` : ''} → 开始创建容器（镜像缺失会自动拉取，首次较慢）`,
   );
@@ -971,19 +1067,21 @@ app.post('/api/admin/instances/:id/users', async (req, reply) => {
 
 // ---------- 文件中转（有访问权限即可用；走面板鉴权，不额外暴露） ----------
 // 上传：原始二进制直传，落到实例 ~/Desktop，微信文件选择器可直接选到。
-app.post('/api/instances/:id/upload', { bodyLimit: 512 * 1024 * 1024 }, async (req, reply) => {
+// 流式：边收边写进实例，面板内存不随文件大小增长；收完整了才出现在桌面上（见 docker.ts putFileStream）。
+app.post('/api/instances/:id/upload', async (req, reply) => {
+  uploadRoute(reply);
   const u = requireAuth(req, reply);
   if (!u) return;
   const id = (req.params as any).id;
   if (!userCanAccess(u, id)) return reply.code(403).send({ error: '无权访问该实例' });
+  const inst = findInstance(id);
+  if (!inst) return reply.code(404).send({ error: '实例不存在' });
   const name = String((req.query as any)?.name || '').trim();
-  const body = req.body as Buffer;
-  if (!Buffer.isBuffer(body) || body.length === 0) return reply.code(400).send({ error: '空文件或格式错误' });
   try {
-    await uploadToInstance(findInstance(id)!, name, body);
+    await receiveFile(req, UPLOAD_LIMIT_TRANSFER, (size, body) => uploadToInstance(inst, name, size, body));
     return { ok: true };
   } catch (e: any) {
-    return reply.code(400).send({ error: e?.message || '上传失败' });
+    return sendUploadError(reply, e, '上传失败');
   }
 });
 
@@ -1023,10 +1121,11 @@ app.get('/api/instances/:id/download', async (req, reply) => {
   if (!userCanAccess(u, id)) return reply.code(403).send({ error: '无权访问该实例' });
   const name = String((req.query as any)?.name || '').trim();
   try {
-    const buf = await downloadFromInstance(findInstance(id)!, name);
+    const { size, stream } = await downloadFromInstance(findInstance(id)!, name);
     reply.header('content-type', 'application/octet-stream');
+    reply.header('content-length', String(size));
     reply.header('content-disposition', `attachment; filename*=UTF-8''${encodeURIComponent(name)}`);
-    return reply.send(buf);
+    return reply.send(stream);
   } catch (e: any) {
     return reply.code(400).send({ error: e?.message || '下载失败' });
   }
@@ -1074,6 +1173,19 @@ app.post('/api/instances/:id/control/take', async (req, reply) => {
   return { mine: true, holder: u.username };
 });
 
+// 输入类接口（/type、/key、/paste-text、/paste-image）同样受控制权约束：此前只在前端盖只读遮罩，只读的一方
+// 仍能用底部输入条、功能键、粘贴把字送进去，和正在操作的人打架。别人持有（TTL 内）就拒绝；否则视同一次操作，
+// 认领 / 续约——转发输入条打字不经过桌面画面，此前不续约，连着打一会儿字控制权就被别人拿走了。
+// 这是协作上的防打架，不是用户之间的安全边界（有访问权限的人本就能直接操作桌面）。
+function claimControl(u: User, id: string): string | null {
+  const now = Date.now();
+  const h = controlHolders.get(id);
+  if (h && h.userId !== u.id && now - h.at <= CONTROL_TTL) return h.username;
+  controlHolders.set(id, { userId: u.id, username: u.username, at: now });
+  return null;
+}
+const controlBusy = (holder: string) => ({ error: `「${holder}」正在操作，你当前为只读；要操作请先点「申请控制」`, holder });
+
 // 通过 xdotool 在实例容器内输入文字（绕过 VNC XKB keysym 容量限制，修复中文 IME 吞字）
 app.post('/api/instances/:id/type', async (req, reply) => {
   const u = requireAuth(req, reply);
@@ -1082,6 +1194,8 @@ app.post('/api/instances/:id/type', async (req, reply) => {
   if (!userCanAccess(u, id)) return reply.code(403).send({ error: '无权访问该实例' });
   const { text } = (req.body as any) ?? {};
   if (!text || typeof text !== 'string' || text.length > 500) return reply.code(400).send({ error: '文字为空或过长' });
+  const holder = claimControl(u, id);
+  if (holder) return reply.code(409).send(controlBusy(holder));
   try {
     await typeInInstance(findInstance(id)!, text);
     return { ok: true };
@@ -1092,19 +1206,43 @@ app.post('/api/instances/:id/type', async (req, reply) => {
 
 // 模拟单个按键（无感输入模式下按序送出被截下的回车/退格，保证与中文转发的顺序）
 // 本机剪贴板图片直接粘进应用（issue #91）：前端在 paste 事件里拿到图片后上传到这里
-app.post('/api/instances/:id/paste-image', { bodyLimit: 64 * 1024 * 1024 }, async (req, reply) => {
+app.post('/api/instances/:id/paste-image', async (req, reply) => {
+  uploadRoute(reply);
   const u = requireAuth(req, reply);
   if (!u) return;
   const id = (req.params as any).id;
   if (!userCanAccess(u, id)) return reply.code(403).send({ error: '无权访问该实例' });
+  const inst = findInstance(id);
+  if (!inst) return reply.code(404).send({ error: '实例不存在' });
+  const holder = claimControl(u, id);
+  if (holder) return reply.code(409).send(controlBusy(holder));
   const mime = String((req.query as any)?.type || '').toLowerCase();
-  const body = req.body as Buffer;
-  if (!Buffer.isBuffer(body) || body.length === 0) return reply.code(400).send({ error: '空图片' });
   try {
-    await pasteImageInInstance(findInstance(id)!, mime, body);
+    const body = await readBody(req, 64 * MiB);
+    if (!body.length) return reply.code(400).send({ error: '空图片' });
+    await pasteImageInInstance(inst, mime, body);
     return { ok: true };
   } catch (e: any) {
-    return reply.code(400).send({ error: e?.message || '粘贴图片失败' });
+    return sendUploadError(reply, e, '粘贴图片失败');
+  }
+});
+
+// 本机剪贴板文字粘进应用：粘贴桥判断本机剪贴板比容器的新时走这里（在别处复制后回来直接 Ctrl+V、局域网 http 下
+// 浏览器不同步剪贴板）。与 /type 不同，贴完文字留在容器剪贴板里；长度上限按一次粘贴的合理大小给。
+app.post('/api/instances/:id/paste-text', { bodyLimit: 2 * 1024 * 1024 }, async (req, reply) => {
+  const u = requireAuth(req, reply);
+  if (!u) return;
+  const id = (req.params as any).id;
+  if (!userCanAccess(u, id)) return reply.code(403).send({ error: '无权访问该实例' });
+  const { text } = (req.body as any) ?? {};
+  if (!text || typeof text !== 'string' || text.length > 200_000) return reply.code(400).send({ error: '文字为空或过长' });
+  const holder = claimControl(u, id);
+  if (holder) return reply.code(409).send(controlBusy(holder));
+  try {
+    await pasteTextInInstance(findInstance(id)!, text);
+    return { ok: true };
+  } catch (e: any) {
+    return reply.code(500).send({ error: e?.message || '粘贴失败' });
   }
 });
 
@@ -1115,6 +1253,8 @@ app.post('/api/instances/:id/key', async (req, reply) => {
   if (!userCanAccess(u, id)) return reply.code(403).send({ error: '无权访问该实例' });
   const { key } = (req.body as any) ?? {};
   if (!key || typeof key !== 'string') return reply.code(400).send({ error: '按键名为空' });
+  const holder = claimControl(u, id);
+  if (holder) return reply.code(409).send(controlBusy(holder));
   try {
     await keyInInstance(findInstance(id)!, key);
     return { ok: true };
@@ -1242,45 +1382,116 @@ app.get('/api/admin/instances/:id/volume/download', async (req, reply) => {
   const path = String((req.query as any)?.path || '');
   const name = path.split('/').filter(Boolean).pop() || 'file';
   try {
-    const buf = await volDownloadFile(inst, path);
+    const { size, stream } = await volDownloadFile(inst, path);
     reply.header('content-type', 'application/octet-stream');
+    reply.header('content-length', String(size));
     reply.header('content-disposition', `attachment; filename*=UTF-8''${encodeURIComponent(name)}`);
-    return reply.send(buf);
+    return reply.send(stream);
   } catch (e: any) {
     return reply.code(400).send({ error: e?.message || '下载失败' });
   }
 });
 
 // 上传单个文件到当前目录（原始二进制；落地为 abc 属主）
-app.post('/api/admin/instances/:id/volume/upload', { bodyLimit: 2 * 1024 * 1024 * 1024 }, async (req, reply) => {
+app.post('/api/admin/instances/:id/volume/upload', async (req, reply) => {
+  uploadRoute(reply);
   if (!requireAdmin(req, reply)) return;
   const inst = findInstance((req.params as any).id);
   if (!inst) return reply.code(404).send({ error: '实例不存在' });
   const path = String((req.query as any)?.path || '');
   const name = String((req.query as any)?.name || '').trim();
-  const body = req.body as Buffer;
-  if (!Buffer.isBuffer(body) || body.length === 0) return reply.code(400).send({ error: '空文件或格式错误' });
   try {
-    await volUploadFile(inst, path, name, body);
+    await receiveFile(req, UPLOAD_LIMIT_VOL_FILE, (size, body) => volUploadFile(inst, path, name, size, body));
     return { ok: true };
   } catch (e: any) {
-    return reply.code(400).send({ error: e?.message || '上传失败' });
+    return sendUploadError(reply, e, '上传失败');
   }
 });
 
+// ---------- 数据卷：上传并解压 / 整卷恢复（后台任务） ----------
+// 压缩包先完整收下、暂存到面板数据目录，校验通过后再写进实例：直接边收边解的话，上传中途断开会留下解了一半的
+// 数据（整卷恢复时就是一个半新半旧、微信打不开的卷），包本身坏了也要写到一半才发现。
+// 收完之后的校验和写入在后台做，接口立即返回任务号，前端轮询进度：几十 GB 的包要写好几分钟，同步等的话
+// 反代的读超时（nginx 默认 60 秒）会先把请求掐掉，前端报失败、实际却还在写。
+interface VolJob {
+  id: string;
+  instId: string;
+  kind: 'extract' | 'restore';
+  state: 'running' | 'done' | 'error';
+  stage: string;
+  error?: string;
+  endedAt?: number;
+}
+const volJobs = new Map<string, VolJob>();
+// 正在接收压缩包、或其后台任务还没结束的实例：同一实例同时只做一件（恢复会停掉实例，另一边的解压就会失败）
+const volBusy = new Set<string>();
+function startVolJob(instId: string, kind: VolJob['kind'], work: (stage: (s: string) => void) => Promise<void>): VolJob {
+  const now = Date.now();
+  for (const [k, j] of volJobs) if (j.endedAt && now - j.endedAt > 60 * 60 * 1000) volJobs.delete(k);
+  const job: VolJob = { id: randomUUID(), instId, kind, state: 'running', stage: '校验压缩包' };
+  volJobs.set(job.id, job);
+  work((s) => {
+    job.stage = s;
+  })
+    .then(
+      () => {
+        job.state = 'done';
+      },
+      (e: any) => {
+        job.state = 'error';
+        job.error = e?.message || String(e);
+      },
+    )
+    .finally(() => {
+      job.endedAt = Date.now();
+      volBusy.delete(instId);
+    });
+  return job;
+}
+// 收压缩包（暂存到面板数据目录）；期间把实例标为忙，收失败就撤销
+async function receiveVolArchive(instId: string, req: FastifyRequest): Promise<Spooled> {
+  if (volBusy.has(instId)) throw Object.assign(new Error('该实例还有一个解压 / 恢复在进行，请等它完成再试'), { statusCode: 409 });
+  volBusy.add(instId);
+  try {
+    return await spoolUpload(req, UPLOAD_LIMIT_ARCHIVE);
+  } catch (e) {
+    volBusy.delete(instId);
+    throw e;
+  }
+}
+
+app.get('/api/admin/instances/:id/volume/jobs/:job', async (req, reply) => {
+  if (!requireAdmin(req, reply)) return;
+  const job = volJobs.get((req.params as any).job);
+  if (!job || job.instId !== (req.params as any).id) return reply.code(404).send({ error: '任务不存在（面板可能重启过）' });
+  return { state: job.state, stage: job.stage, error: job.error || null };
+});
+
 // 上传压缩包并解压到当前目录（.tar / .tar.gz；PC 微信数据迁移用）
-app.post('/api/admin/instances/:id/volume/extract', { bodyLimit: 3 * 1024 * 1024 * 1024 }, async (req, reply) => {
+app.post('/api/admin/instances/:id/volume/extract', async (req, reply) => {
+  uploadRoute(reply);
   if (!requireAdmin(req, reply)) return;
   const inst = findInstance((req.params as any).id);
   if (!inst) return reply.code(404).send({ error: '实例不存在' });
-  const body = req.body as Buffer;
-  if (!Buffer.isBuffer(body) || body.length === 0) return reply.code(400).send({ error: '空文件或格式错误' });
+  const rel = String((req.query as any)?.path || '');
+  let spool: Spooled;
   try {
-    await volExtractArchive(inst, String((req.query as any)?.path || ''), body);
-    return { ok: true };
+    safeVolPath(rel);
+    if ((await instanceRuntime(inst)) !== 'running') return reply.code(409).send({ error: '实例未运行，请先启动实例' });
+    spool = await receiveVolArchive(inst.id, req);
   } catch (e: any) {
-    return reply.code(400).send({ error: e?.message || '解压失败（请确认是 .tar 或 .tar.gz）' });
+    return sendUploadError(reply, e, '上传失败');
   }
+  const job = startVolJob(inst.id, 'extract', async (stage) => {
+    try {
+      const info = await volCheckArchive(spool.path, 'extract');
+      stage('写入数据');
+      await volExtractArchive(inst, rel, spool.path, info);
+    } finally {
+      spool.dispose();
+    }
+  });
+  return { ok: true, job: job.id };
 });
 
 // 整卷备份：流式下载 /config 为 .tar.gz
@@ -1298,19 +1509,33 @@ app.get('/api/admin/instances/:id/volume/backup', async (req, reply) => {
   }
 });
 
-// 整卷恢复：上传本系统导出的 .tar.gz 备份（要求实例已停止）
-app.post('/api/admin/instances/:id/volume/restore', { bodyLimit: 3 * 1024 * 1024 * 1024 }, async (req, reply) => {
-  if (!requireAdmin(req, reply)) return;
+// 整卷恢复：上传本系统导出的 .tar.gz 备份。写入前自动停止实例、写完自动启动（原本在运行的话）。
+app.post('/api/admin/instances/:id/volume/restore', async (req, reply) => {
+  uploadRoute(reply);
+  const admin = requireAdmin(req, reply);
+  if (!admin) return;
   const inst = findInstance((req.params as any).id);
   if (!inst) return reply.code(404).send({ error: '实例不存在' });
-  const body = req.body as Buffer;
-  if (!Buffer.isBuffer(body) || body.length === 0) return reply.code(400).send({ error: '空文件或格式错误' });
+  let spool: Spooled;
   try {
-    await volRestoreArchive(inst, body);
-    return { ok: true };
+    if ((await instanceRuntime(inst)) === 'missing') return reply.code(409).send({ error: '实例容器不存在：请先在卡片上启动一次实例，再恢复' });
+    spool = await receiveVolArchive(inst.id, req);
   } catch (e: any) {
-    return reply.code(400).send({ error: e?.message || '恢复失败' });
+    return sendUploadError(reply, e, '上传失败');
   }
+  const job = startVolJob(inst.id, 'restore', async (stage) => {
+    try {
+      const info = await volCheckArchive(spool.path, 'restore');
+      appendPanelLog('INFO', `实例「${inst.name}」(id=${inst.id}) 由 ${admin.username} 整卷恢复（备份校验通过）`);
+      await volRestoreArchive(inst, spool.path, info, stage);
+    } catch (e: any) {
+      appendPanelLog('ERROR', `实例「${inst.name}」(id=${inst.id}) 整卷恢复失败：${e?.message || e}`);
+      throw e;
+    } finally {
+      spool.dispose();
+    }
+  });
+  return { ok: true, job: job.id };
 });
 
 // 该实例的微信安装状态（有访问权限即可看）
@@ -1364,17 +1589,18 @@ app.get('/api/admin/instances/:id/backgrounds', async (req, reply) => {
   catch (e: any) { return reply.code(500).send({ error: e?.message || '列出壁纸失败' }); }
 });
 
-app.post('/api/admin/instances/:id/backgrounds', { bodyLimit: 50 * 1024 * 1024 }, async (req, reply) => {
+app.post('/api/admin/instances/:id/backgrounds', async (req, reply) => {
+  uploadRoute(reply);
   if (!requireAdmin(req, reply)) return;
   const inst = bgHandler((req.params as any).id, reply);
   if (!inst) return;
   const name = String((req.query as any)?.name || '').trim();
-  const body = req.body as Buffer;
-  if (!Buffer.isBuffer(body) || body.length === 0) return reply.code(400).send({ error: '空文件' });
   try {
+    const body = await readBody(req, 50 * MiB);
+    if (!body.length) return reply.code(400).send({ error: '空文件' });
     await uploadBackground(inst, name, body);
     return { ok: true };
-  } catch (e: any) { return reply.code(400).send({ error: e?.message || '上传失败' }); }
+  } catch (e: any) { return sendUploadError(reply, e, '上传失败'); }
 });
 
 app.get('/api/admin/instances/:id/backgrounds/current', async (req, reply) => {
@@ -1439,17 +1665,18 @@ app.get('/api/admin/instances/:id/fonts', async (req, reply) => {
   catch (e: any) { return reply.code(500).send({ error: e?.message || '列出字体失败' }); }
 });
 
-app.post('/api/admin/instances/:id/fonts', { bodyLimit: 50 * 1024 * 1024 }, async (req, reply) => {
+app.post('/api/admin/instances/:id/fonts', async (req, reply) => {
+  uploadRoute(reply);
   if (!requireAdmin(req, reply)) return;
   const inst = bgHandler((req.params as any).id, reply);
   if (!inst) return;
   const name = String((req.query as any)?.name || '').trim();
-  const body = req.body as Buffer;
-  if (!Buffer.isBuffer(body) || body.length === 0) return reply.code(400).send({ error: '空文件' });
   try {
+    const body = await readBody(req, 50 * MiB);
+    if (!body.length) return reply.code(400).send({ error: '空文件' });
     await uploadFont(inst, name, body);
     return { ok: true };
-  } catch (e: any) { return reply.code(400).send({ error: e?.message || '上传失败' }); }
+  } catch (e: any) { return sendUploadError(reply, e, '上传失败'); }
 });
 
 app.delete('/api/admin/instances/:id/fonts/:name', async (req, reply) => {
@@ -1517,11 +1744,75 @@ function activeVncViewerCount(instId: string): number {
   return activeVncSockets.get(instId)?.size ?? 0;
 }
 
-proxy.on('proxyReq', (proxyReq, req) => {
+// ---------- 实例「卡死」识别 + 自愈（稳定性设计：已知单点） ----------
+// KasmVNC 偶发卡死：静态页照常能出，但 websocket 升级永远等不到 101，noVNC 一直停在「连接中」；或容器
+// I/O/服务 stall，连 noVNC 页面都返回不了（#114「桌面无响应」）。刷新、重启面板都没用，只能等管理员手动
+// 重启实例容器（群里「外网连不进去、要重启容器才能连上」）。原来可选的 HTTP 响应性探测看的是 kclient 出的
+// 静态页，前一种卡死它根本看不到，且周期探测在宿主 CPU/IO 争用时会误判，故默认关着。
+// 这里改用真实用户的请求来判定：上游 UPSTREAM_HANG_MS 内既没回 101、也没回任何响应，就断开这次请求
+// （页面请求回「自动重连」页，别让用户无限转圈），记一次「无应答」；STUCK_WINDOW_MS 内累计 STUCK_HANGS 次、
+// 容器已过预热期、近期没自愈过，才沿用当前镜像重启实例（R10 keepImage）。
+// 不会在预热期误判：实例刚起时 KasmVNC / nginx 还没监听，上游是立刻拒绝（502 / ECONNREFUSED）——那是快速
+// 失败，不是无应答，不计数；健康实例的 101 通常在 100ms 内返回。WOC_STUCK_HEAL=0 可只断开记日志、不自动重启。
+const UPSTREAM_HANG_MS = 25_000;
+const STUCK_HANGS = 2;
+const STUCK_WINDOW_MS = 10 * 60_000;
+const STUCK_MIN_UPTIME_SEC = 180;
+const STUCK_HEAL_COOLDOWN_MS = 15 * 60_000;
+const STUCK_HEAL = process.env.WOC_STUCK_HEAL !== '0';
+const upstreamHangs = new Map<string, number[]>(); // 实例 id → 近期无应答时间戳
+const stuckHealAt = new Map<string, number>();
+const stuckHealing = new Set<string>();
+
+async function onUpstreamHang(instId: string, what: string): Promise<void> {
+  const inst = findInstance(instId);
+  if (!inst) return;
+  const now = Date.now();
+  const hangs = (upstreamHangs.get(instId) || []).filter((t) => now - t < STUCK_WINDOW_MS);
+  hangs.push(now);
+  upstreamHangs.set(instId, hangs);
+  appendInstanceLog(instId, `[vnc] 实例 ${UPSTREAM_HANG_MS / 1000}s 未应答${what}，已断开本次请求（近 10 分钟第 ${hangs.length} 次）`);
+  if (!STUCK_HEAL || hangs.length < STUCK_HANGS || stuckHealing.has(instId) || upgradingIds.has(instId)) return;
+  if (now - (stuckHealAt.get(instId) || 0) < STUCK_HEAL_COOLDOWN_MS) return;
+  const up = await instanceUptimeSec(inst);
+  if (up === null || up < STUCK_MIN_UPTIME_SEC) return; // 没在跑，或刚启动还在预热
+  stuckHealing.add(instId);
+  stuckHealAt.set(instId, now);
+  upstreamHangs.delete(instId);
+  const detail = `桌面连接 10 分钟内 ${hangs.length} 次无应答（KasmVNC 卡死），自动重启实例（数据保留）`;
+  appendInstanceLog(instId, `[vnc] ${detail}`);
+  appendPanelLog('WARN', `实例「${inst.name}」(id=${instId}) ${detail}`);
+  try {
+    await runInstance(inst, { keepImage: true }); // 自愈=重启，幂等：沿用当前镜像，绝不隐式换版
+  } catch (e: any) {
+    appendPanelLog('ERROR', `实例「${inst.name}」(id=${instId}) 卡死自愈重启失败：${e?.message || e}`);
+  } finally {
+    stuckHealing.delete(instId);
+  }
+}
+
+// 盯住一次转发到实例的请求：超时仍无任何响应 → 断开并记一次无应答。closeClient 用于 ws（让客户端别干等）。
+function watchUpstream(proxyReq: ClientRequest, instId: string, what: string, done: NodeJS.EventEmitter, closeClient?: () => void) {
+  const timer = setTimeout(() => {
+    proxyReq.destroy(); // → http-proxy 的 error：页面请求回「自动重连」页
+    closeClient?.();
+    void onUpstreamHang(instId, what);
+  }, UPSTREAM_HANG_MS);
+  const clear = () => clearTimeout(timer);
+  proxyReq.once('response', clear);
+  proxyReq.once('upgrade', clear);
+  proxyReq.once('error', clear);
+  done.once('close', clear); // 客户端先走了（关页 / 自行放弃）
+}
+
+proxy.on('proxyReq', (proxyReq, req, res) => {
   const auth = (req as any)._wocAuth;
   if (auth) proxyReq.setHeader('authorization', auth);
+  // 只盯 noVNC 页面本身：它出不来 = 实例服务卡住。其余资源 / 音频长轮询不计。
+  const instId = (req as any)._wocInstId;
+  if (instId && (req.url || '').startsWith('/vnc/index.html')) watchUpstream(proxyReq, instId, '桌面页面', res);
 });
-proxy.on('proxyReqWs', (proxyReq, req) => {
+proxy.on('proxyReqWs', (proxyReq, req, socket) => {
   const auth = (req as any)._wocAuth;
   if (auth) proxyReq.setHeader('authorization', auth);
   // 上游（实例 nginx → KasmVNC websockify）回 101 = ws 接收器接受了连接，桌面真正连上。
@@ -1532,6 +1823,10 @@ proxy.on('proxyReqWs', (proxyReq, req) => {
       trackActiveVncSocket(instId, req.socket as Socket);
       appendInstanceLog(instId, '[vnc] 上游已接受(101) · 桌面连接建立');
     });
+    // 只盯 VNC 连接本身（/websockify）；音频桥等其它 ws 不计
+    if ((req.url || '').startsWith('/websockify')) {
+      watchUpstream(proxyReq, instId, '桌面连接（websocket 升级）', socket, () => socket.destroy());
+    }
   }
 });
 // 上游（面板→实例）套接字 TCP keepalive：客户端断网/切网（WiFi→4G、NAS 休眠）时 TCP 不会主动通知，
@@ -1618,6 +1913,7 @@ const desktopHandler = async (req: FastifyRequest, reply: FastifyReply) => {
   reply.hijack();
   req.raw.url = parsed.rest;
   (req.raw as any)._wocAuth = basicAuth(inst);
+  (req.raw as any)._wocInstId = inst.id;
   const target = await instanceTarget(inst);
   proxy.web(req.raw, reply.raw, { target });
 };
@@ -1677,6 +1973,10 @@ app.server.on('upgrade', (req: IncomingMessage, socket: Socket, head: Buffer) =>
     }
     socket.destroy();
   };
+  if (isFromInstanceNetwork(req.socket.remoteAddress)) {
+    reject(`来自实例专用网络的连接（${req.socket.remoteAddress}），实例不允许访问面板`);
+    return;
+  }
   // DNS-rebinding gate for WebSocket upgrades (Fastify's onRequest hook does
   // not run on raw upgrades). KasmVNC proxying goes through this path.
   if (SOCK_PATH) {
@@ -1740,6 +2040,8 @@ app.server.on('upgrade', (req: IncomingMessage, socket: Socket, head: Buffer) =>
   });
 });
 
+// 下面的启动步骤都要连 Docker：socket-proxy 加固部署下代理可能比面板晚几秒就绪，先等它
+await waitForDocker();
 // 版本兜底：若面板偏好的「同版本实例镜像 tag」不可达则回退 :latest（见 docker.ts）。
 // 须在实例检测/升级/启动之前解析好，否则升级指示器会因指向不存在的 tag 而恒空。
 await resolveInstanceImage().catch(() => {});
@@ -1752,6 +2054,9 @@ for (const pub of listInstances()) {
     app.log.warn(`[instance] 启动实例 ${pub.id} 失败: ${e?.message || e}`);
   }
 }
+// 体检：和面板不在同一网络的实例（旧版探测失败时建到 bridge 的，#103）在面板日志里点名，只提示不动实例
+void checkInstanceNetworks(listInstances()).catch(() => {});
+watchInstanceNetwork();
 
 // 启动时清一次旧版本 woc 镜像：面板自更新会留下旧的 woc-panel 镜像（helper 用新镜像重建面板后，
 // 旧镜像不再被任何容器引用，但带 tag 不是 dangling，清不掉）——在这里回收，也作为周期性兜底。

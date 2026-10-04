@@ -26,6 +26,14 @@ woc_app_def() {
       APP_LAUNCH="$APP_BIN --no-sandbox --no-first-run --no-default-browser-check --start-maximized --password-store=basic --disable-gpu --force-device-scale-factor=1 --disable-background-networking --disable-metrics --disable-metrics-reporting --disable-crash-reporter --disable-breakpad --user-data-dir=/config/chromium"
       APP_NAME=Chromium
       ;;
+    qq)
+      # QQ Linux 官方版（QQNT，Electron）：运行时由 app-ctl.sh 从腾讯官方地址下载 deb，解压到数据卷 /config/qq。
+      # 容器内无 user namespace / GPU：--no-sandbox + --disable-gpu 软件渲染；--password-store=basic 免 keyring；
+      # --force-device-scale-factor=1 同上面 Chromium（Xvnc 尚无客户端时 DPI 为退化值，新版 Chromium 内核会崩）。
+      APP_BIN=/config/qq/opt/QQ/qq
+      APP_LAUNCH="$APP_BIN --no-sandbox --disable-gpu --password-store=basic --force-device-scale-factor=1"
+      APP_NAME=QQ
+      ;;
     custom)
       # 自定义：启动命令由面板写入 .woc-app 的 WOC_CUSTOM_LAUNCH（用户上传安装包后设定）
       APP_LAUNCH="${WOC_CUSTOM_LAUNCH:-}"

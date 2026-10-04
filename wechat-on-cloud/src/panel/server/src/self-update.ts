@@ -73,6 +73,17 @@ function envToMap(env?: string[] | null): Map<string, string> {
   return m;
 }
 
+// 重建时 create 用的主网络：旧容器创建时的网络（compose 的项目网络等，HostConfig.NetworkMode）；
+// 其余网络 create 之后再 connect。不能按名字排序取第一个：面板现在还接着实例专用网络 woc-instances，
+// 名字排在前面时主网络会变成它，面板丢掉原来的网络（与之同网的反代按名访问不到面板）。
+const INSTANCE_NETWORK = (process.env.WOC_INSTANCE_NETWORK || '').trim() || 'woc-instances';
+function primaryNetwork(self: any): string | null {
+  const names = Object.keys(self.NetworkSettings?.Networks || {});
+  const mode = String(self.HostConfig?.NetworkMode || '');
+  if (names.includes(mode)) return mode;
+  return names.find((n) => n !== INSTANCE_NETWORK) || names[0] || null;
+}
+
 // 由旧容器 inspect + 目标镜像，构造重建用的 create 选项（含 env-diff 与网络）。
 async function buildCreateOpts(self: any, imageRef: string): Promise<Docker.ContainerCreateOptions> {
   const newImg: any = await docker.getImage(imageRef).inspect();
@@ -94,7 +105,6 @@ async function buildCreateOpts(self: any, imageRef: string): Promise<Docker.Cont
   }
   const cfg = self.Config || {};
   const nets: Record<string, any> = self.NetworkSettings?.Networks || {};
-  const netNames = Object.keys(nets);
   const opts: Docker.ContainerCreateOptions = {
     name: String(self.Name || '').replace(/^\//, '') || PANEL_NAME, // 用目标容器自身名字，而非硬编码常量
     Image: imageRef,
@@ -110,8 +120,8 @@ async function buildCreateOpts(self: any, imageRef: string): Promise<Docker.Cont
     ExposedPorts: cfg.ExposedPorts || undefined,
     HostConfig: self.HostConfig,
   };
-  if (netNames.length) {
-    const primary = netNames[0];
+  const primary = primaryNetwork(self);
+  if (primary) {
     const aliases = (nets[primary].Aliases || []).filter((a: string) => !String(self.Id).startsWith(a));
     opts.NetworkingConfig = { EndpointsConfig: { [primary]: { Aliases: aliases } } };
   }
@@ -121,7 +131,8 @@ async function buildCreateOpts(self: any, imageRef: string): Promise<Docker.Cont
 // 面板侧：拉新镜像 + 派生 helper 容器重建自身。返回目标镜像。
 let updateInFlight = false;
 
-export async function triggerSelfUpdate(): Promise<{ target: string }> {
+// selfRef：面板按容器 ID 认出的自身（见 docker.ts inspectSelf），缺省按容器名 PANEL_NAME 找。
+export async function triggerSelfUpdate(selfRef?: string): Promise<{ target: string }> {
   if (updateInFlight) throw new Error('面板更新已在进行中，请稍候');
   updateInFlight = true;
   // 兜底复位：helper 派生成功但静默失败（如 sock 权限问题）时面板存活、本标志却永远为 true，
@@ -130,15 +141,17 @@ export async function triggerSelfUpdate(): Promise<{ target: string }> {
     updateInFlight = false;
   }, 10 * 60 * 1000).unref();
   try {
-    return await doSelfUpdate();
+    return await doSelfUpdate(selfRef);
   } catch (e) {
     updateInFlight = false; // 失败可重试；成功后面板会被 helper 重建、本进程退出，无需复位
     throw e;
   }
 }
 
-async function doSelfUpdate(): Promise<{ target: string }> {
-  const self: any = await docker.getContainer(PANEL_NAME).inspect();
+async function doSelfUpdate(selfRef?: string): Promise<{ target: string }> {
+  const self: any = await docker.getContainer(selfRef || PANEL_NAME).inspect();
+  // 按面板容器的实际名字重建：容器不叫 woc-panel（自定义 container_name）时，按常量名找不到自己，一键更新直接报错
+  const panelName = String(self.Name || '').replace(/^\//, '') || PANEL_NAME;
   const ref: string = self.Config.Image; // 如 docker.io/gloridust/woc-panel:latest 或 :v1.2.1
   const repo = ref.split('@')[0].replace(/:[^/:]+$/, ''); // 去 tag
   // 版本锚定（架构守则 R1）：优先拉「更新检查」宣告的那个具体版本（CI 打的裸语义化 tag，如 1.3.1），
@@ -162,7 +175,7 @@ async function doSelfUpdate(): Promise<{ target: string }> {
   if (!target) throw lastErr || new Error('拉取面板镜像失败');
   appendPanelLog('INFO', `面板自更新：${target} 已拉取，派生 ${UPDATER_NAME} 容器重建面板（数据保留）`);
 
-  const spec = { panelName: PANEL_NAME, newImage: target, oldImageId: self.Image };
+  const spec = { panelName, newImage: target, oldImageId: self.Image };
   // 仅需 docker.sock；spec 经 env 传入，不依赖 /data 挂载，避免路径不一致。
   const sockBind =
     (self.HostConfig.Binds || []).find((b: string) => b.includes('docker.sock')) || '/var/run/docker.sock:/var/run/docker.sock';
@@ -220,7 +233,8 @@ export async function runUpdaterRecreate(): Promise<void> {
   console.log(`[updater] 重建面板 ${panelName} → ${newImage}`);
   await new Promise((r) => setTimeout(r, 2500)); // 稍等：让面板把 HTTP 响应回给前端后再停它，避免前端误报"更新失败"
   const self: any = await docker.getContainer(panelName).inspect(); // 先抓旧配置（停之前）
-  const otherNets = Object.keys(self.NetworkSettings?.Networks || {}).slice(1);
+  const primary = primaryNetwork(self);
+  const otherNets = Object.keys(self.NetworkSettings?.Networks || {}).filter((n) => n !== primary);
 
   const recreate = async (imageRef: string) => {
     const opts = await buildCreateOpts(self, imageRef);
@@ -232,9 +246,10 @@ export async function runUpdaterRecreate(): Promise<void> {
     const c = await docker.createContainer(opts);
     for (const net of otherNets) {
       try {
-        await docker.getNetwork(net).connect({ Container: c.id });
+        // 实例专用网络不当默认网关（同 docker.ts attachSelfToInstanceNetwork）
+        await docker.getNetwork(net).connect({ Container: c.id, ...(net === INSTANCE_NETWORK ? { EndpointConfig: { GwPriority: -1 } } : {}) } as any);
       } catch {
-        /* 次要网络连接失败不致命 */
+        /* 次要网络连接失败不致命（实例专用网络面板启动时会自己接上） */
       }
     }
     await c.start();
