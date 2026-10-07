@@ -100,6 +100,17 @@
               "size": 239182057
             }
           }
+        },
+        "4.2.0-4": {
+          "changelog": "v4.2.0-4（2026-10-07）：同步上游 HyAtlas v4.2.0（保留 fork 的 dashboard zh-CN 汉化 + 移动端响应式 + L7 意图去重/shares 实体化/写入合并/全删接口护栏）。①配置化改造——移除硬编码硅基流动 key，改为 config/env.example 模板 + install/upgrade 回调自动生成 /vol1/@appdata/hyatlas/env（chmod 600，归 hy-memory 用户）；cmd/main 启动时 source env 文件，优先级 环境变量 > env > 内置默认。②升级合并逻辑：env.example 新增变量补入 env 但不覆盖用户已设值。③wizard/install 增加配置提示（vi /vol1/@appdata/hyatlas/env 填 HYATLAS_EMBED_API_KEY）。④上游 v4.2.0 全部特性保留（dashboard 汉化 + 移动端 + API 加固：delete_all 需 confirm=wipe-all、extracted flag 重启存活、reprocess by ids、learning/graph 新端点；extraction 稳定性：llm honest UA + prose 重试、include_raw 过滤前置）。二进制本地 go1.27 编译（sha 6213e6d0…），15MB，CGO + trimpath。fpk 231MB。装机后需编辑 /vol1/@appdata/hyatlas/env 填入 HYATLAS_EMBED_API_KEY 后重启。",
+          "updated_at": "2026-10-07T08:54:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.23/hyatlas-4.2.0-4-x86.fpk",
+              "sha256": "c2380b1936e9a5c65310b5d24c978be7e5e7f2d187d59e36981e6ca57b2f42da",
+              "size": 242560821
+            }
+          }
         }
       }
     },
