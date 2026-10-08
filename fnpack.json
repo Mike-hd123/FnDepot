@@ -117,7 +117,7 @@
           "updated_at": "2026-10-08T12:00:00+08:00",
           "packages": {
             "x86": {
-              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.30/hyatlas-4.2.5-1-x86.fpk",
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.10.08/hyatlas-4.2.5-1-x86.fpk",
               "sha256": "9adc123350eabbcc67db2e6a893947858892ed232fe42ae734868b4cefdee43d",
               "size": 242560436
             }
@@ -162,6 +162,17 @@
               "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.30/octopus.fpk",
               "sha256": "07c22699a0701ce59ecd94c01813f7700ecafd1533d5c7d8456c218714b1c2a5",
               "size": 22651026
+            }
+          }
+        },
+        "0.13.10-1": {
+          "changelog": "v0.13.10-1（2026-10-08，上游 minor 升级按规矩本地补丁号归零重开）：同步上游 v0.13.10（commit d1a26bd）——数据库迁移修复 1cdb163、新增 passwd 改密命令 8cf04fb、分组编辑置顶置底 0538c3e、子路径反代支持 bdc9948。二进制=上游官方 CI 产物原样（sha256 fe85cec9…，51MB）。本地 sidecar 三处加固：①关闭 API 前缀手工改写（GATEWAY_API_REWRITE 默认 0）——上游 bdc9948 起前端自身用 fetch(new URL('.'+path, document.baseURI)) 解析 /app/octopus 子路径，sidecar 再改写会叠加成双前缀 /app/octopus/app/octopus/api/v1/... 导致手机端登录 404；回退 <=v0.13.9 时设 1 恢复旧行为。②cache-bust 由写死 v8 改为运行时取 index.html 的 entry chunk 文件名并同源注入 JS 模块图 chunk，上游前端一重建缓存 URL 必然失效，根治旧标签页引用已不存在 chunk 的 404。③新增 gw-debug.log 诊断日志（GATEWAY_DEBUG=0 关闭）。打包层补齐既定结构：app.tgz 内 ui/config 与 ui/images 两枚图标（此前商店无图标即因缺 ui/images）、wizard/install。",
+          "updated_at": "2026-10-08T13:10:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.10.08/octopus-0.13.10-1-x86.fpk",
+              "sha256": "dd001e4565ec17400f6dd05b68a0c7f99bea005fe8652fa150e7370cc7ae41fd",
+              "size": 22666365
             }
           }
         }
