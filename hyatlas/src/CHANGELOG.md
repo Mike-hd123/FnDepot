@@ -1,5 +1,121 @@
 # Changelog
 
+## [4.3.3] — 2026-10-08
+
+Two defects in the shared LLM call path, both found by running a real
+consolidation pass against a live store and endpoint instead of a fixture.
+
+### Fixed
+
+- **A hardcoded 180s client cap silently overrode every longer bound.** The
+  shared HTTP client carried `Timeout: 180 * time.Second`, which became the real
+  bound for every call while the two callers need different ones: extraction is
+  bounded at `extractTimeout` (180s), a consolidation pass at
+  `consolidateTimeout` (600s), because a pass reasons over a whole batch of
+  facts in one call. Measured against a live store: a pass died at exactly 180s
+  with `Client.Timeout exceeded while awaiting headers` on a 200-fact prompt,
+  and `consolidations` stayed at 0 — the declared 600s bound could never apply,
+  so no digest could ever complete. This is the same class of defect v3.5 hit
+  when an OpenAI SDK default silently overrode its configured timeout. The
+  client now sets no Timeout; every call path already puts its own deadline on
+  the context, so the hidden minimum is gone without letting anything run
+  unbounded.
+- **A reasoning-only reply failed as a parse error.** Once the pass could run to
+  completion it spent 8 minutes and reported `consolidation parse failed
+  (raw )` with no work done: the reply arrived with an empty `content` and the
+  text in `reasoning_content`, which the Go client never read. The v3.5 floor
+  captured that field deliberately — its changelog says *"when content is empty
+  but reasoning_content has text, the provider falls back to reasoning_content
+  as content"* — and the Go rewrite dropped it, so every such reply became an
+  empty string. `chat()` now falls back to `reasoning_content`, and the tolerant
+  JSON extraction downstream picks the object out of it. When both fields are
+  empty the error says so plainly, because "answered badly" and "answered with
+  nothing" want different fixes.
+
+Both are covered by tests that fail against the previous code: the client must
+carry no global Timeout (a re-added cap silently overrides a longer bound, which
+is how this shipped), and a pass given a bounded deadline must stop on it and
+record it rather than wait for the endpoint.
+
+### Notes
+
+- A consolidation pass against a slow or free-tier endpoint can legitimately
+  take several minutes. It is bounded by `consolidateTimeout`, and a caller that
+  stops waiting no longer cancels it — but the caller does lose the report, so
+  wait longer than the bound if you want the counts.
+
+## [4.3.2] — 2026-10-08
+
+Fixes two ways a consolidation pass could be lost or duplicated.
+
+### Fixed
+
+- **A client giving up no longer cancels the pass.** `POST /api/v1/digest`
+  derived its context from the request, so a caller that stopped waiting — a
+  cron with a shorter timeout, a dropped connection — cancelled the
+  consolidation mid-flight. An automated sweep with a two-minute client timeout
+  could never complete a pass whose legitimate bound is ten minutes; it reported
+  a timeout while the server aborted the work, leaving `consolidations` at 0.
+  The pass now runs on its own context, still bounded by `consolidateTimeout`,
+  because losing one halfway is worse than finishing after the caller left.
+- **A pass is single-flight.** The ticker and a manual `POST /api/v1/digest`
+  could both ask for one, and two passes over the same batch would duplicate the
+  LLM spend and race each other's merges and edge writes. The second caller is
+  now told instead of queued: the ticker skips that tick, and the endpoint
+  answers `digest_ok: false` with a reason rather than a 500, because a cron
+  overlapping a tick is normal operation and not a failure.
+
+Both behaviours are pinned by tests that fail against the previous code:
+cancelling the request mid-pass must still leave the pass complete and
+error-free, and a second pass attempted while one is in flight must report
+itself as busy.
+
+### Docs
+
+- The digest helper — a per-profile sweep over `/api/v1/digest` — outlasts the
+  server's own bound (660s against a 600s pass) and reports the real report
+  fields (`merged`, `edges`, `schemas`, `arc`, `pruned_raw`, `duration_ms`)
+  instead of a field that stopped existing, which had been printing
+  `digest_processed=0` on successful passes.
+
+## [4.3.1] — 2026-10-08
+
+Fixes a defect that left every shipped binary unable to store a single memory,
+and the gap in the release check that let it ship.
+
+### Fixed
+
+- **The embedded builds could not create an embedding, so every write and every
+  search answered `500`.** The release pipeline fetches its model from
+  `Xenova/bge-small-en-v1.5`, and that export declares `token_type_ids` as a
+  graph input. The embedder built its onnxruntime session for two inputs
+  (`input_ids`, `attention_mask`), so the first inference failed inside the
+  `token_type_embeddings` Gather node with `Missing Input: token_type_ids`.
+  `/healthz` stayed green the whole time, so the server looked healthy while
+  being unable to store anything. The embedder now reads the graph's declared
+  inputs and feeds an all-zero `token_type_ids` when the model asks for one —
+  correct for single-segment BERT inference, and a no-op for the development
+  export, which does not ask.
+- **The release smoke test now writes and recalls.** Reaching `/healthz` proves
+  nothing about the embedder, so the check that ran against v4.3.0 could not see
+  this. It now requires `POST /api/v1/add` to answer 200, `POST /api/v1/search`
+  to answer 200, and the memory that was just written to come back in the
+  results. Verified in both directions: it fails against the previous binary
+  with the original `Missing Input` error, and passes against this one.
+
+Anyone on `v4.3.0` should move to `v4.3.1` — the v4.3.0 binaries cannot store
+memories. Nothing else changed: the mode ladder, the System1/System2 layer split
+and the opt-in LLM endpoint behave exactly as described in the v4.3.0 notes.
+
+### Docs
+
+- The repo README's privacy paragraph no longer claims extraction fires without
+  a key (untrue since the endpoint defaults were removed), and it documents that
+  ultra reaches 7/7 on the slow-path tick rather than instantly.
+- The plugin README and `after-install.md` document how a user updates the
+  plugin (`hermes plugins check-updates`, `hermes plugins update hyatlas`) and
+  draw the line between updating the client and updating the `hyatlas-go` server.
+
 ## [4.3.0] — 2026-10-08
 
 Adds the extraction-mode selector, the slow path behind it, and the setup flow

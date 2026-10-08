@@ -23,7 +23,7 @@ import (
 // It is exposed on /api/v1/status and /api/info so every client (Desktop pane,
 // web dashboard, CLI) reports the real running version instead of hardcoding
 // a "v4" badge that silently goes stale on each release. Bump in one place.
-const Version = "4.3.0"
+const Version = "4.3.3"
 
 // Server mirrors the HyAtlas REST contract for drop-in parity.
 type Server struct {
@@ -722,9 +722,21 @@ func (s *Server) handleDigest(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), consolidateTimeout)
+	// The pass is deliberately detached from the request. It rewrites facts and
+	// graph edges, so a client that stops waiting — a cron with a shorter
+	// timeout, a dropped connection — must not cancel work already in flight.
+	// The server's own bound still caps it, and a caller that wants the report
+	// back should wait longer than consolidateTimeout.
+	ctx, cancel := context.WithTimeout(context.Background(), consolidateTimeout)
 	defer cancel()
 	rep, err := s.cons.Once(ctx)
+	if errors.Is(err, errBusy) {
+		jsonResponse(w, 200, map[string]any{
+			"digest_ok": false,
+			"reason":    "a consolidation pass is already running",
+		})
+		return
+	}
 	if err != nil {
 		jsonResponse(w, 500, map[string]any{"digest_ok": false, "error": err.Error()})
 		return
@@ -1395,6 +1407,11 @@ func modelBaseDirs() []string {
 func describeEmbed(embedBase, embedModel string) string {
 	switch {
 	case strings.EqualFold(embedBase, "bge"):
+		// fork (fnos): same name resolution as the embedder switch above — the fpk
+		// ships bge-large-zh (1024d) unless an explicit other model name is set.
+		if embedModel == "" || embedModel == defaultEmbedModel || strings.Contains(embedModel, "18080") || strings.Contains(embedModel, "large") || strings.Contains(embedModel, "zh") {
+			return "bge-large-zh (in-process, 1024d)"
+		}
 		return "bge-small (in-process)"
 	case strings.EqualFold(embedBase, "local"):
 		return "local-stub (deterministic, 384-d)"

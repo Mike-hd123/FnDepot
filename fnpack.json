@@ -133,6 +133,17 @@
               "size": 241899261
             }
           }
+        },
+        "4.3.3-1": {
+          "changelog": "v4.3.3-1（2026-10-08）：同步上游 v4.3.1-v4.3.3。v4.3.3：移除 LLM 客户端硬编码 180s 超时（consolidate 声明的 600s 终于生效——此前 ultra 慢路径必超时、consolidations 恒 0、L5/L6 不再更新）；chat() 回退读 reasoning_content（推理型模型只回 reasoning 时不再被误判解析失败）。v4.3.2：POST /api/v1/digest 用独立 context（客户端断连不再杀中途整合）；整合 single-flight（ticker 与手动撞车返回 busy 不并发烧钱）。v4.3.1：bge embedder 按图声明探测 token_type_ids（fork 已移植，动态 2/3 输入）。打包层修复：env source 自动导出（set -a）+ 旧键名 HYATLAS_EMBED_API_KEY/HYATLAS_LLM_BASE_URL 兼容映射——10-08 embed 401 根因。上游 4.3.0-1 可无损覆盖升级，无数据迁移。",
+          "updated_at": "2026-10-08T23:58:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.10.08/hyatlas-4.3.3-1-x86.fpk",
+              "sha256": "ce362d5d5b5799a3a2be7a7e19acef2b6905a9ef0eae38549a04ff925e2d4110",
+              "size": 241916249
+            }
+          }
         }
       }
     },

@@ -1,10 +1,10 @@
 #!/bin/bash
-# HyAtlas v4.3.0-1 fpk 构建（上游 v4.3.0 mode 阶梯 + env 配置化 + B2 内置 ORT int8 bge-large-zh）
+# HyAtlas v4.3.3-1 fpk 构建（上游 v4.3.0 mode 阶梯 + env 配置化 + B2 内置 ORT int8 bge-large-zh）
 #
 # 输入来源：
 #   - fpk 控制层（cmd/config/wizard/manifest/ICON）：本目录归档原件
 #   - Go 二进制：bin/hyatlas-go-linux-amd64（v4.3.0 merge 后 go1.26.5 本地编译，
-#     CGO_ENABLED=1 -trimpath GOAMD64=v1，非 embedded；sha 83740365）
+#     CGO_ENABLED=1 -trimpath GOAMD64=v1，非 embedded；sha 01bec179）
 #   - 模型三件套（~355MB，超 GitHub 100MB 限制不入库）：按 MODEL_SRC → /tmp/b2-models
 #     → 从 4.1.1-4 fpk 提取的顺序解析；sha256 断言防漂移
 #
@@ -19,10 +19,10 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-OUT="${1:-/vol02/1000-1-13b246aa/download/hyatlas-4.3.0-1-x86.fpk}"
+OUT="${1:-/vol02/1000-1-13b246aa/download/hyatlas-4.3.3-1-x86.fpk}"
 REF_FPK="/vol02/1000-1-13b246aa/download/hyatlas-4.2.5-1-x86.fpk"
 
-SHA_BIN="83740365a1235a2dc0086be35c1d7667dd7eb7817c0ff09d1b229e3df18d2b4d"
+SHA_BIN="01bec1798c50456672b2a2980aa931b994d10e55f6c97caebea60b3ce73abdce"
 SHA_ONNX="8a3f371a7e535e25d3d5a0ff0c0501a605ef0b62577800d2bf4b1fc76d6cbcf1"
 SHA_ORT="99458e9d185dfa1a9b5f6510790ede3bedc25dea378adb904ce292b517eeaecf"
 SHA_TOK="7dfbf1966ebf99d471c3796e9b457329d2b2182b817e144f1e904b957745c839"
@@ -197,7 +197,7 @@ fi
 # 2) manifest 版本/appname
 GOT_VER=$(tar -xOf "$OUT" manifest | awk -F'= *' '$1 ~ /^version/ {print $2}' | tr -d ' ')
 GOT_APP=$(tar -xOf "$OUT" manifest | awk -F'= *' '$1 ~ /^appname/ {print $2}' | tr -d ' ')
-if [ "$GOT_VER" != "4.3.0-1" ] || [ "$GOT_APP" != "hyatlas" ]; then
+if [ "$GOT_VER" != "4.3.3-1" ] || [ "$GOT_APP" != "hyatlas" ]; then
   echo "FAIL: manifest appname=$GOT_APP version=$GOT_VER (expected hyatlas 4.3.0-1)" >&2; FAIL=1
 fi
 
@@ -226,5 +226,5 @@ if [ "$FAIL" != "0" ]; then
   echo "STRUCTURE CHECK FAILED" >&2
   exit 1
 fi
-echo "PASS: structure ok (manifest 4.3.0-1, shares-heal callbacks present, app payload complete incl env.example)"
+echo "PASS: structure ok (manifest 4.3.3-1, shares-heal callbacks present, app payload complete incl env.example)"
 echo "$OUT  $((GOT_SIZE/1024/1024))MB  sha256=$GOT_SHA"

@@ -42,12 +42,14 @@ const (
 // BGE is a thread-safe BGE embedder. The session is created from a file so the
 // ONNX external .data weights are loaded relative to the model file's dir.
 type BGE struct {
-	sess   *ort.DynamicAdvancedSession
-	tok    *Tokenizer // zh tokenizer (nil for en layout)
-	vocab  map[string]int64
-	hidden int
-	maxSeq int
-	mu     sync.Mutex
+	sess *ort.DynamicAdvancedSession
+	// tokenTypes: graph declares token_type_ids as an input (upstream v4.3.1 probe).
+	tokenTypes bool
+	tok        *Tokenizer // zh tokenizer (nil for en layout)
+	vocab      map[string]int64
+	hidden     int
+	maxSeq     int
+	mu         sync.Mutex
 }
 
 // Embed is the package-level helper used by the embed path.
@@ -80,10 +82,15 @@ func (b *BGE) EmbedOne(text string) ([]float32, error) {
 	if err != nil {
 		return nil, err
 	}
-	tt := make([]int64, seq) // token_type_ids, all 0 (single segment)
-	ttT, err := ort.NewTensor(shape, tt)
-	if err != nil {
-		return nil, err
+	// segment ids all zero (single-segment BERT); only fed when the graph
+	// declares the input (upstream v4.3.1 fix, see graphWantsTokenTypes).
+	var ttT *ort.Tensor[int64]
+	if b.tokenTypes {
+		tt := make([]int64, seq)
+		ttT, err = ort.NewTensor(shape, tt)
+		if err != nil {
+			return nil, err
+		}
 	}
 	// output: [1, seq, hidden]
 	flat := make([]float32, 1*seq*b.hidden)
@@ -92,8 +99,12 @@ func (b *BGE) EmbedOne(text string) ([]float32, error) {
 		return nil, err
 	}
 
+	runInputs := []ort.Value{inT, maskT}
+	if ttT != nil {
+		runInputs = append(runInputs, ttT)
+	}
 	b.mu.Lock()
-	runErr := b.sess.Run([]ort.Value{inT, maskT, ttT}, []ort.Value{outT})
+	runErr := b.sess.Run(runInputs, []ort.Value{outT})
 	b.mu.Unlock()
 	if runErr != nil {
 		return nil, runErr
@@ -101,7 +112,9 @@ func (b *BGE) EmbedOne(text string) ([]float32, error) {
 
 	_ = inT.Destroy()
 	_ = maskT.Destroy()
-	_ = ttT.Destroy()
+	if ttT != nil {
+		_ = ttT.Destroy()
+	}
 	out := outT.GetData()
 	// bge-large-zh uses the [CLS] token as the sentence embedding (HF model
 	// outputs pooler_output derived from CLS; llama.cpp --pooling cls matches).
@@ -220,23 +233,46 @@ func sessionOptions() (*ort.SessionOptions, error) {
 	return o, nil
 }
 
-// newSession creates a DynamicAdvancedSession from the model file (no ONNX
-// bytes buffered in Go), enabling the memory optimizations above.
-func newSession(modelPath string) (*ort.DynamicAdvancedSession, error) {
+// graphWantsTokenTypes probes declared graph inputs (ported from upstream
+// v4.3.1): BERT exports disagree on whether token_type_ids is an input, and the
+// mismatch is not cosmetic — feeding a fixed input set makes ORT substitute an
+// empty tensor and every run dies at the token_type_embeddings Gather.
+// Conservative on probe error (the zh graphs we ship declare it).
+func graphWantsTokenTypes(modelPath string) bool {
+	ins, _, err := ort.GetInputOutputInfo(modelPath)
+	if err != nil {
+		return true
+	}
+	for _, in := range ins {
+		if in.Name == "token_type_ids" {
+			return true
+		}
+	}
+	return false
+}
+
+// newSession creates a DynamicAdvancedSession from the model file (no ONNX bytes
+// buffered in Go), enabling the memory optimizations above; returns whether the
+// graph consumed token_type_ids.
+func newSession(modelPath string) (*ort.DynamicAdvancedSession, bool, error) {
 	opts, err := sessionOptions()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer func() { _ = opts.Destroy() }()
+	inputs := []string{"input_ids", "attention_mask"}
+	tokenTypes := graphWantsTokenTypes(modelPath)
+	if tokenTypes {
+		inputs = append(inputs, "token_type_ids")
+	}
 	// CreateSessionFromFile so ORT mmaps / reads the external .data weights
 	// relative to the model file (no manual chdir needed, unlike NewDynamicSession).
-	s, err := ort.NewDynamicAdvancedSession(modelPath,
-		[]string{"input_ids", "attention_mask", "token_type_ids"},
+	s, err := ort.NewDynamicAdvancedSession(modelPath, inputs,
 		[]string{"last_hidden_state"}, opts)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return s, nil
+	return s, tokenTypes, nil
 }
 
 // New loads the layout for the given model name/dir. modelName drives the
@@ -274,13 +310,13 @@ func New(baseDir, modelName string) (*BGE, error) {
 		return nil, err
 	}
 	modelPath := filepath.Join(modelDir, modelFile)
-	sess, err := newSession(modelPath)
+	sess, tokenTypes, err := newSession(modelPath)
 	if err != nil {
 		_ = ort.DestroyEnvironment()
 		return nil, fmt.Errorf("new session (%s): %w", modelPath, err)
 	}
 
-	b := &BGE{sess: sess, hidden: hidden, maxSeq: maxSeq}
+	b := &BGE{sess: sess, tokenTypes: tokenTypes, hidden: hidden, maxSeq: maxSeq}
 
 	// tokenizer per layout
 	tkPath := filepath.Join(modelDir, "tokenizer.json")
