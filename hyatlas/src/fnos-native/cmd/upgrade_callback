@@ -47,5 +47,22 @@ chmod 755 "${APP_DIR}/hyatlas-go" 2>/dev/null || true
 chmod 644 "${APP_DIR}/gateway/gateway_proxy.py" 2>/dev/null || true
 chmod 755 "${APP_DIR}/models/libonnxruntime.so" 2>/dev/null || true
 
+# ── env 补键（v4.3.0 配置化）：模板新增键补入现役 env，绝不覆盖已有值 ──
+ENV_F="${VAR_DIR}/env"
+TPL="${APP_DIR}/env.example"
+if [ -f "$ENV_F" ] && [ -f "$TPL" ]; then
+  ADDED=0
+  while IFS='=' read -r k _; do
+    case "$k" in \#*|"") continue ;; esac
+    grep -qE "^[[:space:]]*#?${k}=" "$ENV_F" || { printf '%s=%s\n' "$k" "$(grep -m1 "^${k}=" "$TPL" | cut -d= -f2-)" >> "$ENV_F"; ADDED=$((ADDED+1)); }
+  done < "$TPL"
+  chown "${RUN_USER}:${RUN_GRP}" "$ENV_F" 2>/dev/null || true
+  chmod 600 "$ENV_F" 2>/dev/null || true
+  echo "env merge: ${ADDED} new key(s) appended, existing values preserved" >> "$LOG"
+elif [ ! -f "$ENV_F" ] && [ -f "$TPL" ]; then
+  cp "$TPL" "$ENV_F"; chown "${RUN_USER}:${RUN_GRP}" "$ENV_F" 2>/dev/null || true; chmod 600 "$ENV_F" 2>/dev/null || true
+  echo "env created from template during upgrade: $ENV_F" >> "$LOG"
+fi
+
 echo "===== upgrade_callback done (run-as ${RUN_USER}) =====" >> "$LOG"
 exit 0

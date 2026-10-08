@@ -292,7 +292,7 @@ func (s *MemoryStore) EnsureL7Max(goal, userID, agentID string, max int) int {
 }
 
 // List returns exact-match docs, optionally filtered by layer/user/agent, with pagination.
-func (s *MemoryStore) List(layer memory.Layer, userID, agentID string, limit, offset int) ([]DocIndex, int) {
+func (s *MemoryStore) List(layer memory.Layer, userID, agentID string, limit, offset int, excludeRaw bool) ([]DocIndex, int) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	var all []DocIndex
@@ -300,7 +300,10 @@ func (s *MemoryStore) List(layer memory.Layer, userID, agentID string, limit, of
 		if layer != "" && d.Layer != string(layer) {
 			continue
 		}
-		if userID != "" && d.UserID != userID {
+		if excludeRaw && d.Layer == string(memory.L2Raw) {
+			continue
+		}
+				if userID != "" && d.UserID != userID {
 			continue
 		}
 		if agentID != "" && d.AgentID != agentID {
@@ -362,6 +365,18 @@ func (s *MemoryStore) Delete(ids []string, layer memory.Layer, userID, agentID s
 }
 
 // GetDoc returns one document from the exact index.
+func (s *MemoryStore) GetMany(ids []string) []DocIndex {
+s.mu.RLock()
+defer s.mu.RUnlock()
+out := make([]DocIndex, 0, len(ids))
+for _, id := range ids {
+if d, ok := s.index[id]; ok {
+out = append(out, d)
+}
+}
+return out
+}
+
 func (s *MemoryStore) GetDoc(id string) (DocIndex, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

@@ -31,9 +31,23 @@ function Start-V4 {
     $env:HYATLAS_GRAPH_PATH = (Join-Path $data "graph.json")
     $env:HYATLAS_EMBED_BASE = "bge"
     $env:HYATLAS_MODEL_DIR  = (Join-Path $goDir "models")
-    $env:HYATLAS_LLM_BASE   = "https://inference-api.nousresearch.com/v1"
-    $env:HYATLAS_LLM_MODEL  = "poolside/laguna-s-2.1:free"
-    $env:HYATLAS_LLM_KEY    = $llmKey
+    # Extraction mode: lite (no LLM call, text never leaves the machine),
+    # pro (per-write extraction, reasons within one turn), ultra (adds the slow
+    # path: periodic consolidation across memories). Unset means ultra.
+    # HYATLAS_SYNC_EXTRACT=on|off separately controls whether a write blocks.
+    if ($env:HYATLAS_MODE) { Write-Host "  mode: $env:HYATLAS_MODE" }
+
+    # This launcher pairs the key below (a Nous Portal JWT from auth.json) with
+    # that provider's endpoint, so it sets them -- but only when unset, so an
+    # explicit export always wins. The server itself assumes no endpoint.
+    if (-not $env:HYATLAS_LLM_BASE)  { $env:HYATLAS_LLM_BASE  = "https://inference-api.nousresearch.com/v1" }
+    if (-not $env:HYATLAS_LLM_MODEL) { $env:HYATLAS_LLM_MODEL = "poolside/laguna-s-2.1:free" }
+    # The Nous Portal key is a 1-hour JWT that Hermes keeps fresh in auth.json.
+    # Point the server at the file so it reads the current key per call, instead
+    # of freezing today's JWT for the whole process lifetime. $llmKey stays as
+    # the bootstrap/fallback for any moment the file is mid-rewrite.
+    $env:HYATLAS_LLM_KEY      = $llmKey
+    $env:HYATLAS_LLM_KEY_FILE = $authPath
 
     Set-Location $goDir
     $proc = Start-Process -FilePath ".\hyatlas-go.exe" -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError "$log.err" -PassThru

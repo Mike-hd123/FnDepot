@@ -11,96 +11,184 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tuancookiez-hub/hyatlas-v4/graph"
 	"github.com/tuancookiez-hub/hyatlas-v4/memory"
 )
 
+// Version is the single source of truth for the server version string.
+// It is exposed on /api/v1/status and /api/info so every client (Desktop pane,
+// web dashboard, CLI) reports the real running version instead of hardcoding
+// a "v4" badge that silently goes stale on each release. Bump in one place.
+const Version = "4.3.0"
+
 // Server mirrors the HyAtlas REST contract for drop-in parity.
 type Server struct {
-	store          *MemoryStore
-	llm            *LLMClient
-	llmModel       string
-	llmBase        string
-	start          time.Time
+	store    *MemoryStore
+	llm      *LLMClient
+	llmModel string
+	llmBase  string
+	mode     Mode
+	sync     Sync
+	cons     *Consolidator
+	start    time.Time
+	dataDir  string
+	// fork (fnos): actual embedder dimension (1024 for bge-large-zh); status
+	// must report what the store indexes, not a hardcoded 384.
+	embedDims int
+	// fork (fnos): bounded-retry queue for failed L2 extractions (see retry.go)
+	retries *retryWorker
+
+	// mu guards lastExtractErr: the extraction goroutines write it from
+	// background contexts while /api/v1/status reads it on request.
+	mu             sync.RWMutex
 	lastExtractErr string
-	dataDir        string
-	embedDims      int
-	retries        *retryWorker
 }
 
+func (s *Server) setExtractErr(err string) {
+	s.mu.Lock()
+	s.lastExtractErr = err
+	s.mu.Unlock()
+}
+
+func (s *Server) extractErr() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastExtractErr
+}
+
+// llmState is the single place that decides what to report about the LLM, so
+// /api/v1/status, the dashboard and the startup line cannot disagree.
+//
+//	unused        — this mode makes no LLM call
+//	unconfigured  — the mode needs one but endpoint, model or key is unset
+//	ok            — a credential resolved
+func (s *Server) llmState() string {
+	if !s.mode.UsesLLM() {
+		return "unused"
+	}
+	if !s.llm.Configured() {
+		return "unconfigured"
+	}
+	return "ok"
+}
+
+// Status is the /api/v1/status payload. It is marshaled directly, so these
+// json tags are the wire contract — do not restate the shape in a map literal.
 type Status struct {
-	Status        string `json:"status"`
-	VDB           string `json:"vdb"`
-	Embed         string `json:"embed"`
-	LLM           string `json:"llm"`
-	LLMModel      string `json:"llm_model"`
-	LLMBase       string `json:"llm_base"`
-	VDBProvider   string `json:"vdb_provider"`
-	VDBCollection string `json:"vdb_collection"`
-	VDBPoints     int    `json:"vdb_points"`
-	EmbedDims     int    `json:"embed_dims"`
-	WritePipeline string `json:"write_pipeline"`
+	Status        string         `json:"status"`
+	Version       string         `json:"version"`
+	VDB           string         `json:"vdb"`
+	Embed         string         `json:"embed"`
+	LLM           string         `json:"llm"`
+	LLMModel      string         `json:"llm_model"`
+	LLMBase       string         `json:"llm_base"`
+	VDBProvider   string         `json:"vdb_provider"`
+	VDBCollection string         `json:"vdb_collection"`
+	VDBPoints     int            `json:"vdb_points"`
+	EmbedDims     int            `json:"embed_dims"`
+	WritePipeline string         `json:"write_pipeline"`
+	Writes        uint64         `json:"writes"`
+	Searches      uint64         `json:"searches"`
+	Layers        map[string]int `json:"layers"`
+	GraphNodes    int            `json:"graph_nodes"`
+	GraphEdges    int            `json:"graph_edges"`
+	Mode          Mode           `json:"mode"`
+	ModeDetail    string         `json:"mode_detail"`
+	UsesLLM       bool           `json:"uses_llm"`
+	// Slow-path observability. ExtractSync tells the caller whether a write
+	// blocks, so pro and ultra cannot be mistaken for one another on latency
+	// alone. Consolidations is the number of completed passes; -1 means this
+	// mode has no slow path at all, which is distinguishable from zero passes.
+	ExtractSync      string  `json:"extract_sync"`
+	Consolidations   int     `json:"consolidations"`
+	LastConsolidated *Report `json:"last_consolidated,omitempty"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	counts := s.store.LayerCounts()
 	write := "ok"
-	if s.lastExtractErr != "" {
-		write = "degraded: " + s.lastExtractErr
+	if errStr2 := s.extractErr(); errStr2 != "" {
+		write = "degraded: " + errStr2
 	}
 	writesCount, searchesCount := s.store.Usage()
-	// L5 lives in the graph store; LayerCounts() returns 0 for it from chromem.
-	counts = s.store.LayerCounts()
-	counts["l5_knowledge"] = s.store.Graph().NodeCount()
-	status := Status{
-		Status:        "ok",
-		VDB:           "ok",
-		Embed:         "ok",
-		LLM:           "ok",
-		LLMModel:      s.llmModel,
-		LLMBase:       s.llmBase,
-		VDBProvider:   "chromem",
-		VDBCollection: "layers",
-		VDBPoints:     s.store.TotalMemories(),
-		EmbedDims:     s.embedDims,
-		WritePipeline: write,
+	// -1 means "no slow path in this mode"; 0 means "has one, never completed".
+	consRuns, lastCons := -1, (*Report)(nil)
+	if s.cons != nil {
+		n, last, _ := s.cons.Stats()
+		consRuns, lastCons = n, last
 	}
-	jsonResponse(w, 200, map[string]any{
-		"status":         status.Status,
-		"vdb":            status.VDB,
-		"embed":          status.Embed,
-		"llm":            status.LLM,
-		"llm_model":      status.LLMModel,
-		"llm_base":       status.LLMBase,
-		"vdb_provider":   status.VDBProvider,
-		"vdb_collection": status.VDBCollection,
-		"vdb_points":     status.VDBPoints,
-		"embed_dims":     status.EmbedDims,
-		"write_pipeline": status.WritePipeline,
-		"writes":         writesCount,
-		"searches":       searchesCount,
-		"layers":         counts,
-		"graph_nodes":    s.store.Graph().NodeCount(),
-		"graph_edges":    s.store.Graph().EdgeCount(),
+	// Lite never calls an LLM, so reporting llm=ok there would claim a
+	// capability this mode deliberately does not use. A mode that does need one
+	// but has no credential must not report ok either — that is the single most
+	// confusing state a fresh install can land in.
+	// L5 lives in the graph store; LayerCounts() returns 0 for it from chromem.
+	counts := s.store.LayerCounts()
+	counts["l5_knowledge"] = s.store.Graph().NodeCount()
+
+	llmState := s.llmState()
+	jsonResponse(w, 200, Status{
+		Status:           "ok",
+		Version:          Version,
+		VDB:              "ok",
+		Embed:            "ok",
+		LLM:              llmState,
+		LLMModel:         s.llmModel,
+		LLMBase:          s.llmBase,
+		VDBProvider:      "chromem",
+		VDBCollection:    "layers",
+		VDBPoints:        s.store.TotalMemories(),
+		EmbedDims:        s.embedDims,
+		WritePipeline:    write,
+		Writes:           writesCount,
+		Searches:         searchesCount,
+		Layers:           counts,
+		GraphNodes:       s.store.Graph().NodeCount(),
+		GraphEdges:       s.store.Graph().EdgeCount(),
+		Mode:             s.mode.OrDefault(),
+		ModeDetail:       s.mode.Describe(),
+		UsesLLM:          s.mode.UsesLLM(),
+		ExtractSync:      s.sync.Describe(s.mode),
+		Consolidations:   consRuns,
+		LastConsolidated: lastCons,
 	})
 }
 
-// l7DedupThreshold is the minimum top-1 cosine similarity (existing L7 doc vs
-// new goal) at which a write is skipped as a near-duplicate. Empirical value
-// for bge 1024-dim Chinese embeddings: rephrasings of the same intent score
-// ~0.95+, unrelated goals stay well below 0.9.
+// l7DedupThreshold documents the original fixed threshold; the live value is
+// env-tunable via HYATLAS_L7_DEDUP_THRESHOLD (default 0.80). Empirical basis:
+// bge 1024-dim Chinese embeddings land same-intent rephrasings ~0.95+,
+// unrelated goals below 0.9.
 const l7DedupThreshold = 0.92
 
 // extractMaxChars caps the text fed to the LLM. The gateway/model combo behind
-// "default" can take 80-90s+ on very long prompts; past ~2 minutes context
-// deadline the call dies and, pre-2026-09-08, the item was stranded forever
-// (no retry queue). Hard-cap instead of burning the whole timeout budget.
+// "flash" takes 80-90s+ on very long prompts; past the context deadline the
+// call dies. Hard-cap instead of burning the whole timeout budget.
 const extractMaxChars = 30000
 
-// promoteExtraction writes one LLM extraction result to its 7 layers.
-// sourceID is the L2 raw memory id — used to anchor L5 edges back to their origin.
+func parseFloatDefault(s string, def float64) float64 {
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return def
+	}
+	return f
+}
+
+// promoteExtraction writes one System1 pass to the layers that pass owns:
+// L3 facts (and the L1 profile mirror for preferences), L4 summary, L7 intention.
+//
+// L5 knowledge and L6 schemas are deliberately NOT written here. They are
+// System2 products: a knowledge relation worth keeping is one corroborated by
+// more than a single turn, and a schema is a *recurring* pattern, which no
+// single turn can evidence. Writing them per turn made pro and ultra look
+// identical and filled L6 with guesses that competed with the real thing at
+// retrieval time. The consolidation pass owns both layers.
+//
+// sourceID is the L2 raw memory id. It is recorded on every L3 fact as
+// source_id so the slow path can trace a consolidated claim back to the
+// conversations that produced it, and so raw decay can protect the rows a live
+// claim still depends on.
 func promoteExtraction(store *MemoryStore, ex *Extraction, userID, agentID, sourceID string) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	// L3 Facts
@@ -108,14 +196,9 @@ func promoteExtraction(store *MemoryStore, ex *Extraction, userID, agentID, sour
 		if f.Data == "" {
 			continue
 		}
-		// source_id anchors the fact back to the L2 raw memory it was
-		// extracted from — audit join key (provenance: fact ← raw).
-		// NOTE: the P1.5 edge-close hook in handlePatch deliberately keys
-		// on Source==victim-id only and does NOT fan out through this key
-		// (one raw doc backs many sibling facts; over-closing is wrong).
 		_ = store.Add(memory.L3Fact, newID(), f.Data, map[string]string{
 			"user_id": userID, "agent_id": agentID,
-			"source_layer_label": f.Layer, "ts": now, "source_id": sourceID,
+			"source_layer_label": f.Layer, "source_id": sourceID, "ts": now,
 		})
 		// L1 Profile mirror REMOVED (plan v2 §3④'): user_preferences facts
 		// stay in L3 tagged source_kind=agent_extract. Rationale: this async
@@ -136,33 +219,10 @@ func promoteExtraction(store *MemoryStore, ex *Extraction, userID, agentID, sour
 			"user_id": userID, "agent_id": agentID, "ts": now,
 		})
 	}
-	// L5 Knowledge graph — every edge is anchored to its L2 source memory.
-	for _, rel := range ex.Knowledge {
-		if rel.From == "" || rel.Relation == "" || rel.To == "" {
-			continue
-		}
-		_ = store.Graph().AddEdgeWithSource(rel.From, rel.Relation, rel.To, sourceID)
-	}
-	// L6 Schema
-	for _, sc := range ex.Schemas {
-		if sc.Pattern == "" {
-			continue
-		}
-		_ = store.Add(memory.L6Schema, newID(), sc.Pattern, map[string]string{
-			"user_id": userID, "agent_id": agentID,
-			"context": sc.Context, "ts": now,
-		})
-	}
-	// L7 Intention — near-duplicate guard: skip writing when the top-1
-	// existing L7 doc for this scope scores above a similarity threshold.
-	// Threshold 0.92 is an empirical value tuned for bge 1024-dim Chinese
-	// embeddings: same intent rephrased lands ~0.95+, unrelated goals well
-	// below 0.9. Fail-open on query errors (write anyway, pre-dedup
-	// behavior). Scope note: L3/L4/L6 deliberately have NO dedup this round.
-	// 09-14 (t_b148ef18): threshold + max size made env-tunable to stop the
-	// L7 intention layer bloat (526 docs, ~5/day): top-N (N=8) match at a
-	// lower threshold plus a hard cap with LRU eviction of the oldest
-	// intentions. Overridable via HYATLAS_L7_DEDUP_THRESHOLD / HYATLAS_L7_MAX.
+	// existing L7 docs for this scope score above the threshold. Env-tunable
+	// via HYATLAS_L7_DEDUP_THRESHOLD (0.80) / HYATLAS_L7_MAX (100, hard cap +
+	// LRU eviction — the layer bloated to 526 docs at ~5/day before the cap).
+	// Fail-open on query errors. L3/L4/L6 deliberately have NO dedup.
 	if ex.Intention != nil && strings.TrimSpace(ex.Intention.Goal) != "" {
 		goal := strings.TrimSpace(ex.Intention.Goal)
 		thresh := envOr("HYATLAS_L7_DEDUP_THRESHOLD", "0.80")
@@ -172,8 +232,8 @@ func promoteExtraction(store *MemoryStore, ex *Extraction, userID, agentID, sour
 			evict = store.EnsureL7Max(goal, userID, agentID, maxL7)
 		}
 		duped := false
-		if s, found := store.TopL7Similar(goal, userID, agentID, 8); found && float64(s) > parseFloatDefault(thresh, 0.80) {
-			log.Printf("promoteExtraction: L7 intention deduped (score=%.4f > %s): %q", s, thresh, goal)
+		if sc, found := store.TopL7Similar(goal, userID, agentID, 8); found && float64(sc) > parseFloatDefault(thresh, 0.80) {
+			log.Printf("promoteExtraction: L7 intention deduped (score=%.4f > %s): %q", sc, thresh, goal)
 			duped = true
 		}
 		if !duped {
@@ -185,48 +245,6 @@ func promoteExtraction(store *MemoryStore, ex *Extraction, userID, agentID, sour
 			log.Printf("promoteExtraction: L7 cap enforced, evicted %d oldest intention(s)", evict)
 		}
 	}
-}
-
-// parseFloatDefault parses s as a float64, falling back to def on error.
-func parseFloatDefault(s string, def float64) float64 {
-	f, err := strconv.ParseFloat(s, 64)
-	if err != nil {
-		return def
-	}
-	return f
-}
-
-// extractItem runs one LLM extraction for an L2 doc with bounded retries and
-// backoff, promotes the result, and marks it extracted. Returns true on
-// success. Shared by handleAdd's async goroutine, the retry queue, and
-// handleReprocess so all three paths get identical semantics (retry,
-// truncation cap, SetExtracted on success).
-func (s *Server) extractItem(doc DocIndex) bool {
-	if s.llm == nil {
-		return false
-	}
-	content := doc.Content
-	if len(content) > extractMaxChars {
-		content = content[:extractMaxChars]
-	}
-	for attempt := 1; attempt <= 3; attempt++ {
-		if attempt > 1 {
-			time.Sleep(time.Duration(attempt) * 10 * time.Second)
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
-		ex, err := s.llm.Complete(ctx, content)
-		cancel()
-		if err != nil {
-			s.lastExtractErr = err.Error()
-			log.Printf("extract %s attempt %d/3 failed: %v", doc.ID, attempt, err)
-			continue
-		}
-		promoteExtraction(s.store, ex, doc.UserID, doc.AgentID, doc.ID)
-		_ = s.store.SetExtracted(doc.ID, true)
-		s.lastExtractErr = ""
-		return true
-	}
-	return false
 }
 
 func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
@@ -263,39 +281,109 @@ func (s *Server) handleAdd(w http.ResponseWriter, r *http.Request) {
 	meta["ts"] = time.Now().UTC().Format(time.RFC3339)
 
 	err := s.store.Add(memory.L2Raw, id, text, meta)
-	resp := map[string]any{"success": err == nil, "memory_id": id, "extraction_status": "pending"}
+	resp := map[string]any{"success": err == nil, "memory_id": id}
 	if err != nil {
 		resp["error"] = err.Error()
 		jsonResponse(w, 500, resp)
 		return
 	}
 
-	// Full 7-layer pipeline: one LLM call extracts facts, summary, knowledge,
-	// schema, and intention, then each is written to its own layer. L1 Profile is
-	// derived from persistent preferences; L2 Raw is the source doc just written.
-	agentID := body.AgentID
-	userID := body.UserID
-	go func() {
-		if s.extractItem(DocIndex{ID: id, Content: text, UserID: userID, AgentID: agentID}) {
-			log.Printf("add %s extracted inline", id)
-			return
-		}
-		// Inline extraction failed (transient gateway stall / timeout). Queue a
-		// bounded backoff retry instead of stranding the item forever.
-		s.retries.Enqueue(id)
-	}()
+	// Whether extraction happens at all is the mode's decision; whether the
+	// write waits for it is the sync knob's. Lite stops here with only the raw
+	// trace stored, so no LLM call is made.
+	resp["extraction_status"] = s.extractForMode(text, body.UserID, body.AgentID, id)
 
 	jsonResponse(w, 200, resp)
 }
 
+// extractForMode applies the configured mode to one stored raw memory and
+// reports what the caller should expect.
+//
+// One extraction call is System1: promoteExtraction writes L3 Fact, L4 Summary,
+// L7 Intention, and L1 Profile when a fact is a user preference, all from the L2
+// raw doc. L5 Knowledge and L6 Schema belong to System2 and are only ever written
+// by the consolidation pass, so a mode's layer count depends on whether that pass
+// runs at all — see Mode.LayersActive.
+func (s *Server) extractForMode(text, userID, agentID, id string) string {
+	if !s.mode.UsesLLM() {
+		return "skipped"
+	}
+	if !s.llm.Configured() {
+		return "unconfigured"
+	}
+	// Blocking versus background is the separate sync knob, not the mode: pro
+	// defaults to blocking so the caller sees the outcome, ultra to background
+	// so the write never waits. Either can be overridden with
+	// HYATLAS_SYNC_EXTRACT.
+	if !s.sync.Blocks(s.mode) {
+		go func() {
+			if !s.extractItem(DocIndex{ID: id, Content: text, UserID: userID, AgentID: agentID}) {
+				s.retries.Enqueue(id)
+			}
+		}()
+		return "pending"
+	}
+	// Blocking: the response tells the truth about this write instead of
+	// reporting "pending" and leaving the caller to poll.
+	if err := s.extract(text, userID, agentID, id); err != nil {
+		// Do not strand the item: queue it for the background worker even
+		// though the caller already learned this write failed.
+		s.retries.Enqueue(id)
+		return "failed"
+	}
+	return "done"
+}
+
+// extract runs one LLM extraction and promotes the result. Shared by the
+// synchronous and background paths so the two cannot drift.
+func (s *Server) extract(text, userID, agentID, id string) error {
+	if len(text) > extractMaxChars {
+		text = text[:extractMaxChars]
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), extractTimeout)
+	defer cancel()
+	if s.llm == nil {
+		return fmt.Errorf("no LLM client configured")
+	}
+	ex, err := s.llm.Complete(ctx, text)
+	if err != nil {
+		s.setExtractErr(err.Error())
+		return err
+	}
+	promoteExtraction(s.store, ex, userID, agentID, id)
+	_ = s.store.SetExtracted(id, true)
+	s.setExtractErr("")
+	return nil
+}
+
+// extractItem runs one LLM extraction for an L2 doc with bounded retries and
+// backoff (shared by the background add path and the retry worker) so every
+// extraction path behaves identically. Returns true on success.
+func (s *Server) extractItem(doc DocIndex) bool {
+	if s.llm == nil || !s.llm.Configured() {
+		return false
+	}
+	for attempt := 1; attempt <= 3; attempt++ {
+		if attempt > 1 {
+			time.Sleep(time.Duration(attempt) * 10 * time.Second)
+		}
+		if err := s.extract(doc.Content, doc.UserID, doc.AgentID, doc.ID); err == nil {
+			return true
+		}
+		log.Printf("extract %s attempt %d/3 failed: %v", doc.ID, attempt, s.extractErr())
+	}
+	return false
+}
+
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Query          string   `json:"query"`
-		Limit          int      `json:"limit"`
-		Layer          string   `json:"layer"`           // optional: filter to one memory layer
-		UserIDs        []string `json:"user_ids"`        // optional: restrict to these users
-		AgentIDs       []string `json:"agent_ids"`       // optional: restrict to these agents
-		IncludeExpired bool     `json:"include_expired"` // default false: drop docs past valid_until
+		Query    string   `json:"query"`
+		Limit    int      `json:"limit"`
+		Layer    string   `json:"layer"`     // optional: filter to one memory layer
+		UserIDs  []string `json:"user_ids"`  // optional: restrict to these users
+		AgentIDs []string `json:"agent_ids"` // optional: restrict to these agents
+		// fork (fnos): return soft-expired docs too when true (valid_until passed).
+		IncludeExpired bool `json:"include_expired"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		jsonResponse(w, 400, map[string]any{"error": "bad body"})
@@ -318,14 +406,13 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type hit struct {
-		MemoryID   string            `json:"memory_id"`
-		Content    string            `json:"content"`
-		Score      float64           `json:"score"`
-		Layer      string            `json:"layer"`
-		GmtCreated int64             `json:"gmt_created"`
-		UserID     string            `json:"user_id,omitempty"`
-		AgentID    string            `json:"agent_id,omitempty"`
-		Meta       map[string]string `json:"metadata,omitempty"`
+		MemoryID   string  `json:"memory_id"`
+		Content    string  `json:"content"`
+		Score      float64 `json:"score"`
+		Layer      string  `json:"layer"`
+		GmtCreated int64   `json:"gmt_created"`
+		UserID     string  `json:"user_id,omitempty"`
+		AgentID    string  `json:"agent_id,omitempty"`
 	}
 	profileHits := []hit{}
 	proactiveHits := []hit{}
@@ -333,7 +420,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	for _, h := range res {
 		it := hit{MemoryID: h.ID, Content: h.Content, Score: float64(h.Score),
 			Layer: string(h.Layer), GmtCreated: gmtCreated(h.Meta["ts"]),
-			UserID: h.Meta["user_id"], AgentID: h.Meta["agent_id"], Meta: h.Meta}
+			UserID: h.Meta["user_id"], AgentID: h.Meta["agent_id"]}
 		switch h.Layer {
 		case memory.L1Profile, memory.L6Schema:
 			profileHits = append(profileHits, it)
@@ -346,8 +433,7 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// Async retrieval telemetry (plan v2 §3②): touch top-3 hits scoring at
 	// or above HYATLAS_TOUCH_MIN_SCORE (default 0.72; 0 disables touching
 	// entirely — the fallback switch). Never blocks the response; failures
-	// are log-only. Threshold rationale: measured noise top1 was 0.6834,
-	// real hits land 0.80+.
+	// are log-only. Rationale: measured noise top1 was 0.6834, real hits land 0.80+.
 	if ids := touchCandidates(res); len(ids) > 0 {
 		go func() {
 			if n, err := s.store.TouchIDs(ids); err != nil {
@@ -361,9 +447,6 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}})
 }
 
-// touchCandidates picks the ids eligible for hit telemetry from a ranked
-// search result: rank <= 3 (res is already sorted desc) and score >= gate
-// (env HYATLAS_TOUCH_MIN_SCORE, default 0.72; <=0 disables).
 func touchCandidates(res []SearchHit) []string {
 	gate := parseFloatDefault(envOr("HYATLAS_TOUCH_MIN_SCORE", "0.72"), 0.72)
 	if gate <= 0 {
@@ -524,18 +607,7 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	items, total := s.store.List(memory.Layer(layer), userID, agentID, limit, offset)
-
-	// include_raw: if false and no layer filter, drop raw rows (parity with v3.5)
-	if includeRaw == "false" && layer == "" {
-		keep := items[:0]
-		for _, it := range items {
-			if it.Layer != string(memory.L2Raw) {
-				keep = append(keep, it)
-			}
-		}
-		items = keep
-	}
+	items, total := s.store.List(memory.Layer(layer), userID, agentID, limit, offset, includeRaw == "false" && layer == "")
 
 	out := make([]map[string]any, 0, len(items))
 	for _, it := range items {
@@ -570,23 +642,42 @@ func atoi(s string, def int) int {
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-	// Safety guard (09-14): a delete with NO explicit id is a bulk delete
-	// (whole layer / whole store — see the 09-07 incident that wiped 12259
-	// rows via this endpoint). Bulk delete is disabled; only explicit-id
-	// deletion is allowed. To delete many items, pass a comma-separated id
-	// list via the id param (still bounded and auditable).
-	layer := q.Get("layer")
-	userID := q.Get("user_id")
-	agentID := q.Get("agent_id")
-	ids := []string{}
-	if idStr := q.Get("id"); idStr != "" {
-		ids = strings.Split(idStr, ",")
+	// Scoping may arrive as query params (curl style) OR as a JSON body
+	// (the hyatlas plugin's client style). Read both, query wins.
+	var body struct {
+		ID      string `json:"id"`
+		Layer   string `json:"layer"`
+		UserID  string `json:"user_id"`
+		AgentID string `json:"agent_id"`
+		Confirm string `json:"confirm"`
 	}
-	if len(ids) == 0 {
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+	}
+	q := r.URL.Query()
+	first := func(a, b string) string {
+		if a != "" {
+			return a
+		}
+		return b
+	}
+	layer := first(q.Get("layer"), body.Layer)
+	userID := first(q.Get("user_id"), body.UserID)
+	agentID := first(q.Get("agent_id"), body.AgentID)
+	confirm := first(q.Get("confirm"), body.Confirm) == "wipe-all"
+	ids := []string{}
+	if idStr := first(q.Get("id"), body.ID); idStr != "" {
+		ids = append(ids, idStr)
+	}
+	// layer "*" means "everything" — same as an unscoped wipe.
+	if layer == "*" {
+		layer = ""
+	}
+	// Guard: an unscoped call is a full-store wipe. Require an explicit opt-in.
+	if len(ids) == 0 && layer == "" && userID == "" && agentID == "" && !confirm {
 		jsonResponse(w, 400, map[string]any{
-			"error":         "bulk delete_all is disabled (09-07 incident guard); pass ?id=<memory_id[,memory_id...]> to delete specific items",
 			"deleted_count": 0,
+			"error":         "unscoped delete refused: pass layer/user_id/agent_id/id, or confirm=wipe-all to wipe the entire store",
 		})
 		return
 	}
@@ -604,41 +695,97 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleDigest reports the slow path's state, and runs a pass on demand.
+//
+// It used to return a hardcoded digest_ok with a note saying "a full scheduled
+// digest runs here", which meant a caller could not tell whether consolidation
+// had ever run. Now GET reports the last pass and POST triggers one, so the
+// slow path is observable and testable rather than assumed.
 func (s *Server) handleDigest(w http.ResponseWriter, r *http.Request) {
+	if s.cons == nil {
+		jsonResponse(w, 200, map[string]any{
+			"digest_ok": false,
+			"mode":      string(s.mode.OrDefault()),
+			"reason":    "this mode has no slow path; consolidation runs only in ultra",
+		})
+		return
+	}
+	if r.Method != http.MethodPost {
+		runs, last, at := s.cons.Stats()
+		jsonResponse(w, 200, map[string]any{
+			"digest_ok":   true,
+			"runs":        runs,
+			"last":        last,
+			"last_at":     at,
+			"graph_nodes": s.store.Graph().NodeCount(),
+			"graph_edges": s.store.Graph().EdgeCount(),
+		})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), consolidateTimeout)
+	defer cancel()
+	rep, err := s.cons.Once(ctx)
+	if err != nil {
+		jsonResponse(w, 500, map[string]any{"digest_ok": false, "error": err.Error()})
+		return
+	}
 	jsonResponse(w, 200, map[string]any{
 		"digest_ok":   true,
+		"report":      rep,
 		"graph_nodes": s.store.Graph().NodeCount(),
 		"graph_edges": s.store.Graph().EdgeCount(),
-		"note":        "L5 graph is built incrementally on each add; a full scheduled digest runs here.",
 	})
 }
 
 func (s *Server) handleReprocess(w http.ResponseWriter, r *http.Request) {
-	// Drain ALL pending raw items, not just the newest 200: the backlog from
-	// the 09-06 migration sat at offset>200 and was unreachable via this
-	// endpoint no matter how often it was called. Page through the whole
-	// layer and retry every unextracted item (bounded loop, ~200 per reprocess
-	// call keeps a single request from running for hours).
-	const batch = 200
-	reprocessed := 0
-	for offset := 0; ; offset += batch {
-		raw, total := s.store.List(memory.L2Raw, "", "", batch, offset)
-		if len(raw) == 0 {
-			break
-		}
-		for _, it := range raw {
-			if it.Extracted {
-				continue
-			}
-			if s.extractItem(it) {
-				reprocessed++
-			}
-		}
-		if offset+batch >= total {
-			break
-		}
+	// Optional body: {"ids": [...], "max": N}. With explicit ids the caller has
+	// already chosen the exact rows (e.g. backfilling an outage window), so the
+	// extracted-skip does not apply; otherwise walk up to `max` (default 200)
+	// oldest unextracted raw rows.
+	var body struct {
+		IDs []string `json:"ids"`
+		Max int      `json:"max"`
 	}
-	jsonResponse(w, 200, map[string]any{"reprocessed": reprocessed})
+	_ = json.NewDecoder(r.Body).Decode(&body)
+
+	var raw []DocIndex
+	if len(body.IDs) > 0 {
+		raw = s.store.GetMany(body.IDs)
+	} else {
+		max := body.Max
+		if max <= 0 {
+			max = 200
+		}
+		raw, _ = s.store.List(memory.L2Raw, "", "", max, 0, false)
+	}
+	// Lite has no extraction to reprocess, so say so instead of silently
+	// reporting zero work done.
+	if !s.mode.UsesLLM() {
+		jsonResponse(w, 200, map[string]any{
+			"reprocessed": 0, "failed": 0, "skipped": len(raw),
+			"note": "mode is " + string(s.mode) + "; extraction is disabled, nothing to reprocess",
+		})
+		return
+	}
+	reprocessed, failed, skipped := 0, 0, 0
+	for _, it := range raw {
+		if len(body.IDs) == 0 && it.Extracted {
+			skipped++
+			continue
+		}
+		if s.llm == nil {
+			failed++
+			continue
+		}
+		// Same extraction path as a normal write, so pro and ultra behave
+		// consistently here rather than this handler keeping its own copy.
+		if err := s.extract(it.Content, it.UserID, it.AgentID, it.ID); err != nil {
+			failed++
+			continue
+		}
+		reprocessed++
+	}
+	jsonResponse(w, 200, map[string]any{"reprocessed": reprocessed, "failed": failed, "skipped": skipped})
 }
 
 func errStr(err error) string {
@@ -649,12 +796,28 @@ func errStr(err error) string {
 }
 
 // handleStarmapGraph returns a Hermes-Desktop-style StarmapGraph payload
-// (nodes, edges, memory) so the hy_memory plugin can render the exact same
+// (nodes, edges, memory) so the hyatlas plugin can render the exact same
 // view the built-in starmap shows. Designed for desktop pane "Graph" tab.
 //
 // The shape mirrors apps/desktop/src/types/hermes.ts::StarmapGraph:
 //
 //	{ nodes: StarmapNode[], edges: StarmapEdge[], memory: StarmapMemoryCard[] }
+//
+// utf8Trunc caps a string to max bytes without splitting a rune, appending an
+// ellipsis when truncated. Used for starmap payload fields — some raw L2
+// memories carry huge session dumps, and shipping full bodies made the graph
+// payload hundreds of MB.
+func utf8Trunc(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
+}
+
 func (s *Server) handleStarmapGraph(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit := atoi(q.Get("n"), 500)
@@ -662,16 +825,14 @@ func (s *Server) handleStarmapGraph(w http.ResponseWriter, r *http.Request) {
 
 	// 1. Nodes: all L3 facts + a sampled set of L2 raw entries. Layer type
 	//    becomes the visual "kind" (memory in the starmap sense).
-	items, _ := s.store.List("", "", "", limit, 0)
+	items, _ := s.store.List("", "", "", limit, 0, false)
 	nodes := make([]map[string]any, 0, len(items))
 	memCards := make([]map[string]any, 0, len(items))
 	for _, it := range items {
 		ts := gmtCreated(it.Ts)
-		// strip long content for the node label; keep full body in `memory`
-		label := it.Content
-		if len(label) > 80 {
-			label = label[:80] + "…"
-		}
+		// strip long content for the node label; card body capped below — the
+		// hover tooltip only ever previews a snippet
+		label := utf8Trunc(it.Content, 80)
 		nodes = append(nodes, map[string]any{
 			"id":         it.ID,
 			"label":      label,
@@ -687,7 +848,7 @@ func (s *Server) handleStarmapGraph(w http.ResponseWriter, r *http.Request) {
 			"source":    "memory",
 			"timestamp": ts,
 			"title":     label,
-			"body":      it.Content,
+			"body":      utf8Trunc(it.Content, 2048),
 		})
 	}
 
@@ -710,7 +871,7 @@ func (s *Server) handleStarmapGraph(w http.ResponseWriter, r *http.Request) {
 	// co_session
 	sessionBuckets := map[string][]string{}
 	for _, l := range []string{"l2_raw", "l3_fact", "l4_summary", "l5_knowledge", "l6_schema", "l7_intention"} {
-		lItems, _ := s.store.List(memory.Layer(l), "", "", 200, 0)
+		lItems, _ := s.store.List(memory.Layer(l), "", "", 200, 0, false)
 		for _, it := range lItems {
 			sid := ""
 			if it.Meta != nil {
@@ -745,7 +906,7 @@ func (s *Server) handleStarmapGraph(w http.ResponseWriter, r *http.Request) {
 	if kSem < 1 {
 		kSem = 2
 	}
-	recent, _ := s.store.List(memory.L3Fact, "", "", 20, 0)
+	recent, _ := s.store.List(memory.L3Fact, "", "", 20, 0, false)
 	for _, it := range recent {
 		if semCount >= maxSem {
 			break
@@ -823,7 +984,7 @@ func (s *Server) handleGraphEdges(w http.ResponseWriter, r *http.Request) {
 		_ = layer
 	}
 	for _, l := range []string{"l2_raw", "l3_fact", "l4_summary", "l5_knowledge", "l6_schema", "l7_intention"} {
-		items, _ := s.store.List(memory.Layer(l), "", "", 200, 0)
+		items, _ := s.store.List(memory.Layer(l), "", "", 200, 0, false)
 		for _, it := range items {
 			sid := it.Meta["session_id"]
 			if sid == "" {
@@ -863,7 +1024,7 @@ func (s *Server) handleGraphEdges(w http.ResponseWriter, r *http.Request) {
 	}
 	// iterate only the most recent 20 L3 memories (kept fast; full-graph
 	// similarity is a separate scan). Coalesces well to ~20 VDB queries.
-	recent, _ := s.store.List(memory.L3Fact, "", "", 20, 0)
+	recent, _ := s.store.List(memory.L3Fact, "", "", 20, 0, false)
 	for _, it := range recent {
 		if semCount >= maxSem {
 			break
@@ -913,7 +1074,7 @@ func (s *Server) handleGraph(w http.ResponseWriter, r *http.Request) {
 		"neighbors":   neighbors,
 		"node_count":  s.store.Graph().NodeCount(),
 		"edge_count":  s.store.Graph().EdgeCount(),
-		"extract_err": s.lastExtractErr,
+		"extract_err": s.extractErr(),
 	})
 }
 
@@ -939,16 +1100,143 @@ func jsonResponse(w http.ResponseWriter, code int, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+// runtimeCfg is the resolved server configuration. Every default lives here, in
+// one place, rather than as an inline literal inside main() — so the defaults
+// are something a test can assert on instead of something only visible by
+// running the binary.
+type runtimeCfg struct {
+	Port       string
+	DataDir    string
+	GraphPath  string
+	LLMBase    string
+	LLMModel   string
+	EmbedBase  string
+	EmbedModel string
+	ModelDir   string
+	Mode       Mode
+	Sync       Sync
+	// Slow-path (ultra) tuning. Zero retention means raw history is never decayed.
+	Consolidate time.Duration
+	Retention   time.Duration
+	Batch       int
+}
+
+// Defaults that decide what leaves the machine:
+//
+//   - EmbedBase is "bge", the in-process local embedder, so embeddings need no
+//     network by default. It used to be one developer's machine-local proxy,
+//     which exists on nobody else's.
+//   - LLMBase and LLMModel are deliberately empty. Extraction is the one thing
+//     that sends memory text off-machine, so the endpoint is the user's to
+//     choose rather than ours to assume. An unconfigured server stores the raw
+//     trace and reports "unconfigured" instead of quietly picking a provider.
+//     The installer and `hermes memory setup` suggest a free Nous Portal
+//     endpoint the user can accept or overwrite.
+//
+// suggestLLMBase / suggestLLMModel are what the installer and `hermes memory
+// setup` offer as a starting point, and what the startup warning prints as an
+// example. They are never read as a default: resolveRuntime leaves the endpoint
+// empty until the user chooses one, so nothing is sent anywhere by default.
+const (
+	suggestLLMBase  = "https://inference-api.nousresearch.com/v1"
+	suggestLLMModel = "poolside/laguna-s-2.1:free"
+)
+
+const (
+	defaultPort       = "19528"
+	defaultDataDir    = "./data"
+	defaultLLMBase    = ""
+	defaultLLMModel   = ""
+	defaultEmbedBase  = "bge"
+	defaultEmbedModel = "text-embedding-3-small"
+	defaultModelDir   = "./models"
+)
+
+func resolveRuntime() runtimeCfg {
+	dataDir := envOr("HYATLAS_GO_DATA", defaultDataDir)
+	return runtimeCfg{
+		Mode:        resolveMode(),
+		Sync:        resolveSync(),
+		Consolidate: parseDuration("HYATLAS_CONSOLIDATE_EVERY", defaultConsolidate),
+		Retention:   parseDuration("HYATLAS_RAW_RETENTION", 0),
+		Batch:       envInt("HYATLAS_CONSOLIDATE_BATCH", defaultBatch),
+		Port:        envOr("HYATLAS_GO_PORT", defaultPort),
+		DataDir:     dataDir,
+		GraphPath:   envOr("HYATLAS_GRAPH_PATH", filepath.Join(dataDir, "graph.json")),
+		LLMBase:     envOr("HYATLAS_LLM_BASE", defaultLLMBase),
+		LLMModel:    envOr("HYATLAS_LLM_MODEL", defaultLLMModel),
+		EmbedBase:   envOr("HYATLAS_EMBED_BASE", defaultEmbedBase),
+		EmbedModel:  envOr("HYATLAS_EMBED_MODEL", defaultEmbedModel),
+		ModelDir:    resolveModelDir(envOr("HYATLAS_MODEL_DIR", defaultModelDir)),
+	}
+}
+
+// resolveMode reads HYATLAS_MODE. An invalid value is fatal rather than a silent
+// fallback to ultra: someone who typos "lite" and quietly gets ultra would have
+// their conversation text sent to an extraction LLM they believed they had
+// turned off, which is the exact privacy boundary this selector exists to give.
+func resolveMode() Mode {
+	m, err := ParseMode(os.Getenv("HYATLAS_MODE"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	return m
+}
+
+// resolveSync reads HYATLAS_SYNC_EXTRACT. Fatal on an invalid value, for the
+// same reason as resolveMode: a silently-ignored knob reads as working while
+// doing nothing.
+func resolveSync() Sync {
+	s, err := ParseSync(os.Getenv(syncKey))
+	if err != nil {
+		log.Fatal(err)
+	}
+	return s
+}
+
+// attachSlowPath wires the consolidation worker onto a server.
+//
+// Lifted out of main so the wiring is testable: the slow path is the entire
+// difference between ultra and pro, and a construction site that forgets it
+// would leave ultra silently identical to pro. Returns whether it attached.
+func (s *Server) attachSlowPath(ctx context.Context, rt runtimeCfg) bool {
+	if !s.mode.Consolidates() {
+		return false
+	}
+	s.cons = NewConsolidator(s.store, s.llm, rt.Consolidate, rt.Retention, rt.Batch)
+	go s.cons.Run(ctx)
+	return true
+}
+
+// envInt reads a positive integer or falls back.
+func envInt(key string, def int) int {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		log.Printf("%s=%q is not a positive integer; using %d", key, v, def)
+		return def
+	}
+	return n
+}
+
 func main() {
-	port := envOr("HYATLAS_GO_PORT", "19528")
-	dir := envOr("HYATLAS_GO_DATA", "./data")
+	rt := resolveRuntime()
+	port := rt.Port
+	dir := rt.DataDir
 	// LLM: any OpenAI-compatible endpoint. Default is a Nous Portal :free model.
-	llmBase := envOr("HYATLAS_LLM_BASE", "https://inference-api.nousresearch.com/v1")
+	llmBase := rt.LLMBase
 	llmKey := os.Getenv("HYATLAS_LLM_KEY")
-	llmModel := envOr("HYATLAS_LLM_MODEL", "poolside/laguna-s-2.1:free")
-	embedBase := envOr("HYATLAS_EMBED_BASE", "http://127.0.0.1:49200/v1")
+	// Optional: read the key live from a file each call, for rotating
+	// credentials (e.g. Hermes keeps a fresh 1-hour JWT in auth.json).
+	// When set, this wins over the frozen HYATLAS_LLM_KEY value.
+	llmKeyFile := os.Getenv("HYATLAS_LLM_KEY_FILE")
+	llmModel := rt.LLMModel
+	embedBase := rt.EmbedBase
 	embedKey := os.Getenv("HYATLAS_EMBED_KEY")
-	embedModel := envOr("HYATLAS_EMBED_MODEL", "text-embedding-3-small")
+	embedModel := rt.EmbedModel
 
 	ctx := context.Background()
 	var embedder Embedder
@@ -956,46 +1244,67 @@ func main() {
 	switch {
 	case strings.EqualFold(embedBase, "bge"):
 		// In-Go BGE inference (no Python, no HTTP) — the pure-Go path.
-		modelDir := envOr("HYATLAS_MODEL_DIR", "./models")
+		//
+		// Resolved to an absolute path before use. A relative "./models" is not
+		// portable on Windows: the onnxruntime loader and the directory check
+		// disagree about what it is relative to, so the same path can find the
+		// model and then fail on the shared library. Absolute paths work from
+		// any cwd, so prefer the cwd, then the executable's own directory.
+		modelDir := rt.ModelDir
 		if useEmbeddedAssets {
 			modelDir = materializeAssets()
 		}
-		// Model name drives the layout (zh=1024d / en=384d). The fpkg ships the
-		// zh int8 along a tokenizer.json under models/; HYATLAS_EMBED_MODEL keeps
-		// the value used by the HTTP path for compatibility.
+		// Model name drives the layout (zh=1024d / en=384d). The fpk ships the
+		// zh int8 alongside tokenizer.json under models/; HYATLAS_EMBED_MODEL
+		// keeps the value used by the HTTP path for compatibility.
 		modelName := embedModel
-		if modelName == "" || modelName == "text-embedding-3-small" || strings.Contains(modelName, "18080") {
-			// default to the shipped Chinese model when no explicit BGE name
+		if modelName == "" || modelName == defaultEmbedModel || strings.Contains(modelName, "18080") {
 			modelName = "bge-large-zh"
 		}
 		b, err := NewBGEGoEmbedder(modelDir, modelName)
 		if err != nil {
-			log.Fatal("bge embedder: ", err)
+			// Failing fast is right here: the alternative is a server that
+			// answers every request and silently mis-embeds or 500s on write.
+			// Say how to fix it instead of leaving a bare error, because
+			// "bge" is now the default and a plain build with no models/
+			// directory lands here on first run.
+			log.Fatalf("bge embedder: %v\n\n"+
+				"The in-process embedder needs the BGE model next to the binary.\n"+
+				"Fix one of:\n"+
+				"  1. install via scripts/install.sh (fetches the model for you)\n"+
+				"  2. download a release binary built with -tags embedded, which\n"+
+				"     carries the model inside it\n"+
+				"  3. put bge-small-en-v1.5.onnx and onnxruntime.<ext> in %s,\n"+
+				"     or point HYATLAS_MODEL_DIR at a directory that has them\n"+
+				"Or set HYATLAS_EMBED_BASE to an OpenAI-compatible embeddings URL\n"+
+				"(memory text would then leave the machine) or to \"local\" for the\n"+
+				"offline deterministic stub.\n", err, modelDir)
 		}
-		embedDims = b.Dim()
 		embedder = b
+		embedDims = b.Dim()
 	case strings.EqualFold(embedBase, "local"):
 		embedder = NewLocalEmbedder(384)
 	default:
 		embedder = NewOpenAIEmbedder(embedBase, embedKey, embedModel)
 	}
-	graphPath := envOr("HYATLAS_GRAPH_PATH", filepath.Join(dir, "graph.json"))
+	graphPath := rt.GraphPath
 	store, err := NewMemoryStore(ctx, dir, embedder, graphPath, embedDims)
 	if err != nil {
 		log.Fatal("store: ", err)
 	}
 	llm := NewLLMClient(llmBase, llmKey, llmModel)
-	srv := &Server{store: store, llm: llm, llmModel: llmModel, llmBase: llmBase, start: time.Now(), dataDir: dir, embedDims: embedDims}
-	srv.retries = newRetryWorker()
-	go srv.retries.Run(srv)
+	llm.KeyFile = llmKeyFile
+	srv := &Server{store: store, llm: llm, llmModel: llmModel, llmBase: llmBase,
+		mode: rt.Mode, sync: rt.Sync, start: time.Now(), dataDir: dir,
+		embedDims: embedDims}
+
+	srv.attachSlowPath(ctx, rt)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", srv.handleHealthz)
 	mux.HandleFunc("/api/v1/status", srv.handleStatus)
 	mux.HandleFunc("/api/v1/add", srv.handleAdd)
 	mux.HandleFunc("/api/v1/search", srv.handleSearch)
-	mux.HandleFunc("/api/v1/touch", srv.handleTouch)
-	mux.HandleFunc("/api/v1/patch", srv.handlePatch)
 	mux.HandleFunc("/api/v1/list", srv.handleList)
 	mux.HandleFunc("/api/v1/graph", srv.handleGraph)
 	mux.HandleFunc("/api/v1/graph-as-of", srv.handleGraphAsOf)
@@ -1005,6 +1314,8 @@ func main() {
 	mux.HandleFunc("/api/v1/metrics", srv.handleMetrics)
 	mux.HandleFunc("/api/v1/digest", srv.handleDigest)
 	mux.HandleFunc("/api/v1/reprocess", srv.handleReprocess)
+	mux.HandleFunc("/api/v1/touch", srv.handleTouch)
+	mux.HandleFunc("/api/v1/patch", srv.handlePatch)
 	// Dashboard UI (embedded single-file frontend)
 	// --- v3.5 dashboard adapter endpoints (real v4 data, v3.5 shapes) ---
 	mux.HandleFunc("/api/status", srv.handleDashStatus)
@@ -1020,10 +1331,12 @@ func main() {
 	mux.HandleFunc("/api/quality-metrics", srv.handleDashQuality)
 	mux.HandleFunc("/api/coding-count", srv.handleDashCodingCount)
 	mux.HandleFunc("/api/coding-memories", srv.handleDashCodingMemories)
-	mux.HandleFunc("/api/search", srv.handleDashSearch)
 	mux.Handle("/dashboard/", http.StripPrefix("/dashboard/", srv.handleDashboard()))
 
-	log.Printf("HyAtlas-Go listening on :%s (data=%s embed=%s llm=%s)", port, dir, embedModel, llmModel)
+	if w := startupWarning(rt, llm); w != "" {
+		log.Print(w)
+	}
+	log.Print(listeningLine(rt))
 	host := envOr("HYATLAS_GO_HOST", "127.0.0.1")
 	log.Fatal(http.ListenAndServe(host+":"+port, mux))
 }
@@ -1033,4 +1346,124 @@ func envOr(k, def string) string {
 		return v
 	}
 	return def
+}
+
+// resolveModelDir turns a configured model directory into an absolute path.
+//
+// The relative default "./models" cannot be handed straight to the embedder: the
+// onnxruntime loader and the directory-existence check resolve it against
+// different bases on Windows, so the same path finds the model file and then
+// fails looking for onnxruntime.dll. Trying the cwd first and the executable's
+// directory second keeps the documented default working from either layout,
+// because installers put the model beside the binary while a dev checkout runs
+// from the repo root.
+func resolveModelDir(dir string) string {
+	if filepath.IsAbs(dir) {
+		return filepath.Clean(dir)
+	}
+	for _, base := range modelBaseDirs() {
+		cand := filepath.Join(base, dir)
+		if fi, err := os.Stat(cand); err == nil && fi.IsDir() {
+			if abs, err := filepath.Abs(cand); err == nil {
+				return abs
+			}
+			return filepath.Clean(cand)
+		}
+	}
+	// Nothing on disk matched; return an absolute cwd-relative path so the
+	// error the user sees names one real location instead of two possible ones.
+	if abs, err := filepath.Abs(dir); err == nil {
+		return abs
+	}
+	return filepath.Clean(dir)
+}
+
+func modelBaseDirs() []string {
+	bases := make([]string, 0, 2)
+	if wd, err := os.Getwd(); err == nil {
+		bases = append(bases, wd)
+	}
+	if exe, err := os.Executable(); err == nil {
+		bases = append(bases, filepath.Dir(exe))
+	}
+	return bases
+}
+
+// describeEmbed names the embedder actually in use, for the startup log.
+// Reporting embedModel unconditionally said "text-embedding-3-small" even on the
+// local BGE path, which reads like a remote OpenAI embedder is configured.
+func describeEmbed(embedBase, embedModel string) string {
+	switch {
+	case strings.EqualFold(embedBase, "bge"):
+		return "bge-small (in-process)"
+	case strings.EqualFold(embedBase, "local"):
+		return "local-stub (deterministic, 384-d)"
+	default:
+		return embedBase + " (" + embedModel + ")"
+	}
+}
+
+// listeningLine is the startup banner. A function rather than an inline
+// log.Printf so a test can assert the embedder it reports matches the one
+// resolved, instead of the message drifting back to embedModel unnoticed.
+func listeningLine(rt runtimeCfg) string {
+	llm := rt.LLMModel
+	if llm == "" {
+		llm = "unset"
+	}
+	return fmt.Sprintf("HyAtlas-Go listening on :%s (data=%s embed=%s llm=%s mode=%s)",
+		rt.Port, rt.DataDir, describeEmbed(rt.EmbedBase, rt.EmbedModel), llm, rt.Mode.OrDefault())
+}
+
+// startupWarning returns a human-readable setup message for the one state that
+// silently produces empty memories: a mode that calls an LLM that is not fully
+// configured. Empty means nothing to warn about.
+func startupWarning(rt runtimeCfg, llm *LLMClient) string {
+	if !rt.Mode.UsesLLM() {
+		return ""
+	}
+	// Same gate status and extraction use, so the three cannot disagree about
+	// whether this server is ready. An empty endpoint or model counts as
+	// unconfigured too: there is no shipped default to fall back on.
+	if llm.Configured() {
+		return ""
+	}
+	return fmt.Sprintf(`
+  %s mode calls an LLM but %s, so writes will store the raw trace only and
+  extraction will report "unconfigured". No endpoint is assumed: set your own
+  OpenAI-compatible one.
+
+      export HYATLAS_LLM_BASE="%s"
+      export HYATLAS_LLM_MODEL="%s"
+      export HYATLAS_LLM_KEY="***"
+
+  Or run offline with no LLM call at all:
+
+      export HYATLAS_MODE=lite
+
+  In the Hermes plugin, these are the "LLM endpoint", "LLM model" and
+  "LLM API key" settings (hermes memory setup, or the Desktop settings form).
+`, rt.Mode.OrDefault(), missingLLM(rt, llm), suggestLLMBase, suggestLLMModel)
+}
+
+// missingLLM names the unset parts, so the warning tells the user what to fix
+// rather than claiming a key is missing when it is the endpoint that is.
+func missingLLM(rt runtimeCfg, llm *LLMClient) string {
+	parts := make([]string, 0, 3)
+	if rt.LLMBase == "" {
+		parts = append(parts, "HYATLAS_LLM_BASE")
+	}
+	if rt.LLMModel == "" {
+		parts = append(parts, "HYATLAS_LLM_MODEL")
+	}
+	if llm == nil || llm.resolveKey() == "" {
+		parts = append(parts, "HYATLAS_LLM_KEY")
+	}
+	switch len(parts) {
+	case 0:
+		return "it is not fully configured"
+	case 1:
+		return parts[0] + " is not set"
+	}
+	return strings.Join(parts[:len(parts)-1], ", ") + " and " + parts[len(parts)-1] + " are not set"
 }

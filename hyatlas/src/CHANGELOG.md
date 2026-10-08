@@ -1,5 +1,347 @@
 # Changelog
 
+## [4.3.0] — 2026-10-08
+
+Adds the extraction-mode selector, the slow path behind it, and the setup flow
+that makes the modes reachable. Until now every write ran the same async LLM
+pipeline with no way to opt out, so the only way to keep conversation text on the
+machine was to not run the server at all — and there was no way to configure the
+LLM through any wizard.
+
+The modes differ in **how widely the server reasons**, not in how long a write
+takes:
+
+| Mode | LLM calls | Reasons about | Layers | Consolidation |
+|---|---|---|---|---|
+| `lite` | none | — | 1 / 7 (L2) | no |
+| `pro` | one per write | within one turn | 5 / 7 | no |
+| `ultra` | one per write + periodic batch | across memories and time | 7 / 7 | yes |
+
+### Added
+
+- **`HYATLAS_MODE` — `lite` | `pro` | `ultra` (default).** `lite` makes no LLM
+  call at all: the raw trace and local embeddings are stored and nothing leaves
+  the machine. `pro` extracts once per write and reasons within that single
+  turn. `ultra` adds the slow path below. Settable via env var,
+  `docker-compose.yml`, `.env`, the Windows launcher, and as a `mode` plugin
+  setting forwarded to a spawned server.
+- **The System1 / System2 layer split.** The two systems own disjoint layers, and
+  this is what makes the layer counts differ per tier:
+  - **System1 (per turn)** writes L1 Profile, L2 Raw, L3 Fact, L4 Summary and
+    L7 Intention — what a single turn can actually evidence.
+  - **System2 (slow path)** writes L5 Knowledge and L6 Schema. A relation worth
+    keeping is corroborated by more than one turn, and a schema is a *recurring*
+    pattern, so neither can be produced from one turn. The per-turn prompt used to
+    ask for "0-2 recurring patterns" from a single input, which cannot work by
+    construction; those guesses then competed with real ones at retrieval time.
+    L5 edges now require at least two distinct corroborating facts, and fabricated
+    evidence IDs are ignored.
+- **The slow path (`consolidate.go`) — what ultra adds over pro.** A ticker-driven
+  pass reasons *across* accumulated memories rather than within one turn, which
+  is the only way to notice things no single write can see:
+  - **merges** contradicting or duplicate L3 facts, writing the replacement
+    before pruning what it absorbed;
+  - **synthesises L5 knowledge** edges corroborated by multiple facts;
+  - **generalises L6 schemas** visible only across many turns;
+  - **synthesises a cross-session L4 arc** from the accumulated summaries;
+  - **decays** L2 raw history past `HYATLAS_RAW_RETENTION`.
+  Tuned by `HYATLAS_CONSOLIDATE_EVERY` (default `6h`) and
+  `HYATLAS_CONSOLIDATE_BATCH` (default `200` facts per call, so the prompt cannot
+  grow without bound).
+- **`HYATLAS_SYNC_EXTRACT=on|off`** — whether a write *blocks* on its extraction.
+  This is a separate knob from the mode, because blocking is a latency question
+  and the mode is a capability question. Unset follows the mode: pro blocks and
+  reports `done`/`failed`, ultra returns `pending` immediately. Either can be
+  overridden, so `ultra` can be made blocking without losing consolidation and
+  `pro` can be made background without gaining it. Exposed as a `sync` plugin
+  setting too.
+- **Setup, in both surfaces.** Three fields then it works — mode, LLM endpoint,
+  API key:
+  - `hermes memory setup` now offers `llm_base`, `llm_model` and `llm_key`. The
+    key is declared `secret` with an `env_var`, which is load-bearing rather than
+    cosmetic: `hermes_cli.memory_setup` masks the prompt, routes the value to
+    Hermes' `.env` at `0600`, and prints the `url` as "Get yours at ...".
+    `save_config()` strips `llm_key` defensively even if handed one, so a
+    hand-edited config cannot land a credential in `hyatlas.json`. `llm_base` and
+    `llm_model` are forwarded to a spawned server; an explicit export still wins.
+  - `scripts/install.sh` asks the same three questions interactively and writes
+    the answers to Hermes' `.env`. Guarded on `[ -t 0 ]`, so `curl | bash` in CI
+    and pre-seeded installs never block. `lite` skips the endpoint and key
+    entirely. Values are CRLF-stripped, an invalid mode falls back to ultra
+    instead of persisting a value the server would reject, and the key is never
+    echoed back.
+  - Provenance: every L3 fact and L1 profile row now records `source_id`, the L2
+    raw memory it came from. Without it the slow path could not cite evidence for
+    an L5 edge, and raw decay could not tell which history the graph still
+    depends on.
+- **An actionable startup warning.** A mode that needs an LLM with no credential
+  configured used to look healthy: `listeningLine` prints `llm=<model>` from a
+  value that always has a default, and `/api/v1/status` reported `llm: "ok"`.
+  The first write then returned a bare `failed` with the reason only in a log.
+  The server now prints the exact exports needed plus the `HYATLAS_MODE=lite`
+  escape hatch, status reports `llm: "unconfigured"`, and writes return
+  `extraction_status: "unconfigured"` — distinct from `unavailable`, which meant
+  "no client at all".
+- **Deletion safety guards**, since the slow path is the first code that removes
+  stored memories:
+  - a merge, drop or edge may only name IDs that were actually in the input batch,
+    so a hallucinated ID in the model's reply cannot delete or cite anything;
+  - a "merge" naming fewer than two real facts is skipped — it would be a
+    rewrite that loses provenance for no dedup gain;
+  - **L2 raw cited by a live L5 graph edge is never decayed**, so consolidation
+    cannot leave the knowledge graph pointing at a memory that no longer exists;
+  - `HYATLAS_RAW_RETENTION` is opt-in. Unset, nothing is ever deleted.
+- **`/api/v1/status` reports `mode`, `mode_detail`, `uses_llm`, `extract_sync`,
+  `consolidations` and `last_consolidated`.** `consolidations` is `-1` when the
+  mode has no slow path and `0` when it has one that has not run yet, so the two
+  are distinguishable. The dashboard's `/api/info` reports the configured mode;
+  it previously hardcoded `"ultra"` regardless of configuration.
+
+### Changed
+
+- **`/api/v1/digest` is real.** It returned a hardcoded `digest_ok: true` with a
+  note saying "a full scheduled digest runs here" — nothing did, and a caller
+  could not tell whether consolidation had ever run. `GET` now reports run count
+  and the last report, `POST` triggers a pass on demand, and a mode with no slow
+  path says so explicitly instead of claiming success.
+- **Extraction is one code path, not two.** `handleAdd` and `handleReprocess`
+  each kept their own inline LLM call with a duplicated 180s timeout. Both now go
+  through `Server.extract()`. The HTTP transport moved into a shared
+  `LLMClient.chat()`, so extraction and consolidation cannot drift on the two
+  things that are easy to get wrong once and hard to notice later: the Cloudflare
+  WAF 403s Go's default User-Agent, and the key must be resolved per request
+  because a rotating JWT goes stale if frozen at startup.
+- **`extraction_status` is derived**, not hardcoded `"pending"` at write time:
+  `skipped` / `pending` / `done` / `failed` / `unconfigured`.
+- **`Server.llmState()` is the single place** that decides what to report about
+  the LLM, so status, the dashboard and the startup line cannot disagree.
+- **`handleReprocess` explains itself in lite** rather than reporting zero work
+  done with no reason.
+- **An invalid mode or sync value is fatal, and validated before spawning.** The
+  server rejects an unrecognised `HYATLAS_MODE` rather than silently falling back
+  to ultra — someone who typos `lite` and quietly gets ultra would have their
+  conversation text sent to an LLM they believed they had turned off, which is
+  the exact boundary this selector exists to give. The plugin validates through
+  the same alias table the server uses and raises from `start()` before any child
+  process exists, so the failure surfaces where the user can see it instead of in
+  `hyatlas.log` after a server that dies on boot.
+- **`config_schema()` was dropping wizard metadata.** It passed through only
+  key/description/default/choices, which silently demoted a secret field to a
+  plaintext one — the API key would have been written into `hyatlas.json`. It now
+  forwards `secret`, `env_var`, `url`, `when` and `default_from`.
+- **`test_every_setting_is_documented_in_the_readme` was vacuous.** It checked
+  whether the setting name appeared anywhere in the README, so `sync` "passed"
+  because the word occurs inside "synchronous". It now requires an actual
+  settings-table row.
+
+### Tests
+
+- 85 Go test functions pass under `-race`; 67 Python tests pass (4 skipped where
+  fastapi is unavailable); `hermes plugins validate` passes 15/15; `bash -n` on
+  the installer passes with LF endings preserved.
+- `TestSystemPartitionCoversEveryLayerExactlyOnce` asserts the two systems
+  partition all seven layers with no overlap and no orphan, so L5/L6 cannot
+  silently drift back into the per-turn path. `TestSlowPathOwnsL5AndL6` checks it
+  behaviourally: a per-turn extraction that volunteers knowledge and schemas must
+  still write neither.
+- `TestModesFormAMonotonicLadder` asserts each tier does everything the one below
+  it does, so "ultra is better than pro" is a checked property rather than a
+  claim in prose. `TestSyncKnobIsIndependentOfMode` and
+  `TestSyncKnobDoesNotChangeCapability` pin the orthogonality: forcing ultra to
+  block must not disable consolidation, and forcing pro to background must not
+  grant it.
+- `TestParseSyncParityWithPlugin` pins one truth table for both validators, so
+  the Desktop form cannot accept a value the server then treats as fatal.
+- Slow-path coverage includes merge-and-prune ordering, unknown-ID rejection,
+  single-fact-merge rejection, L5 corroboration and fabricated-evidence
+  rejection, evidence surviving the merge that consumed it, citation protection
+  during decay, decay disabled without retention, null-arc handling, LLM failure
+  survival, garbage-reply tolerance, batch capping, ticker firing and stopping on
+  cancel, and zero interval not spinning.
+- Every new assertion was verified non-vacuous by reverting the behaviour it pins
+  and confirming the matching test fails — 10/10 Go guards and 3/3 installer
+  guards caught. Shell mutations are syntax-gated first, because a mutation that
+  breaks parsing "fails" for the wrong reason and proves nothing.
+- All mode/knob combinations were exercised end to end against real servers with
+  a call-counting mock LLM. Layer counts measured: `lite` 1/7, `pro` 5/7 (L1 3,
+  L2 3, L3 6, L4 3, L7 3, with L5 and L6 at 0), `ultra` 7/7 (adding L5 2 nodes
+  and L6 1 row after one consolidation pass). Sync independence measured: `ultra`
+  with `sync=on` blocked 111 ms and still consolidated; `pro` with `sync=off`
+  returned in 17 ms and still did not.
+- The installer was driven through ten scripted scenarios (numeric and named
+  tiers, blank input, garbage input, missing key, malformed URL, CRLF input,
+  pre-seeded environment, and the non-interactive guard) against real MSYS
+  git-bash, with `.env` contents and permissions inspected afterwards.
+
+---
+
+
+## Review fixes (teknium1, PR #134419)
+
+Everything below addresses the catalog review of `ec0a3482` — what
+leaves the machine, and what the spawned server inherits — plus
+adjacent defects found while fixing those.
+
+Addresses teknium1's catalog review of PR #134419 (what leaves the machine, and
+what the spawned server inherits), plus two adjacent defects found while fixing
+them.
+
+#### Fixed
+
+- **The spawned server inherited the agent's whole environment.** `HyatlasProcess._env()` was `os.environ.copy()`, so every API key and provider token the agent holds (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GITHUB_TOKEN`, `DATABASE_URL`, …) was handed to a child process that then talks to a network endpoint. It now builds an explicit allowlist: the variables an OS needs to run a process at all, `HYATLAS_*` (the only prefix the server reads — `server.go` consults nothing else and never calls `os.Environ()`), and the TLS trust-anchor paths. Measured on a realistic agent environment: 9 planted secrets leaked before, 0 after, and 61 of 79 variables withheld. `SYSTEMROOT` is retained on Windows because without it the Go runtime cannot resolve DNS or complete a TLS handshake, so dropping it would break extraction in a way that looks like an endpoint problem. Verified end to end by spawning the real server under the minimal env and completing a write → extraction → search round trip.
+- **Every turn re-uploaded the whole conversation to the extraction LLM.** `_build_turn_text()` preferred the full `messages` thread, and `sync_turn` is called after every turn with the conversation so far — so payload grew quadratically and the server re-extracted facts from messages it had already seen. It now sends only the current turn. Measured over 50 turns: 41,495 bytes → 1,534 bytes (96.3% less, 27× reduction).
+- **The embedder defaulted to one developer's machine-local proxy.** `HYATLAS_EMBED_BASE` defaulted to `http://127.0.0.1:49200/v1`, which exists on nobody else's machine — the same defect class as the plugin-side proxy default removed in 4.2.5, and it contradicted the README, which documented a different default again. Now defaults to `bge`, the in-process local embedder, which is what every shipped install path already sets (`scripts/install.sh`, `hyatlas-go.ps1`, the release workflow, `docker-compose.yml`).
+- **A relative `HYATLAS_MODEL_DIR` did not work on Windows.** The onnxruntime loader and the directory check resolved `./models` against different bases, so the same path found the model file and then failed on `onnxruntime.dll`. `resolveModelDir()` now returns an absolute path, preferring the cwd and then the executable's own directory, so both the dev-checkout and installer layouts work. The failure message when no model exists names one absolute path and lists the four ways to fix it, instead of a bare error.
+- **The startup log misreported the embedder.** It printed `embedModel` unconditionally, so a server running local in-process BGE announced `embed=text-embedding-3-small` — which reads like a remote OpenAI embedder is configured. `describeEmbed()` names the embedder actually in use.
+- **`backup_paths()` reported paths that never existed.** It returned relative names (`data/graph.json`), which resolve against the agent's CWD. `backup.py` drops any declared path that does not exist, so this provider contributed nothing to `hermes backup`. It now returns existing absolute directories, resolved from `HYATLAS_GO_DATA`, a new `data_dir` setting, then conventional defaults.
+- **The system prompt hardcoded `127.0.0.1`** while the client honored `server_host`, so a remote server made the prompt state a wrong address. One `_origin()` helper now builds the address for the prompt, the client, and `unavailable_reason`.
+- **`stop_running()` could never match.** It read a pidfile that `start()` never wrote, so `hermes hyatlas stop` after a gateway restart left the old server holding the port. `start()` now writes it and `_cleanup()` removes it. Writing it made a `taskkill /F` path live, so `stop_running()` first confirms the pid still belongs to `hyatlas-go` — a recycled pid from a crashed server would otherwise kill an unrelated process.
+- **The dashboard hardcoded its server address.** `plugin_api.py` used `HYATLAS_HOST`/`HYATLAS_PORT` (keys nothing else in the plugin sets) instead of the plugin's real settings, so the pane ignored a configured host or port. Both now resolve through one shared `settings.py`; the env vars remain as an explicit escape hatch.
+
+#### Added
+
+- **`settings.py`** — one module owning settings resolution, shared by the provider and the dashboard. They are loaded by different machinery (`__init__.py` as a package, `plugin_api.py` by file path with no parent package, so it cannot use a relative import), and each keeping its own defaults is how they drifted. The dashboard loads the sibling by explicit path rather than manipulating `sys.path`, which catalog rule 9 forbids.
+- **`resolveRuntime()`** — every server default in one struct rather than inline literals in `main()`, so the defaults are assertable. The first version of these tests called `envOr` with its own default argument and passed whether or not `main()` agreed; reverting the real default did not fail them.
+- **`data_dir` plugin setting** (`HYATLAS_GO_DATA`), exposed in `config_schema`.
+- **Regression tests** for every item above: 14 new Go tests and 20 new Python tests (39 pass, 4 skip where fastapi is unavailable — separately verified passing against real fastapi 0.133.1). Each fix was verified non-vacuous by reverting it and confirming the matching tests fail.
+
+#### Disclosure
+
+**No LLM endpoint is assumed.** `HYATLAS_LLM_BASE` and `HYATLAS_LLM_MODEL` shipped with a remote default (the Nous Portal inference API, `poolside/laguna-s-2.1:free`), so an unconfigured `pro`/`ultra` server had somewhere to send memory text. Extraction is the only thing that leaves the machine, so the endpoint is the user's choice, not ours: both defaults are now empty.
+
+An unconfigured server makes no LLM call. It stores the raw trace plus local embeddings, reports `llm: "unconfigured"` in status and `extraction_status: "unconfigured"` per write, and warns at startup naming the unset variables. The installer and `hermes memory setup` still offer that free Nous Portal endpoint as a starting value the user can accept or overwrite, so the onboarding is three answers either way — but accepting is now an explicit choice.
+
+The readiness gate is one method, `LLMClient.Configured()`, requiring endpoint **and** model **and** key. Checking the key alone was not sufficient once the defaults went away: a missing endpoint is the same "not ready" state, and a key-only check would report `ok` and then POST to an empty URL. Status, extraction and the startup warning all consult it, so they cannot disagree.
+
+The repo README gains a *Privacy — what leaves your machine* table separating the local parts (embeddings, storage) from the opt-in remote one (extraction), and the "local-first" tag is renamed `self-hosted`. The catalog entry, plugin README and repo README all state the opt-in behaviour explicitly.
+
+Two stale claims were corrected in the same pass. The plugin README asserted extraction "fires on every write even if you have not set a key — so out of the box your turn text is transmitted there"; that was true at v4.2.5 and stopped being true when the credential gate landed, so the disclosure overstated what the code did. And `extractForMode`'s docstring still described the pre-split behaviour ("fills L1 … L6 … the layers are always all or nothing"), on the one function a reader consults to learn what each mode does.
+
+Verified against real servers with a canary endpoint counting requests: default install transmits **nothing** and fills 1/7 layers; with all three set, extraction fires and fills 4/7; with base and key but **no** model, nothing fires. 8/8 mutations of the new defaults, gate and warning were caught.
+
+## [4.2.5] — 2026-10-07
+
+### Fixed
+- **The plugin invented an LLM endpoint and forwarded a credential.** `HyatlasProcess.start()` seeded `HYATLAS_LLM_BASE` to a developer's local proxy (`127.0.0.1:49200`), `HYATLAS_LLM_MODEL` to a specific model, and copied `AI2API_KEY` into `HYATLAS_LLM_KEY` for the spawned server. Any user who installed from the catalog and enabled `auto_start` got a server pointed at somebody else's proxy, and a secret was copied from one environment variable into another. Both contradict the plugin's own documented disclosure ("no LLM credentials live in or flow through this plugin") and `save_config`'s existing contract that no LLM creds belong in the plugin's config. The subprocess env is now built by `HyatlasProcess._env()`, which only inherits the caller's environment and binds the server to loopback — `HYATLAS_LLM_*` remain the server's own concern, and whatever the user exported still reaches it unchanged.
+- **A machine-specific path shipped to every installer.** `cli._launcher()` fell back to `F:/HyAtlas-Memory-Go/hyatlas-go.ps1` — the author's drive letter — so the Windows launcher was discovered on the author's machine and on nobody else's. Removed. The launcher is now opt-in and explicit.
+
+### Added
+- **`launcher_path` config key** (plus `HYATLAS_LAUNCHER_PATH`), so an install that ships its own `hyatlas-go.ps1` beside the binary can point at it instead of relying on a baked-in location. Resolution order is the configured path, then a launcher beside `binary_path`, then no launcher at all — in which case `start` spawns the binary directly, which is what a catalog install does.
+- **Five disclosure-invariant tests** pinning both fixes: the subprocess env forwards no credential and invents no endpoint; user-exported `HYATLAS_LLM_*` still reach the server; no absolute developer path (`F:/`, `C:/Users/`) exists in any non-test plugin source; launcher resolution requires an explicit path; and `launcher_path` flows through both the JSON and env config layers. Verified non-vacuous by reverting each fix and confirming the corresponding tests fail.
+
+## [4.2.4] — 2026-10-07
+
+### Fixed
+- **`Close()` never drained async persistence, despite claiming to.** Its comment said "drains any pending async persistence", but `persistUsageAsync()` spawned fire-and-forget goroutines with nothing tracking them, so `Close()` returned while they were still running. They then wrote `usage.json.tmp` into the data dir *after* the caller had moved on — on CI that made `t.TempDir()` cleanup fail with `unlinkat ...: directory not empty`, which failed the whole `go test` run in the `Build (Go 1.26, plain — Linux)` job. `Close()` now uses a `sync.WaitGroup` plus a `sync.Once`, so it is both synchronous and idempotent.
+- **Concurrent usage writes could clobber each other.** `persistUsage()` writes a single fixed `.tmp` path, and every `Add`/`Search` fires an async persist, so two goroutines could interleave and rename a half-written file. The write is now serialized by a mutex. This is a real (if narrow) data-corruption window on a busy server, not just a test-only artifact.
+
+### Added
+- **`store_close_test.go`** (3 tests): `Close` drains in-flight async persistence so the data dir is removable afterwards; `Close` is idempotent and safe under concurrent calls; and concurrent `persistUsage` does not corrupt the file.
+
+### Verification note
+The drain test was validated by reverting the fix and confirming it fails with the *exact* CI error (`usage.json.tmp left behind after Close`, then `TempDir RemoveAll cleanup: ... directory not empty`). An earlier draft of that test passed vacuously because it hardcoded the wrong filename (`counts.json` instead of the real `usage.json`) and let the driver goroutines finish before `Close`; it now derives the path from the store and keeps persists continuously in flight across the `Close` call.
+
+## [4.2.3] — 2026-10-07
+
+### Fixed
+- **CI `plugin-tests` job could never pass.** The standalone smoke runner classified a legitimate skip as a failure: `_check_live_server_round_trip` returned a "skip" signal, but `_run_all` derived its verdict by string-sniffing the message (`ok and "SKIP" not in msg`), so "no live server" — the normal condition on CI — counted as a failed test and exited 1. Checks now return an explicit `PASS`/`SKIP`/`FAIL` token, both runners (standalone and pytest) consume that one contract, and SKIP is pass-equivalent. The outcome is never inferred from message text again.
+- **`_check_config_loads_clean` asserted the default port as an invariant.** It hardcoded `== 19528`, so it spuriously failed whenever the supported `HYATLAS_SERVER_PORT` override was in play. It now derives the expected port the way the plugin does (env override, else 19528) and also asserts the value is a positive int. The SKIP message likewise reports the configured `host:port` instead of a hardcoded address.
+
+### Verified
+- With a live server: 18 pytest tests pass and the standalone runner exits 0 (all PASS).
+- With no reachable server (CI's condition): standalone runner exits **0** reporting `1 skipped`; pytest reports `2 passed, 1 skipped`.
+- Negative test: injecting a genuine FAIL still exits **1** — the runner detects real failures, so SKIP handling did not make the suite vacuous.
+
+## [4.2.2] — 2026-10-07
+
+### Fixed
+- **The agent-facing prompt advertised a tool that does not exist.** `system_prompt_block()` told the agent that a `hyatlas_save` tool was mirrored to L1. No such tool was ever registered — the v4.2.0 `hy_memory` → `hyatlas` rename sweep wrongly renamed a reference to Hermes **core's** `memory` tool, which is not ours to rename. The provider registers exactly four tools (`hyatlas_status`, `hyatlas_search`, `hyatlas_recent`, `hyatlas_add`); mirroring happens through the `on_memory_write` hook, which core calls for its own `memory` tool. The prompt now names the real tools and refers to the standard `memory` tool correctly.
+
+### Added
+- **Regression test** asserting every `hyatlas_*` tool name mentioned in `system_prompt_block()` is one `get_tool_schemas()` actually registers. Verified the guard works by reverting the fix and confirming the test fails with the offending name.
+
+## [4.2.1] — 2026-10-07
+
+> Catalog-submission hardening. No breaking changes.
+
+### Fixed
+- **Desktop pane and dashboard showed a frozen `v4` badge.** The pane hardcoded the string `"v4"` in two places (header subtitle and the "Memory saved" toast), so it read v4 forever regardless of the running server. `/api/v1/status` now carries a `version` field sourced from one canonical `Version` const in `server.go`; `handleDashInfo` reads the same const instead of its own duplicate literal. The pane derives `const ver` from `status.version` once and uses it at both sites, falling back to `"v4"` only while connecting. Releasing is now a one-line change.
+- **L5 count consistency (unified).** `LayerCounts()` now always reports `l5_knowledge` as the graph node count (L5 lives in the graph store, never chromem). Previously the override was hand-applied only in `handleStatus`/`handleDashLayerCounts`, so `/api/v1/list`, `/api/v1/metrics`, `/api/layer-health` and `/api/metrics` reported `l5_knowledge: 0` while `/status` reported the real count. One source of truth in the store; per-handler overrides deleted.
+- **Rotating LLM credentials no longer stall extraction.** The server froze `HYATLAS_LLM_KEY` at startup, so a short-lived token — the Nous Portal key is a 1-hour JWT that Hermes keeps fresh in `auth.json` — expired under a long-running server and every extraction call then failed with a generic HTTP 401 (`write_pipeline: degraded`) until a manual restart. New optional `HYATLAS_LLM_KEY_FILE` makes `LLMClient.resolveKey()` read the key live from the file per call (auth.json JSON shape or a plain-text token); the static `HYATLAS_LLM_KEY` stays as the fallback and as the only key for normal static-API-key users. `hyatlas-go.ps1` now sets it to `auth.json`. No timers or refresh goroutines — verified E2E (live extraction fired +2 L3 facts in 10s) and by `llm_keyfile_test.go` (4 tests, incl. rotate-the-file-and-assert-the-new-key-hits-the-wire).
+- **Plugin config precedence.** `_load_config` now layers the legacy `plugins.hyatlas` block and `plugins.entries.hyatlas.settings` **per key** (settings wins key-by-key) instead of picking one dict wholesale — a partially-filled Desktop settings form no longer shadows keys the legacy block sets.
+
+### Changed
+- **`/api/v1/status` is marshaled from the `Status` struct directly.** The handler previously built a `Status` value and then restated every field by hand in a `map[string]any`, defining the wire shape twice — the struct's json tags were dead code. One definition now, so the tags are the contract.
+- **`handleDashLayerCounts` takes one consistent snapshot.** It called `UsageForJSON()` twice (two separate atomic loads — writes and searches could come from different moments) and `TotalMemories()` twice. Now reads each once. `UsageForJSON` became dead and was deleted.
+
+### Added
+- **Plugin unit tests** (`plugins/hyatlas/tests/test_plugin_unit.py`, 14 tests): client wire round-trip against a real localhost HTTP server (no mocks), typed error/unreachable handling, config precedence + legacy-garbage rejection, `save_config` round-trip, `handle_tool_call` dispatch for all 4 tools + unknown + uninitialized, `sync_turn` best-effort/empty-skip, `on_memory_write` add-only mirroring, availability probe, and the `delete_all` unscoped-wipe guard.
+- **Go regression tests**: `l5_counts_test.go` (L5 is graph-derived; every count-reporting endpoint agrees with `/api/v1/status`), `llm_keyfile_test.go` (live key-file resolution, fallbacks, on-the-wire rotation), `version_test.go` (status + dash info report the real version; full status wire contract).
+- **CI `plugin-tests` job**: runs the plugin pytest + standalone smoke runner on a clean Python using the `agent.memory_provider` ABC extracted from the published hermes-agent wheel (no full Hermes install). Verified locally in a scrubbed venv: 17 passed.
+- **Catalog art**: `docs/images/banner.png` (1200×600, the documented `image` size) plus the two live Desktop pane screenshots used for `screenshots:`.
+
+## [4.2.0] — 2026-10-07
+
+> **Plugin renamed `hy_memory` → `hyatlas`** for the Hermes Plugin Catalog submission — the catalog key, manifest name, provider name, CLI command, and Desktop pane id now all read `hyatlas`. Breaking for existing installs: update `memory.provider: hyatlas` and re-enable the plugin under the new name.
+
+### Changed
+- Plugin directory, manifest `name`, `MemoryProvider.name`, `hermes hyatlas` CLI command, dashboard manifest, and desktop pane id all renamed `hy_memory` → `hyatlas`.
+- Config reads `plugins.entries.hyatlas.settings`; env overrides unchanged (`HYATLAS_SERVER_*`).
+- Catalog submission: `plugin-catalog/hyatlas.yaml` entry prepared (category memory, tier community, sha pinned).
+
+## [4.1.4] — 2026-10-07
+
+> **Hermes plugin catalog readiness.** The `hy_memory` plugin now passes catalog admission (`hermes plugins validate` clean: manifest v2, security scan safe, no core override, desktop surface inside the SDK) and gains a Desktop settings form.
+
+### Changed
+- **`plugin.yaml` → manifest v2:** `config_schema` for all seven settings (renders as the Settings → Plugins form in Hermes Desktop); `requires_hermes: ">=0.21.4"`; honest description. Dropped the misdeclared `requires_env` (the vars are optional overrides — declaring them would have disabled the plugin at install) and the `provides_tools`/`hooks` lists (those come through the MemoryProvider ABC, not `register()`).
+- **`_load_config` reads `plugins.entries.hy_memory.settings`** from `config.yaml` — the location the Desktop settings form writes. Priority: env > settings > legacy `plugins.hy_memory` block > per-profile JSON.
+- **Plugin README rewritten** for the catalog page: what you get, install (server is a separate install — not bundled, not auto-downloaded), settings, and explicit runtime disclosures (network, subprocess, data).
+- Version metadata bumped to **4.1.4** across installer, manifest, dashboard manifest, `/api/info`, docker-compose.
+
+## [4.1.3] — 2026-10-07
+
+> **Data-safety hardening.** Fixes a latent full-store wipe, makes extracted flags survive restarts, and pins the new extraction paths with tests.
+
+### Fixed
+- **`delete_all` could wipe the entire store:** the endpoint only read scoping from query params, while the `hy_memory` plugin client sends it in the JSON body — a plugin-scoped delete silently became an unscoped wipe. Scoping is now read from both styles, and a truly unscoped call requires `confirm=wipe-all` (400 otherwise).
+- **Extracted flags reset on every restart:** startup always rebuilt the doc index from chromem metadata, which never carries the `extracted` flag. The store now loads the persisted `doc_index.json` first (size-checked against the collections; falls back to rebuild on mismatch), so `/api/v1/reprocess` no longer re-runs already-extracted rows after a restart.
+- **Data race on `lastExtractErr`:** written from extraction goroutines while `/api/v1/status` read it. Now RWMutex-guarded (verified under `-race`).
+
+### Added
+- **Test coverage for the v4.1.2 paths** (`fixes_test.go`, `llm_retry_test.go`): reinforced-retry recovery + give-up (mock LLM), reprocess-by-ids contract, extracted-flag restart persistence, stale-index rebuild fallback, delete-guard matrix, concurrent extract-err. 7 new tests, green under `-race`.
+
+### Changed
+- Version metadata bumped to **4.1.3** across installer, `plugin.yaml`, dashboard manifest, `/api/info`, docker-compose.
+
+## [4.1.2] — 2026-10-06
+
+> **Extraction resilience.** Restores the memory write pipeline after a silent extraction outage (2026-09-05 → 2026-10-06) and hardens it against both failure classes found during recovery.
+
+### Fixed
+- **Extraction stalled by a WAF (silent for a month):** the Nous Portal sits behind Cloudflare, which rejects Go's default `Go-http-client` User-Agent with HTTP 403. `llm.Complete` now identifies honestly (`HyAtlas/4.1 (+repo URL)`).
+- **Conversational-reply extraction failures:** on some personal-style input the extraction model replied with prose instead of JSON, failing the parse. `Complete` now performs one reinforced retry before giving up — recovered ~95% of previously-failing rows in the outage backfill.
+- **`/api/v1/list` raw filtering:** `include_raw=false` is applied before pagination (and to `total`), so `recent`-style queries no longer return empty pages when the newest page is all raw rows.
+- **Hermes plugin CLI:** `hermes hy_memory …` boots cleanly (synthetic-package import fix); `start`/`stop` delegate to the canonical `hyatlas` launcher; the unavailable warning cites the real command.
+- **Plugin launcher:** spawning no longer hangs when the caller captures stdout (file-sink + bounded wait + health fallback).
+
+### Added
+- **`/api/v1/reprocess` by ids:** accepts `{"ids": [...]}` to re-extract exact rows (extracted-skip bypassed) alongside `{"max": N}`; response reports `reprocessed` / `failed` / `skipped`.
+- **Starmap learning graph:** `/api/v1/learning/graph` returns the Hermes-Desktop StarmapGraph shape (knowledge + co_session + semantic edges), proxied by the plugin's `plugin_api.py`.
+- **Mind Palace dashboard updates:** new starmap assets + `desktop/plugin.js` observatory work.
+
+### Changed
+- `reprocess` marks rows extracted after a successful promotion.
+- Version metadata bumped to **4.1.2** across installer, `plugin.yaml`, dashboard manifest, `/api/info`, docker-compose.
+
+## [4.1.1] — 2026-09-04
+
+> Edges + CI hardening. `/api/v1/edges` (knowledge / co_session / semantic edge types), `DocIndex.Meta` (session_id in list endpoints), Linux CI tempDir race fix (`store.Close()` + `t.Cleanup`), plugin Graph tab with type-colored edges.
+
+## [4.1.0] — 2026-09-04
+
+> Mind Palace. Bitemporal L5 graph with evidence citations (`Source` / `RecordedAt` on edges), `/api/v1/graph-as-of` time-travel endpoint, and the Hermes Desktop `hy_memory` Mind Palace visualization.
+
 ## [4.0.1] — 2026-09-02
 
 > **Stable floor.** Aligns the GitHub tag with the code you actually run: one-line installer, desktop pane, Hermes plugin, and a graph snapshot that never returns dangling edges.

@@ -112,31 +112,52 @@ stop_gw() {
 case "${1:-}" in
   start)
     is_running && gw_running && exit 0
-    # ── 配置预设: embedding 走内置 ORT int8 bge-large-zh (B2, 无 18080 依赖); LLM 走本机 Octopus 8081 ──
-    export HYATLAS_GO_HOST="127.0.0.1"
-    export HYATLAS_GO_PORT="19528"
-    export HYATLAS_GO_DATA="${DATA_DIR}"
-    # 向量引擎 base_url：环境变量兜底，未设时默认走本机 embedding wrapper (18080, MIGraphX fp16)
-    # 改法：HYATLAS_EMBED_BASE="bge" 回退进程内 ORT int8 路径（旧 B2 兼容）
+    # ── 配置装载（v4.3.0 配置化）：优先级 shell 环境 > ${VAR_DIR}/env > 内置默认 ──
+    ENV_FILE="${VAR_DIR}/env"
+    if [ -f "$ENV_FILE" ]; then
+      # shellcheck disable=SC1090
+      . "$ENV_FILE"
+    fi
+    export HYATLAS_GO_HOST="${HYATLAS_GO_HOST:-127.0.0.1}"
+    export HYATLAS_GO_PORT="${HYATLAS_GO_PORT:-19528}"
+    export HYATLAS_GO_DATA="${HYATLAS_GO_DATA:-${DATA_DIR}}"
+    # v4.3.0 抽取模式阶梯：lite/pro/ultra。非法值会 fatal 退出（防误配静默升级），
+    # 默认 ultra：与 fork 此前"每轮全层+图谱"行为最接近（L5/L6 改由慢路径产出）。
+    export HYATLAS_MODE="${HYATLAS_MODE:-ultra}"
+    [ -n "${HYATLAS_SYNC_EXTRACT:-}" ] && export HYATLAS_SYNC_EXTRACT
+    [ -n "${HYATLAS_CONSOLIDATE_EVERY:-}" ] && export HYATLAS_CONSOLIDATE_EVERY
+    [ -n "${HYATLAS_CONSOLIDATE_BATCH:-}" ] && export HYATLAS_CONSOLIDATE_BATCH
+    [ -n "${HYATLAS_RAW_RETENTION:-}" ] && export HYATLAS_RAW_RETENTION
+    # 向量引擎：默认本机 embedding wrapper (18080, bge-large-zh 1024d)；
+    # HYATLAS_EMBED_BASE=bge 回退包内进程内 ORT int8。
     export HYATLAS_EMBED_BASE="${HYATLAS_EMBED_BASE:-http://127.0.0.1:18080/v1}"
     export HYATLAS_EMBED_MODEL="${HYATLAS_EMBED_MODEL:-bge-large-zh-v1.5}"
-    export HYATLAS_MODEL_DIR="${APP_DIR}/models"
-    LLM_BASE="http://127.0.0.1:8081/v1"
-    LLM_KEY=""
-    # 优先迁移现役 v3 的 llm.api_key；无则尝试 Octopus 通道1 key
-    V3_JSON="${SHARE_ROOT}/config/hy_memory.json"
-    if [ -f "$V3_JSON" ]; then
-      V3_KEY=$(python3 -c "import json;print(json.load(open('$V3_JSON')).get('llm',{}).get('api_key',''))" 2>/dev/null)
-      [ -n "${V3_KEY:-}" ] && LLM_KEY="$V3_KEY"
-      V3_MODEL=$(python3 -c "import json;print(json.load(open('$V3_JSON')).get('llm',{}).get('model',''))" 2>/dev/null)
-      [ -n "${V3_MODEL:-}" ] && export HYATLAS_LLM_MODEL="$V3_MODEL"
+    export HYATLAS_MODEL_DIR="${HYATLAS_MODEL_DIR:-${APP_DIR}/models}"
+    # fork L7 防膨胀旋钮默认（详见 server.go promoteExtraction / handleSearch）
+    export HYATLAS_L7_DEDUP_THRESHOLD="${HYATLAS_L7_DEDUP_THRESHOLD:-0.80}"
+    export HYATLAS_L7_MAX="${HYATLAS_L7_MAX:-100}"
+    export HYATLAS_TOUCH_MIN_SCORE="${HYATLAS_TOUCH_MIN_SCORE:-0.72}"
+    # ── LLM：v4.3.0 起 BASE/MODEL/KEY 三项必须齐才调抽取（无内置默认端点）。
+    #    默认走本机 Octopus(8081)；MODEL 显式设 flash——不设 model 会被就绪闸判为
+    #    unconfigured 而静默停止提取（4.3.0 行为变更，勿回退成"留空"）。
+    export HYATLAS_LLM_BASE="${HYATLAS_LLM_BASE:-http://127.0.0.1:8081/v1}"
+    export HYATLAS_LLM_MODEL="${HYATLAS_LLM_MODEL:-flash}"
+    if [ -z "${HYATLAS_LLM_KEY:-}" ]; then
+      # 兜底迁移：现役 v3 配置 llm.api_key → Octopus 通道1 master key
+      V3_JSON="${SHARE_ROOT}/config/hy_memory.json"
+      if [ -f "$V3_JSON" ]; then
+        HYATLAS_LLM_KEY=$(python3 -c "import json;print(json.load(open('$V3_JSON')).get('llm',{}).get('api_key',''))" 2>/dev/null)
+        V3_MODEL=$(python3 -c "import json;print(json.load(open('$V3_JSON')).get('llm',{}).get('model',''))" 2>/dev/null)
+        # v3 显式配置过 model 时尊重 v3
+        [ -n "${V3_MODEL:-}" ] && [ ! -f "$ENV_FILE" ] && HYATLAS_LLM_MODEL="$V3_MODEL"
+      fi
+      if [ -z "${HYATLAS_LLM_KEY:-}" ]; then
+        HYATLAS_LLM_KEY=$(sqlite3 "${TRIM_PKGVAR:-/vol1/@appdata/octopus}/data.db" "SELECT value FROM settings WHERE key='master_key' LIMIT 1;" 2>/dev/null)
+      fi
     fi
-    if [ -z "${LLM_KEY:-}" ]; then
-      # Octopus 通道1 master key 兜底
-      LLM_KEY=$(sqlite3 "${TRIM_PKGVAR:-/vol1/@appdata/octopus}/data.db" "SELECT value FROM settings WHERE key='master_key' LIMIT 1;" 2>/dev/null)
-    fi
-    export HYATLAS_LLM_BASE="${LLM_BASE}"
-    export HYATLAS_LLM_KEY="${LLM_KEY:-}"
+    export HYATLAS_LLM_KEY="${HYATLAS_LLM_KEY:-}"
+    export HYATLAS_LLM_KEY_FILE="${HYATLAS_LLM_KEY_FILE:-}"
+    LLM_BASE="$HYATLAS_LLM_BASE"
 
     if ! is_running; then
       as_user "${APP_DIR}/hyatlas-go" >> "$LOG_FILE" 2>&1 &

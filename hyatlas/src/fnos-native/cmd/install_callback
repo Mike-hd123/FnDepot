@@ -87,5 +87,17 @@ else
   echo "WARN: models/ missing in APPDEST (B2 内置引擎将无法加载)" >> "$LOG"
 fi
 
+# 5) env 文件首建（v4.3.0 配置化）：从包内模板生成，已存在不动（升级保留用户配置）
+ENV_F="${VAR_DIR}/env"
+TPL="${APP_DIR}/env.example"
+if [ ! -f "$ENV_F" ] && [ -f "$TPL" ]; then
+  cp "$TPL" "$ENV_F"
+  chown "${RUN_USER}:${RUN_GRP}" "$ENV_F" 2>/dev/null || true
+  chmod 600 "$ENV_F" 2>/dev/null || true
+  echo "env created from template: $ENV_F" >> "$LOG"
+else
+  [ -f "$ENV_F" ] && echo "env exists, untouched: $ENV_F" >> "$LOG"
+fi
+
 echo "===== done (run-as ${RUN_USER}) =====" >> "$LOG"
 exit 0

@@ -1,5 +1,5 @@
 appname                    = hyatlas
-version                    = 4.2.5-1
+version                    = 4.3.0-1
 display_name               = 混元记忆
 desc                       = 混元记忆 —— 7 层记忆服务：纯 Go 单二进制 + 内置 ONNX Runtime int8 向量模型(bge-large-zh 1024d)，面板汉化 + 移动端响应式布局。服务进程以专用用户 hy-memory 降权运行(不再 root)；权限/属主自愈，修复系统设置/评分页与图谱页(L5)数据展示。
 platform                   = x86
@@ -16,4 +16,4 @@ service_port               = 19528
 desktop_uidir              = ui
 desktop_applaunchname      = hyatlas.panel
 disable_authorization_path = false
-changelog                  = 4.2.5-1：同步上游 v4.2.5（commit 9457406 / build 9f9274687）——①async-persistence drain：请求完成后 flush 再返回，修复异步写入中途崩溃丢数据；②LLM 端点不再凭空编造并转发凭证，改为配置化 HYATLAS_LLM_BASE_URL，缺失时降级报错；③LLM extraction 支持 thinking models（reasoning_content 分支）。二进制=上游官方 CI 产物原样（sha256 fb61354c）。本地打包层沿用 4.2.0-4 配置化改造不变。4.2.0-4：①配置化改造——移除硬编码硅基流动 key，改为 config/env.example 模板 + install/upgrade 回调自动生成 /vol1/@appdata/hyatlas/env（chmod 600，归 hy-memory 用户）；cmd/main 启动时 source env 文件，优先级 环境变量 > env > 内置默认。②升级合并逻辑：env.example 新增变量补入 env 但不覆盖用户已设值。③wizard/install 增加配置提示（vi /vol1/@appdata/hyatlas/env 填 HYATLAS_EMBED_API_KEY）。④上游 v4.2.0 全部特性保留（dashboard 汉化 + 移动端 + API 加固 + extracted 持久化 + reprocess by ids + learning/graph）。
+changelog                  = 4.3.0-1：同步上游 v4.3.0（tag bcccd8ce）——①抽取模式阶梯 HYATLAS_MODE=lite/pro/ultra（能力与延迟解耦，SYNC_EXTRACT 独立旋钮）；②LLM 端点零默认：BASE/MODEL/KEY 缺一不抽取（llm=unconfigured，启动点名缺哪个），记忆文本只在你显式配置后才出机器；③ultra 慢路径 consolidate：跨记忆合并矛盾/合成 L5 知识/泛化 L6 schema/跨会话 L4 arc/L2 raw 受保护衰减；④安全：子进程 env 白名单（不再继承宿主全部密钥）、每轮只传当轮文本（实测 -96.3%）、Configured() 单一就绪闸；⑤修复：null 配置崩溃/data_dir·server_host 未转发/auto_start=false 变 true/stop pidfile。本地定制全保留：L7 dedup+硬顶、L1 不被异步提取写入（agent_extract 标签）、search touch/patch 双时态边闭合、dashboard 汉化+移动端、shares 自愈、embed 维度实测(1024d)。新增 /vol1/@appdata/hyatlas/env 配置化（安装生成 600，升级只补新键）。二进制=本次源码构建（非 embedded，sha 83740365），模型三件套沿用。4.2.5-1：同步上游 v4.2.5（commit 9457406 / build 9f9274687）——①async-persistence drain：请求完成后 flush 再返回，修复异步写入中途崩溃丢数据；②LLM 端点不再凭空编造并转发凭证，改为配置化 HYATLAS_LLM_BASE_URL，缺失时降级报错；③LLM extraction 支持 thinking models（reasoning_content 分支）。二进制=上游官方 CI 产物原样（sha256 fb61354c）。本地打包层沿用 4.2.0-4 配置化改造不变。4.2.0-4：①配置化改造——移除硬编码硅基流动 key，改为 config/env.example 模板 + install/upgrade 回调自动生成 /vol1/@appdata/hyatlas/env（chmod 600，归 hy-memory 用户）；cmd/main 启动时 source env 文件，优先级 环境变量 > env > 内置默认。②升级合并逻辑：env.example 新增变量补入 env 但不覆盖用户已设值。③wizard/install 增加配置提示（vi /vol1/@appdata/hyatlas/env 填 HYATLAS_EMBED_API_KEY）。④上游 v4.2.0 全部特性保留（dashboard 汉化 + 移动端 + API 加固 + extracted 持久化 + reprocess by ids + learning/graph）。

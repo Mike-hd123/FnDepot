@@ -122,6 +122,17 @@
               "size": 242560436
             }
           }
+        },
+        "4.3.0-1": {
+          "changelog": "v4.3.0-1（2026-10-08）：同步上游 HyAtlas v4.3.0（tag bcccd8ce）。①抽取模式阶梯 HYATLAS_MODE=lite/pro/ultra，能力与延迟解耦（HYATLAS_SYNC_EXTRACT 独立）；②LLM 端点零默认：BASE/MODEL/KEY 缺一即不抽取、状态报 unconfigured，记忆文本只在显式配置后外发；③ultra 新增慢路径整合（合并矛盾事实/合成 L5 知识/泛化 L6 schema/跨会话 L4 arc/受保护 L2 衰减，默认 6h 一批 200 条）；④安全：子进程 env 白名单（不再把宿主全部密钥传给服务进程）、每轮只上传当轮文本（-96.3%）；⑤修复 null 配置崩溃/data_dir 丢失/auto_start=false 反生效/stop 端口占用。本地定制全保留：L7 去重+硬顶、L1 不被异步提取写（agent_extract）、touch/patch 双时态边、dashboard 汉化+移动端、shares 自愈、embed 1024d 实测。新增 env 配置化（安装生成 /vol1/@appdata/hyatlas/env 600，升级只补新键）。装机需重启服务生效；上游 4.2.5 及以下升级无数据迁移。",
+          "updated_at": "2026-10-08T18:05:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.10.08/hyatlas-4.3.0-1-x86.fpk",
+              "sha256": "1a456345001e522f4ee9582c3ba0d75d53b5ba55144b5e2a679971facf2bbbf8",
+              "size": 241899261
+            }
+          }
         }
       }
     },

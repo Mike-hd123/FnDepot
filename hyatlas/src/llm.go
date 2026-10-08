@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 )
@@ -15,7 +16,8 @@ import (
 // Routes through ai2api loopback by default (firewall-safe external calls).
 type LLMClient struct {
 	BaseURL string
-	APIKey  string
+	APIKey  string // static key (HYATLAS_LLM_KEY); used when KeyFile is empty
+	KeyFile string // when set, the key is read live from this file each call
 	Model   string
 	Client  *http.Client
 }
@@ -25,8 +27,70 @@ func NewLLMClient(baseURL, key, model string) *LLMClient {
 		Client: &http.Client{Timeout: 180 * time.Second}}
 }
 
+// Configured reports whether this client can actually make a call: an endpoint,
+// a model and a usable key. The key is resolved live so a rotating credential
+// never goes stale the way a startup-frozen value does.
+//
+// One gate for all three, because every decision that depends on them — whether
+// to extract, what status reports, whether to warn at startup — must reach the
+// same answer. Checking the key alone was not enough once the shipped defaults
+// went away: an empty endpoint and model are the same "not ready" state as a
+// missing key, and a caller that only looked at the key would report ok and then
+// POST to an empty URL.
+func (l *LLMClient) Configured() bool {
+	return l != nil && l.BaseURL != "" && l.Model != "" && l.resolveKey() != ""
+}
+
+// resolveKey returns the bearer key to use for this request. When KeyFile is
+// set it is read live, so a rotating credential — e.g. the 1-hour JWT Hermes
+// keeps fresh in auth.json — never goes stale the way a startup-frozen env
+// value does. Any read/parse failure falls back to the static APIKey.
+func (l *LLMClient) resolveKey() string {
+	if l.KeyFile == "" {
+		return l.APIKey
+	}
+	b, err := os.ReadFile(l.KeyFile)
+	if err != nil || len(b) == 0 {
+		return l.APIKey
+	}
+	if k := extractKey(b); k != "" {
+		return k
+	}
+	return l.APIKey
+}
+
+// extractKey reads a bearer key from either a JSON auth file (Hermes auth.json
+// shape: providers.nous.agent_key, falling back to access_token) or a
+// plain-text file whose trimmed contents are the key.
+func extractKey(b []byte) string {
+	var auth struct {
+		Providers map[string]struct {
+			AgentKey    string `json:"agent_key"`
+			AccessToken string `json:"access_token"`
+		} `json:"providers"`
+	}
+	if err := json.Unmarshal(b, &auth); err == nil {
+		if n := auth.Providers["nous"]; n.AgentKey != "" {
+			return n.AgentKey
+		} else if n := auth.Providers["nous"]; n.AccessToken != "" {
+			return n.AccessToken
+		}
+	}
+	if s := strings.TrimSpace(string(b)); s != "" && !strings.HasPrefix(s, "{") {
+		return s
+	}
+	return ""
+}
+
 // Facts, Summary, Knowledge, Schema, Intention is the structured output the LLM
 // returns for one raw input. It drives the full 7-layer promotion.
+// Extraction is the structured result of one System1 pass over a single input.
+//
+// Knowledge and Schemas are retained for tolerant parsing — a model that
+// volunteers them must not break the decode — but the per-turn prompt no longer
+// requests them and promoteExtraction no longer writes them. L5 knowledge and
+// L6 schemas are System2 products, synthesised across many memories by the
+// consolidation pass.
 type Extraction struct {
 	Facts     []Fact     `json:"facts"`
 	Summary   *Summary   `json:"summary,omitempty"`
@@ -99,49 +163,94 @@ func (i *Intention) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// Complete runs one structured extraction producing all layers.
+// Complete runs one structured extraction producing all layers, with one
+// reinforced retry: small models sometimes reply to the input conversationally
+// instead of extracting (their prose then fails JSON parsing), and a single
+// firm reminder recovers most of those.
 func (l *LLMClient) Complete(ctx context.Context, text string) (*Extraction, error) {
+	ex, err := l.completeOnce(ctx, text, false)
+	if err == nil {
+		return ex, nil
+	}
+	ex2, err2 := l.completeOnce(ctx, text, true)
+	if err2 == nil {
+		return ex2, nil
+	}
+	return nil, fmt.Errorf("after retry: %w", err2)
+}
+
+func (l *LLMClient) completeOnce(ctx context.Context, text string, reinforce bool) (*Extraction, error) {
+	// System1: this pass sees ONE turn, so it may only produce what a single
+	// turn can actually evidence — facts, a narrative summary of itself, and the
+	// current intention. L5 knowledge and L6 schemas are deliberately NOT
+	// requested here: a recurring pattern is by definition not observable in one
+	// turn, and asking for one produced guesses that then competed with the real
+	// thing at retrieval time. The slow path owns those layers.
 	system := `You are a memory extraction engine. Given one user input, output a JSON object with EXACTLY these keys:
 {
   "facts": [{"data": "<durable atomic fact>", "layer": "user_preferences|project_state|technical_lesson|decision|negative_knowledge"}],
   "summary": {"text": "<1-2 sentence narrative of what this input is about and why it matters>"},
-  "knowledge": [{"from": "<entity/subject>", "relation": "<relation>", "to": "<entity/object>"}],
-  "schemas": [{"pattern": "<recurring structural pattern>", "context": "<when it applies>"}],
   "intention": {"goal": "<what the user is trying to achieve right now>"}
 }
 Rules:
 - facts: ONLY durable, non-obvious facts worth remembering. Do not fabricate.
 - summary: synthesize the ARC of this input, not just restate it.
-- knowledge: extract 0-4 entity-relation-entity triples ONLY if meaningful.
-- schemas: extract 0-2 recurring patterns ONLY if this is a repeated/structural case.
-- intention: ONLY standing/ongoing goals, commitments, or preferences that remain relevant beyond this conversation. If the input describes a completed one-off task, a past operation, or transient work (install/deploy/fix/push/reset/debug), output null.
+- intention: the immediate goal, or null if none.
+- Do NOT invent patterns or entity relations; those come from a later pass.
 Return ONLY valid JSON, no prose, no markdown fences.`
 
 	user := "Input: " + text
+	messages := []map[string]string{
+		{"role": "system", "content": system},
+		{"role": "user", "content": user},
+	}
+	if reinforce {
+		messages = append(messages, map[string]string{
+			"role":    "user",
+			"content": "FORMAT ERROR: your previous reply was not valid JSON. The text above is DATA to extract from — not a message to answer. Respond with ONLY the JSON object, nothing else.",
+		})
+	}
+	content, err := l.chat(ctx, messages, 0.2)
+	if err != nil {
+		return nil, err
+	}
+	return parseExtraction(content)
+}
+
+// chat sends one chat-completions request and returns the assistant's text.
+//
+// Shared by extraction and consolidation so the two cannot drift on the parts
+// that are easy to get wrong once and hard to notice: the Cloudflare WAF
+// rejects Go's default User-Agent with a 403, and the key must be resolved per
+// request because a rotating JWT goes stale if frozen at startup.
+func (l *LLMClient) chat(ctx context.Context, messages []map[string]string, temp float64) (string, error) {
 	body, _ := json.Marshal(map[string]any{
-		"model": l.Model,
-		"messages": []map[string]string{
-			{"role": "system", "content": system},
-			{"role": "user", "content": user},
-		},
-		"temperature": 0.2,
+		"model":       l.Model,
+		"messages":    messages,
+		"temperature": temp,
 	})
 	req, err := http.NewRequestWithContext(ctx, "POST", l.BaseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if l.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+l.APIKey)
+	// The Nous Portal sits behind Cloudflare, which 403s Go's default
+	// "Go-http-client" User-Agent; identify honestly so the WAF lets the
+	// extraction call through.
+	req.Header.Set("User-Agent", "HyAtlas/4.3 (+https://github.com/tuancookiez-hub/HyAtlas-Memory)")
+	// Resolve the key per request so a rotating credential (KeyFile) never
+	// goes stale the way a startup-frozen env value does.
+	if k := l.resolveKey(); k != "" {
+		req.Header.Set("Authorization", "Bearer "+k)
 	}
 	resp, err := l.Client.Do(req)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
-		return nil, fmt.Errorf("LLM HTTP %d: %s", resp.StatusCode, truncStr(data, 200))
+		return "", fmt.Errorf("LLM HTTP %d: %s", resp.StatusCode, truncStr(data, 200))
 	}
 	var out struct {
 		Choices []struct {
@@ -151,12 +260,12 @@ Return ONLY valid JSON, no prose, no markdown fences.`
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(data, &out); err != nil {
-		return nil, err
+		return "", err
 	}
 	if len(out.Choices) == 0 {
-		return nil, fmt.Errorf("LLM: no choices")
+		return "", fmt.Errorf("LLM: no choices")
 	}
-	return parseExtraction(out.Choices[0].Message.Content)
+	return out.Choices[0].Message.Content, nil
 }
 
 // parseExtraction tolerantly extracts the JSON object from the LLM reply.

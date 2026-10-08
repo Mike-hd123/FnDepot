@@ -62,8 +62,8 @@ func (s *Server) handleDashInfo(w http.ResponseWriter, r *http.Request) {
 	writes, searches := s.store.Usage()
 	writeJSON(w, 200, map[string]any{
 		"name":           "HyAtlas v4 (Go)",
-		"version":        "4.0.1",
-		"mode":           "ultra",
+		"version":        Version,
+		"mode":           string(s.mode.OrDefault()),
 		"llm_model":      s.llmModel,
 		"llm_base":       s.llmBase,
 		"writes":         writes,
@@ -92,7 +92,7 @@ func (s *Server) handleDashMemories(w http.ResponseWriter, r *http.Request) {
 	if agentID == "all" {
 		agentID = ""
 	}
-	items, total := s.store.List(layer, q.Get("user_id"), agentID, limit, offset)
+	items, total := s.store.List(layer, q.Get("user_id"), agentID, limit, offset, false)
 	if order == "asc" {
 		// store.List returns ts-desc; reverse a copy for ascending order.
 		for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
@@ -228,7 +228,7 @@ func (s *Server) handleDashLayerHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	// Fresh L2 = l2_raw written in the last 6h (digest fuel, v3.5 semantics).
 	freshL2 := 0
-	if items, _ := s.store.List(memory.L2Raw, "", "", 1<<20, 0); len(items) > 0 {
+	if items, _ := s.store.List(memory.L2Raw, "", "", 1<<20, 0, false); len(items) > 0 {
 		cutoff := time.Now().Add(-6 * time.Hour)
 		for _, it := range items {
 			if ts, err := time.Parse(time.RFC3339, it.Ts); err == nil && ts.After(cutoff) {
@@ -268,7 +268,7 @@ func (s *Server) handleDashLayerHealth(w http.ResponseWriter, r *http.Request) {
 // falls back to "—").
 func (s *Server) handleDashL6Schemas(w http.ResponseWriter, r *http.Request) {
 	n := atoi(r.URL.Query().Get("n"), 6)
-	items, _ := s.store.List(memory.L6Schema, "", "", n, 0)
+	items, _ := s.store.List(memory.L6Schema, "", "", n, 0, false)
 	out := make([]map[string]any, 0, len(items))
 	for _, it := range items {
 		out = append(out, map[string]any{
@@ -394,7 +394,7 @@ func (s *Server) handleDashL5Graph(w http.ResponseWriter, r *http.Request) {
 	}
 	// L6/L7 views render their layer items as pseudo-nodes (real content, real
 	// layer). v3.5 shape: name/node_id + the v4-native layer key.
-	items, _ := s.store.List(memory.Layer(layer), "", "", n, 0)
+	items, _ := s.store.List(memory.Layer(layer), "", "", n, 0, false)
 	nodes := make([]dashNode, 0, len(items))
 	for _, it := range items {
 		nodes = append(nodes, dashNode{
@@ -439,7 +439,7 @@ func (s *Server) handleDashQuality(w http.ResponseWriter, r *http.Request) {
 	evolution := covered * 100 / 7
 	// 活跃度 (activity): writes+searches in the last 24h, log-scaled 0-100.
 	recentWrites := 0
-	if items, _ := s.store.List(memory.L2Raw, "", "", 1<<20, 0); len(items) > 0 {
+	if items, _ := s.store.List(memory.L2Raw, "", "", 1<<20, 0, false); len(items) > 0 {
 		cutoff := time.Now().Add(-24 * time.Hour)
 		for _, it := range items {
 			if ts, err := time.Parse(time.RFC3339, it.Ts); err == nil && ts.After(cutoff) {

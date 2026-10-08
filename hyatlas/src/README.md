@@ -1,10 +1,10 @@
-![HyAtlas v4.0 — Pure-Go Memory Core](https://raw.githubusercontent.com/tuancookiez-hub/HyAtlas-Memory/main/assets/hyatlas-v4.0-banner.png)
+![HyAtlas Memory v4.3.0 — three-gear extraction across a seven-layer memory](https://raw.githubusercontent.com/tuancookiez-hub/HyAtlas-Memory/main/assets/hyatlas-v4.3.0-banner.png)
 
-# HyAtlas v4 — Pure-Go Memory Core
+# HyAtlas Memory — Pure-Go Memory Core
 
-> **One binary. Seven layers. Cross-platform.** Single 17.6 MB Go binary, no Python at runtime, in-process BGE embeddings, 7-layer memory model fully active. **Linux ✅ · macOS ✅ · Windows ✅.**
+> **One binary. Seven layers. Three extraction modes. Cross-platform.** Single 17.6 MB Go binary, no Python at runtime, in-process BGE embeddings, 7-layer memory model fully active. **Linux ✅ · macOS ✅ · Windows ✅.**
 
-HyAtlas v4.0 is a complete rewrite of the HyAtlas memory system in pure Go. It replaces the Python floor (venv, zvec, Kuzu, FastAPI, HTTP embed subprocess) with a single binary: an embedded Chromem vector store, in-process BGE-small embeddings via onnxruntime-go, and async LLM fact extraction. The 7-layer memory model (Profile · Raw · Fact · Summary · Knowledge · Schema · Intention) is fully active — including L4 Summary extraction which was dormant in v3.5.
+HyAtlas v4.0 is a complete rewrite of the HyAtlas memory system in pure Go. It replaces the Python floor (venv, zvec, Kuzu, FastAPI, HTTP embed subprocess) with a single binary: an embedded Chromem vector store, in-process BGE-small embeddings via onnxruntime-go, and LLM fact extraction whose timing you choose with `HYATLAS_MODE`. The 7-layer memory model (Profile · Raw · Fact · Summary · Knowledge · Schema · Intention) is fully active — including L4 Summary extraction which was dormant in v3.5.
 
 **Previous floor:** [HyAtlas v3.5.0](https://github.com/tuancookiez-hub/HyAtlas-Memory/releases/tag/v3.5.0) — Python/Zvec/Kuzu. See [V3_V4_COMPARISON.md](V3_V4_COMPARISON.md) for the full side-by-side and [CHANGELOG.md](CHANGELOG.md) for the migration history.
 
@@ -27,9 +27,14 @@ Useful env vars:
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `HYATLAS_VERSION` | Release tag to install | `v4.0.1` |
+| `HYATLAS_VERSION` | Release tag to install | `v4.3.0` |
 | `HYATLAS_INSTALL_DIR` | Where the binary goes | `~/.local/bin` (Windows: `%LOCALAPPDATA%\hyatlas`) |
 | `HYATLAS_MODEL_DIR` | Where the BGE model is cached | `~/.hyatlas/models` (Windows: `%LOCALAPPDATA%\hyatlas\models`) |
+| `HYATLAS_MODE` | Extraction mode: `lite` \| `pro` \| `ultra` | `ultra` |
+| `HYATLAS_SYNC_EXTRACT` | Whether a write blocks on extraction: `on` \| `off` | *(follows the mode)* |
+| `HYATLAS_CONSOLIDATE_EVERY` | Ultra only: how often the slow path runs | `6h` |
+| `HYATLAS_CONSOLIDATE_BATCH` | Ultra only: max facts per consolidation call | `200` |
+| `HYATLAS_RAW_RETENTION` | Ultra only: decay uncited L2 Raw older than this | *(never delete)* |
 | `HYATLAS_NO_MODEL=1` | Skip the model download | (downloads) |
 
 ---
@@ -71,15 +76,94 @@ go build -tags embedded -o hyatlas-go .       # embedded build (one binary, mode
 export HYATLAS_EMBED_BASE=bge
 export HYATLAS_MODEL_DIR=/path/to/models
 
-# Required for LLM extraction (any OpenAI-compatible endpoint):
-export HYATLAS_LLM_BASE="https://inference-api.nousresearch.com/v1"
-export HYATLAS_LLM_MODEL="poolside/laguna-s-2.1:free"
+# Required for LLM extraction in pro/ultra. No endpoint is assumed: without all
+# three the server stores the raw trace only and reports llm=unconfigured.
+# Any OpenAI-compatible API works, including a local one.
+export HYATLAS_LLM_BASE="https://inference-api.nousresearch.com/v1"   # example
+export HYATLAS_LLM_MODEL="poolside/laguna-s-2.1:free"                 # example
 export HYATLAS_LLM_KEY="your-nous-agent-key"
 
 ./hyatlas-go
 ```
 
 The server listens on `127.0.0.1:19528` (loopback only — no external surface).
+
+### Privacy — what leaves your machine
+
+The server binds loopback only, but **loopback is not the whole story**, and the
+default configuration is not fully local:
+
+| What | Goes where | Default | How to keep it local |
+|---|---|---|---|
+| **Memory text** (the turn being extracted) | Sent to the extraction LLM | **Nowhere** — no endpoint is shipped, so an unconfigured server makes no LLM call and reports `unconfigured` | Already opt-in: set `HYATLAS_LLM_BASE`/`_MODEL`/`_KEY` to choose where it goes. Point them at a local OpenAI-compatible server to keep it on-machine, or use `HYATLAS_MODE=lite` |
+| Embeddings | In-process BGE-small (onnxruntime-go) | **Local** — `HYATLAS_EMBED_BASE=bge`, no network | Already local |
+| Stored memories, vector index, graph | `HYATLAS_GO_DATA` (default `./data`) | **Local** | Already local |
+| Telemetry / usage reporting | — | **None** | — |
+
+So out of the box: **embeddings and storage are local, extraction is not.**
+Every conversation turn the memory system ingests is sent to the configured LLM
+endpoint to derive facts, summaries and intentions. That is the point of the
+feature — but it means the default install transmits conversation text to Nous
+Research's inference API unless you change `HYATLAS_LLM_BASE`.
+
+The extraction endpoint is yours to choose per the tier you are on — set
+`HYATLAS_LLM_BASE`, `HYATLAS_LLM_MODEL` and `HYATLAS_LLM_KEY` to any
+OpenAI-compatible API. To keep conversation text on the machine, set `HYATLAS_MODE=lite`: no LLM
+call is made at all, so only the raw trace and local embeddings are stored.
+
+The three modes form a ladder of reasoning scope, not of latency:
+
+| Mode | LLM calls | Reasoning scope | Layers | Consolidation |
+|---|---|---|---|---|
+| `lite` | none | — | **1 / 7** — L2 Raw only | no |
+| `pro` | one per write | within one turn | **5 / 7** — L1, L2, L3, L4, L7 | no |
+| `ultra` *(default)* | one per write **+** periodic batch | **across memories and time** | **7 / 7** | **yes** |
+
+The two systems own disjoint layers:
+
+- **System1 (per turn)** — L1 Profile, L2 Raw, L3 Fact, L4 Summary, L7 Intention.
+  What one turn can actually evidence.
+- **System2 (slow path)** — L5 Knowledge, L6 Schema. A relation worth keeping is
+  corroborated by more than one turn, and a schema is a *recurring* pattern, so
+  neither can come from a single turn. Ultra is the only mode that runs System2,
+  which is why it is the only one that fills L5 and L6.
+
+Whether a write *blocks* on its extraction is a separate knob
+(`HYATLAS_SYNC_EXTRACT=on|off`), not part of the mode. Pro blocks by default and
+ultra does not, but either can be overridden — capability follows the mode,
+latency follows the knob.
+
+| `HYATLAS_SYNC_EXTRACT` | Effect |
+|---|---|
+| *(unset)* | follow the mode: `pro` blocks, `ultra` returns immediately |
+| `on` | the write waits for extraction and reports `done` / `failed` |
+| `off` | the write returns `pending`; extraction runs behind it |
+
+Ultra-only tuning:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `HYATLAS_CONSOLIDATE_EVERY` | `6h` | how often the slow path runs |
+| `HYATLAS_CONSOLIDATE_BATCH` | `200` | max facts per consolidation call |
+| `HYATLAS_RAW_RETENTION` | *(unset = never delete)* | age after which uncited L2 Raw is decayed |
+
+`HYATLAS_RAW_RETENTION` is opt-in because it deletes. Raw memories cited by a
+live L5 graph edge are always protected, so decay cannot leave the knowledge
+graph pointing at a memory that no longer exists.
+
+
+Otherwise the endpoint is yours to choose per the tier you are on — set
+`HYATLAS_LLM_BASE`, `HYATLAS_LLM_MODEL` and `HYATLAS_LLM_KEY` to any
+OpenAI-compatible API, or point `HYATLAS_LLM_BASE` at a server you host
+(ollama, vLLM, llama.cpp, LM Studio) and leave `HYATLAS_EMBED_BASE=bge`.
+Extraction fires on every write even with no key set, so in pro and ultra the
+text is transmitted by default until you configure these.
+
+When the Hermes plugin spawns this server it passes an explicitly allowlisted
+environment — OS essentials plus `HYATLAS_*` only — rather than a copy of the
+agent's environment, so provider API keys the agent holds do not reach the
+server process. The plugin sets no `HYATLAS_LLM_*` value and forwards no
+credential.
 
 **All configuration is via environment variables** — the binary takes no CLI flags:
 
@@ -88,11 +172,12 @@ The server listens on `127.0.0.1:19528` (loopback only — no external surface).
 | `HYATLAS_GO_PORT` | `19528` | HTTP listen port |
 | `HYATLAS_GO_HOST` | `127.0.0.1` | Bind address (loopback only by default) |
 | `HYATLAS_GO_DATA` | `./data` | Where chromem collections + graph.json live |
-| `HYATLAS_EMBED_BASE` | `https://inference-api.nousresearch.com/v1` | Set to `bge` for the local in-process embedder |
+| `HYATLAS_EMBED_BASE` | `bge` | `bge` = local in-process BGE embedder (no network). Set to a URL for an OpenAI-compatible embedder, or `local` for a deterministic stub. |
 | `HYATLAS_MODEL_DIR` | `./models` | Where the BGE model lives |
-| `HYATLAS_LLM_BASE` | `https://inference-api.nousresearch.com/v1` | OpenAI-compatible LLM endpoint |
-| `HYATLAS_LLM_MODEL` | `poolside/laguna-s-2.1:free` | LLM model name |
+| `HYATLAS_LLM_BASE` | *(unset)* | OpenAI-compatible LLM endpoint. **Memory text is sent here once you set it** — see *Privacy* above. Unset means no LLM call at all. |
+| `HYATLAS_LLM_MODEL` | *(unset)* | LLM model name. Base, model and key must all be set for extraction to run. |
 | `HYATLAS_LLM_KEY` | (empty) | LLM bearer token |
+| `HYATLAS_LLM_KEY_FILE` | (empty) | Read the key live from this file per call (rotating creds, e.g. Hermes auth.json). Accepts `providers.nous.agent_key`/`access_token` JSON or a plain-text token. Wins over `HYATLAS_LLM_KEY`, which becomes the fallback |
 | `HYATLAS_GRAPH_PATH` | `<data>/graph.json` | L5 graph store location |
 
 **Windows batch runner** (reads the AI2API key from Hermes `.env`):
@@ -170,7 +255,7 @@ The BGE-small model + the platform-matching onnxruntime shared library live in `
 - **In-process BGE embeddings** via onnxruntime-go (cgo) — no HTTP embed subprocess
 - **L4 Summary enabled** — was dormant in v3.5
 - **L5 bitemporal graph (v4.1.0+)** — every fact carries a citation back to its source L2 memory plus a bitemporal timestamp; the new `/api/v1/graph-as-of?ts=<unix>` endpoint lets you rewind the graph to any past moment.
-- **Mind Palace (v4.1.0+)** — a temporal visualization of the L5 knowledge graph in the Hermes Desktop `hy_memory` pane. Toggle List / Spatial on the Memories tab; drag-to-pan, click-to-select, bitemporal mode. See [`desktop-plugins/hy_memory/SPEC.md`](desktop-plugins/hy_memory/SPEC.md) for the design.
+- **Mind Palace (v4.1.0+)** — a temporal visualization of the L5 knowledge graph in the Hermes Desktop `hyatlas` pane. Toggle List / Spatial on the Memories tab; drag-to-pan, click-to-select, bitemporal mode. See [`plugins/hyatlas/desktop/SPEC.md`](plugins/hyatlas/desktop/SPEC.md) for the design.
 
 ## API Reference
 
@@ -230,7 +315,17 @@ Response shape:
 
 ## Hermes Integration
 
-HyAtlas v4 is the **backend HTTP server** (`127.0.0.1:19528`) that backs the existing Hermes `hy_memory` memory provider plugin. It is **not** a native Hermes `MemoryProvider` ABC plugin — those are Python classes that subclass `agent.memory_provider.MemoryProvider` and live in `~/.hermes/plugins/memory/<name>/`.
+HyAtlas v4 is the **backend HTTP server** (`127.0.0.1:19528`). The
+`hyatlas` plugin in [`plugins/hyatlas`](plugins/hyatlas) *is* a native Hermes
+memory provider — it subclasses `agent.memory_provider.MemoryProvider` and
+registers through `ctx.register_memory_provider()` in `register(ctx)`, so
+`memory.provider: hyatlas` works directly. The plugin is a thin HTTP client
+over this server; the server does the vector store, embeddings, extraction and
+graph work.
+
+The plugin installs as a normal Hermes plugin
+(`<HERMES_HOME>/plugins/hyatlas/` — `AppData\Local\hermes\plugins\` on
+Windows, `~/.hermes/plugins/` elsewhere), not under a `memory/` subdirectory.
 
 ### How it works
 
@@ -239,41 +334,91 @@ HyAtlas v4 is the **backend HTTP server** (`127.0.0.1:19528`) that backs the exi
 │  Hermes Agent       │ ─────────────────► │  hyatlas-go (v4)     │
 │  (Python)           │   /api/v1/*        │  127.0.0.1:19528     │
 │                     │ ◄───────────────── │  Pure Go binary      │
-│  hy_memory plugin   │   JSON responses   │  (this release)      │
+│  hyatlas plugin   │   JSON responses   │  (this release)      │
 │  (~/.hermes/plugins/                        │  chromem-go + BGE    │
-│   memory/hy_memory/                          │  in-process          │
+│   memory/hyatlas/                          │  in-process          │
 │   client.py)                                └──────────────────────┘
 └─────────────────────┘
 ```
 
-The `hy_memory` plugin (Python, in your Hermes install) calls HyAtlas v4's HTTP API. Switching from the v3.5 Python floor to v4 is a port change — same client, new backend.
+The `hyatlas` plugin (Python, in your Hermes install) calls HyAtlas v4's HTTP API. Switching from the v3.5 Python floor to v4 is a port change — same client, new backend.
 
 ### Wire it up
 
 **1. Run HyAtlas v4** (see Quick start above).
 
-**2. Configure Hermes to use the v4 port** in `~/.hermes/config.yaml`:
+**2. Install the plugin and select the provider.** Once the catalog entry is
+merged ([PR #134419](https://github.com/NousResearch/hermes-agent/pull/134419)),
+this is the supported path:
+
+```bash
+hermes plugins install hyatlas
+hermes plugins enable hyatlas
+hermes memory setup        # then choose "hyatlas"
+```
+
+Until it merges, install with the `owner/repo/subdir` shorthand — the plugin
+lives in the `plugins/hyatlas` subdirectory, and the subdirectory has to be part
+of the identifier so the scan is scoped to it:
+
+```bash
+hermes plugins install tuancookiez-hub/HyAtlas-Memory/plugins/hyatlas
+hermes plugins enable hyatlas
+hermes memory setup
+```
+
+Equivalent spellings, all resolving to the same clone plus `plugins/hyatlas`:
+
+```bash
+hermes plugins install "tuancookiez-hub/HyAtlas-Memory#plugins/hyatlas"
+hermes plugins install "https://github.com/tuancookiez-hub/HyAtlas-Memory.git#plugins/hyatlas"
+```
+
+Two forms do **not** work, and both fail quietly enough to be confusing:
+
+- `tuancookiez-hub/HyAtlas-Memory` on its own (no subdirectory) clones the
+  repository *root*, so the security scan sees the prebuilt `dashboard/dist`
+  bundle and the large `assets/` images and returns a CAUTION verdict instead of
+  the `safe` verdict the plugin subdirectory gets.
+- A bare relative path such as `./HyAtlas-Memory/plugins/hyatlas` is not treated
+  as a filesystem path — `owner/repo[/subdir]` parsing turns it into
+  `https://github.com/./HyAtlas-Memory.git`. To install from a local clone, use
+  a `file://` URL with an explicit `#subdir` fragment:
+  `file:///C:/path/to/HyAtlas-Memory#plugins/hyatlas`.
+
+The catalog entry carries the same scoping as `subdir: plugins/hyatlas`, which
+is why the merged entry is just the bare name.
+
+Installing and enabling alone does **not** activate memory — `hermes memory
+setup` is what writes `memory.provider: hyatlas`:
 
 ```yaml
 memory:
-  enabled: true
-  provider: hy_memory
-  providers:
-    hy_memory:
-      provider: hy_memory
-      server_port: 19528
-      auto_start: false
+  memory_enabled: true
+  provider: hyatlas
 ```
 
-> If you previously pointed at v3.5, just change `server_port: 19527` → `server_port: 19528`.
+Plugin settings (server host/port, user/agent id, `auto_start`,
+`binary_path`, `launcher_path`, timeout) live under
+`plugins.entries.hyatlas.settings` in `<HERMES_HOME>/config.yaml`, are
+editable in **Desktop → Settings → Plugins → hyatlas**, or can be set per
+variable via `HYATLAS_*` env vars (env wins). The defaults
+(`127.0.0.1:19528`, `auto_start: false`) work with no config at all.
+
+> There is no `memory.providers.hyatlas` block — settings do not go there.
 
 **3. Restart Hermes.**
 
-The `hy_memory` plugin (Python client) is already wire-compatible with v4. Verified against the real v3.5 `HyMemoryClient` — all four operations (reachable / add / list / search) pass cleanly.
+The `hyatlas` plugin (Python client) is already wire-compatible with v4. Verified against the real v3.5 `HyMemoryClient` — all four operations (reachable / add / list / search) pass cleanly.
 
 ### Building a native `MemoryProvider` plugin
 
-If you want a **true native** Hermes memory plugin (Python, subclasses `MemoryProvider`, lives in `~/.hermes/plugins/memory/`), you can write a thin wrapper that calls HyAtlas v4 over HTTP. This is a future-work item — it would let `memory.provider: hyatlas` work directly. For now, the `hy_memory` plugin is the path of least resistance.
+This is what [`plugins/hyatlas`](plugins/hyatlas) already is, so there is no
+wrapper left to write — see *Hermes Integration* above. If you want to build
+your own, that plugin is the reference: subclass
+`agent.memory_provider.MemoryProvider`, implement the four client operations
+against the HTTP API, and call `ctx.register_memory_provider(provider)` from
+`register(ctx)`.
 
 ---
 
