@@ -111,6 +111,18 @@
               "size": 242560821
             }
           }
+        },
+        "4.2.5-1": {
+          "changelog": "v4.2.5-1（2026-10-08）：同步上游 HyAtlas v4.2.5（commit 9457406 / build 9f9274687）。①async-persistence drain：请求完成后 flush 再返回，修复异步写入中途崩溃丢数据；②LLM 端点不再凭空编造并转发凭证，改为配置化 HYATLAS_LLM_BASE_URL，缺失时降级报错；③LLM extraction 支持 thinking models（reasoning_content 分支）。二进制=上游官方 CI 产物原样（sha256 fb61354c…），约 15MB，CGO。本地打包层沿用 4.2.0-4 配置化改造不变（env.example 模板 + install/upgrade 回调生成 /vol1/@appdata/hyatlas/env）。装机状态：4.2.5-1 running（runtime /vol1/@appcenter/hyatlas），服务端口 19528 正常。",
+          "updated_at": "2026-10-08T12:00:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.30/hyatlas-4.2.5-1-x86.fpk",
+              "sha256": null,
+              "size": null,
+              "note": "sha256/size 待重打包并上传 Release 资产后回填；原 4.2.5-1 fpk 与参考包 hyatlas-4.1.1-4-x86.fpk 均已被清理，需重跑 hyatlas/src/fnos-native/build-fpk.sh 并上传后补齐。"
+            }
+          }
         }
       }
     },
