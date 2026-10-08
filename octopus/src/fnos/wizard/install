@@ -1,0 +1,12 @@
+[
+    {
+        "stepTitle": "License Agreement",
+        "items": [
+            {
+                "type": "tips",
+                "label": "",
+                "helpText": "Octopus — One Hub, All LLMs For You\nCopyright (c) bestruirui\n\nThis program is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License v3.0 (AGPL-3.0).\n\nUpstream project: https://github.com/bestruirui/octopus\nThe full license text is included in the package (LICENSE)."
+            }
+        ]
+    }
+]

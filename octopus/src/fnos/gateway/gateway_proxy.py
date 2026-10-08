@@ -30,17 +30,68 @@ import signal
 import socket
 import sys
 import threading
+import time
 import http.client
+
 
 APP_DIR = os.environ.get("TRIM_APPDEST", "/vol1/@appcenter/octopus")
 SOCK_PATH = os.environ.get("GATEWAY_SOCK_PATH", os.path.join(APP_DIR, "app.sock"))
 BACKEND_PORT = int(os.environ.get("GATEWAY_BACKEND_PORT", "8081"))
 BACKEND_HOST = os.environ.get("GATEWAY_BACKEND_HOST", "127.0.0.1")
 PID_FILE = os.environ.get("GATEWAY_PID_FILE", "")
+# 诊断日志：默认开，GATEWAY_DEBUG=0 关闭。只记请求行 + 剥前缀结果 + 后端状态码，
+# 用于定位「浏览器 /app/octopus 下 404/invalid token」究竟落在哪一层。
+_DEBUG = os.environ.get("GATEWAY_DEBUG", "1") != "0"
+_VAR_DIR = os.path.dirname(PID_FILE) if PID_FILE else APP_DIR
+_DEBUG_LOG = os.path.join(_VAR_DIR, "gw-debug.log")
+
+
+def _dbg(msg):
+    if not _DEBUG:
+        return
+    try:
+        with open(_DEBUG_LOG, "a") as f:
+            f.write("%s %s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), msg))
+    except OSError:
+        pass
+
+
 
 _PREFIX = "/app/octopus"
 IO_TIMEOUT = 600
-_ASSET_VER = "v8"  # cache-bust：HTML 与 JS 模块图统一使用，保证单实例
+# cache-bust：不再写死常量。上游每次重建前端都会换 entry chunk 文件名
+# （如 index-CDVHmyqR.js → index-zLPdUAhw.js），运行时从 index.html 里取该
+# 文件名作版本参数，前端一升级缓存 URL 必然变化，从根上消灭「旧标签页引用
+# 已不存在的 chunk → 404」。取不到时退回 _ASSET_VER_FALLBACK。
+_ASSET_VER_FALLBACK = "v8"
+_ENTRY_RE = re.compile(r'\./assets/(index-[\w.\-]+?\.js)')
+_ver_lock = threading.Lock()
+_ver_state = {"ver": _ASSET_VER_FALLBACK}
+
+
+def _cur_ver():
+    with _ver_lock:
+        return _ver_state["ver"]
+
+
+def _set_ver(v):
+    if not v:
+        return
+    with _ver_lock:
+        if _ver_state["ver"] != v:
+            _ver_state["ver"] = v
+            _dbg("ASSET_VER -> %s" % v)
+
+
+_ASSET_VER = _ASSET_VER_FALLBACK  # 仅用于日志与旧值替换基准
+
+# API 前缀改写开关。上游 v0.13.10（commit bdc9948「子路径用于反向代理场景」）起，
+# 前端请求封装自己就是 `fetch(new URL('.'+path, document.baseURI))`，已能正确解析
+# /app/octopus 子路径。sidecar 再把 JS 字面量 /api/v1/ 改写成 /app/octopus/api/v1/
+# 就会叠加成 /app/octopus/app/octopus/api/v1/... → 404（10-07 实测铁证）。
+# 因此默认关闭；仅在回退到 ≤v0.13.9（前端无子路径支持）时设 GATEWAY_API_REWRITE=1。
+_API_REWRITE = os.environ.get("GATEWAY_API_REWRITE", "0") != "0"
+
 
 _ASSET_RE = re.compile(r'(src|href)="(\./assets/[^"?]+)"')
 # v8：JS 模块图内部相对引用（仅当 "./ 开头且 .js/.css 结尾，避免命中已带参数与正文文本）
@@ -202,7 +253,7 @@ def handle(sock):
             return
 
         fwd_path = _strip_prefix(path)
-
+        _dbg("IN  %s %s%s -> fwd=%s%s" % (method, path, query, fwd_path, query))
         fwd_hdrs = []
         for ln in headers[1:]:
             if not ln or ":" not in ln:
@@ -237,6 +288,8 @@ def handle(sock):
 
         # —— 响应头回写 ——
         status = resp.status
+        _dbg("OUT %s %s -> %d (clen=%s)" % (method, fwd_path, status,
+                                             resp.getheader("Content-Length")))
         reason = resp.reason or _status_text(status)
         out = []
         ban = HOP | {"content-length", "cache-control", "etag", "last-modified", "expires", "age"}
@@ -277,21 +330,28 @@ def handle(sock):
                 new = _SW_REG_RE.sub(
                     "navigator.serviceWorker.getRegistrations().then(r=>r.forEach(x=>x.unregister()))",
                     body_bytes.decode("utf-8", "replace"))
-                # 2) 旧版本参数递进升级（v7 → v8），防浏览器沿用旧缓存 URL
-                new = new.replace("?v=v7", "?v=" + _ASSET_VER)
-                # 3) asset URL 注入当前版本参数
-                new = _ASSET_RE.sub(r'\1="\2?v=' + _ASSET_VER + '"', new)
+                # 2) 从 index.html 的 entry chunk 文件名取运行时版本号
+                _m = _ENTRY_RE.search(new)
+                if _m:
+                    _set_ver(_m.group(1))
+                ver = _cur_ver()
+                # 3) 旧版本参数递进升级（v7 / v8 → 当前值），防浏览器沿用旧缓存 URL
+                new = new.replace("?v=v7", "?v=" + ver).replace("?v=v8", "?v=" + ver)
+                # 4) asset URL 注入当前版本参数
+                new = _ASSET_RE.sub(r'\1="\2?v=' + ver + '"', new)
                 new_b = new.encode("utf-8")
                 if new_b != original:
                     body_bytes = new_b
                     modified = True
             elif "javascript" in ctype:
-                # 3a) API 路径前缀改写（继承 v6/v7）
-                n_sub = body_bytes.count(b"`/api/v1/")
-                if n_sub:
-                    body_bytes = body_bytes.replace(b"`/api/v1/", b"`" + _PREFIX.encode() + b"/api/v1/")
-                # 3b) v8 核心：模块图内相对 chunk 引用统一注入版本参数（单实例）
-                new_b = _JS_ASSET_RE.sub(rb"\1?v=" + _ASSET_VER.encode(), body_bytes)
+                if _API_REWRITE:
+                    # 3a) API 路径前缀改写（仅 ≤v0.13.9 旧前端需要）
+                    n_sub = body_bytes.count(b"`/api/v1/")
+                    if n_sub:
+                        body_bytes = body_bytes.replace(b"`/api/v1/", b"`" + _PREFIX.encode() + b"/api/v1/")
+                        _dbg("API_REWRITE +%d -> %s/api/v1/" % (n_sub, _PREFIX))
+                # 3b) 核心：模块图内相对 chunk 引用统一注入版本参数（单实例）
+                new_b = _JS_ASSET_RE.sub(rb"\1?v=" + _cur_ver().encode(), body_bytes)
                 if new_b != original:
                     body_bytes = new_b
                     modified = True

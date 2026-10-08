@@ -1,6 +1,6 @@
 appname                    = octopus
-version                    = 0.13.9-1
-desc                       = One Hub All LLMs For You —— LLM API 聚合网关，Go 单二进制，SQLite 存储，原生宿主机运行。上游 v0.13.9（更多模板预设 + 日志显示所用渠道 key，无 breaking change）+ 本地 gateway sidecar v8 剥前缀 HTTP 反代（SSE 流式透传 + 单模块图单实例），手机端 /app/octopus 全链路可路由。
+version                    = 0.13.10-1
+desc                       = One Hub All LLMs For You —— LLM API 聚合网关，Go 单二进制，SQLite 存储，原生宿主机运行。上游 v0.13.10（数据库迁移修复 + 新增 passwd 改密命令）+ 本地 gateway sidecar 剥前缀 HTTP 反代（SSE 流式透传 + 动态 cache-bust：版本参数取 entry chunk 文件名，前端升级缓存必失效），手机端 /app/octopus 全链路可路由。
 display_name               = Octopus
 platform                   = x86
 source                     = thirdparty
@@ -16,4 +16,4 @@ service_port               = 8081
 desktop_uidir              = ui
 desktop_applaunchname      = octopus.panel
 disable_authorization_path = false
-changelog                  = v1（2026-09-30）：同步上游 v0.13.9（commit a94a740：更多模板预设 35778 + 日志显示所用渠道 key 8e93f，无 breaking change）。本地 gateway sidecar v8 补丁保留不变；二进制为上游官方 CI 产物原样（octopus-linux-amd64.zip sha256 50c646ee，与 Release SHA256SUMS 一致，反解 version=v0.13.9/commit a94a740/Built 2026-09-30 11:01:44 +0800）。
+changelog                  = v1（2026-10-08，本地修订号归零重开）：同步上游 v0.13.10 —— 数据库迁移修复(1cdb163) + 新增 passwd 改密命令(8cf04fb) + 分组编辑置顶置底(0538c3e) + 子路径反代支持(bdc9948)。二进制为上游官方 CI 产物原样（octopus-linux-amd64 sha256 fe85cec9，与 Release SHA256SUMS 一致；反解 Version=v0.13.10 / Commit d1a26bd / Built 2026-10-07 16:39:35 +0800）。本地 sidecar 补丁三处加固：(1) cache-bust 由写死 v8 改为运行时取 index.html 的 entry chunk 文件名（如 index-zLPdUAhw.js），上游前端一重建缓存 URL 必然失效，根治「旧标签页引用已不存在的 chunk → 404」；(2) 补齐 app.tgz 内 ui/config（fnOS 统一网关注册 micro_app 入口的必需文件，缺失会导致前端拿到裸 /api/v1/* 路径 404）；(3) 补齐 ui/images/icon-64.png + icon-256.png（商店/桌面图标，网关注册路径为 /app-center-static/serviceicon/octopus/ui/images/icon-{0}.png）。另新增 gw-debug.log 诊断（GATEWAY_DEBUG=0 关闭）。

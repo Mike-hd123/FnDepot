@@ -1,0 +1,14 @@
+{
+  ".url": {
+    "octopus.panel": {
+      "title": "Octopus",
+      "icon": "images/icon-{0}.png",
+      "type": "iframe",
+      "protocol": "",
+      "gatewayPrefix": "/app/octopus",
+      "gatewaySocket": "app.sock",
+      "url": "/app/octopus",
+      "allUsers": true
+    }
+  }
+}

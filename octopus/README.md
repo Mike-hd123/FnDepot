@@ -1,12 +1,37 @@
 # octopus.fpk — Octopus 安装包
 
-- 版本：0.13.8-1（2026-09-23）
-- 打包时间：2026-09-23
+- 版本：0.13.10-1（2026-10-08）
+- 打包时间：2026-10-08
 - 上游项目：[bestruirui/octopus](https://github.com/bestruirui/octopus)
-- 上游 commit：`9357a32`（tag v0.13.8，2026-09-23 20:58 +0800）
-- 源码：本目录 `src/`（上游 v0.13.8 源码，已覆盖同步）+ `src/fnos/`（fnOS 打包层：cmd/manifest/config/gateway）
-- 打包方式：fnOS `fnpack build`
-- 产物：sha256 `eb3d29dda455570c2e7dc2a9de389625be8fb7bf143823eecfb17bb8a9af1307`，22,670,236 B；副本落 `/vol2/1000/download/octopus-0.13.8-x86.fpk`
+- 上游 commit：`d1a26bd`（tag v0.13.10，2026-10-07 16:39 +0800）
+- 源码：本目录 `src/`（上游 v0.13.10 源码）+ `src/fnos/`（fnOS 打包层：cmd/manifest/config/gateway/ui/wizard）
+- 打包方式：fnOS `fnpack build`（v1.2.4，`/usr/local/bin/fnpack`）
+
+## v1/0.13.10-1（2026-10-08，本地补丁号按规矩归零重开）
+
+同步上游 v0.13.10（commit `d1a26bd`）——数据库迁移修复 `1cdb163`、新增 passwd 改密命令 `8cf04fb`、分组编辑置顶置底 `0538c3e`、**子路径反代支持 `bdc9948`**。二进制为上游官方 CI 产物原样（`octopus-linux-amd64` sha256 `fe85cec994fceaf13634e1bbd6ca8fb852fe9eaff38a4c6f82c3466607320b94`；反解 Version=v0.13.10 / Commit d1a26bd / Built 2026-10-07 16:39:35 +0800）。
+
+### 关键修复：关闭 sidecar 的 API 前缀手工改写（`GATEWAY_API_REWRITE` 默认 0）
+
+**症状**：0.13.10-2 ~ -5 手机端登录一律 404，回滚 0.13.9-1 立即恢复。
+
+**根因**：nginx access log 抓到的实际请求是 `POST /app/octopus/app/octopus/api/v1/user/login`——**前缀重复两次**。上游 `bdc9948` 起前端请求封装自己改成了
+`fetch(new URL('.' + path, document.baseURI))`，已能正确解析 `/app/octopus` 子路径；sidecar 再把手工改写 JS 里 `` `/api/v1/ `` 为 `` `/app/octopus/api/v1/ ``，两边各加一次 → 双前缀。0.13.9 无此特性，所以一直正常。**这不是 0.13.10 的 bug，是我们 sidecar 补丁与上游新特性冲突。**
+
+修法则是在 sidecar 加 `_API_REWRITE` 开关（默认关），把子路径解析交给上游；回退到 ≤v0.13.9 时设 `GATEWAY_API_REWRITE=1` 可恢复旧行为。
+
+### 打包方式纠偏（重要）
+
+之前一轮（-2 ~ -6）用了自写 tar 脚本手工组装 app.tgz，INNER_PINS 需逐项列举，**列漏即丢文件**：漏了 `ui/images/`（商店无图标）、`wizard/install`、`LICENSE`/`README.md`/`THIRD_PARTY_LICENSES.csv`，且 config 只有一份与既定包不一致。正确做法是本目录既有流程：**解上一版 fpk 作骨架 → 换二进制与 sidecar → 删 `app/config` → 改 manifest（删 checksum 行）→ `fnpack build -d .`**。`build-fpk.sh` 已重写为这套流程并带结构自检，产物外层清单与 0.13.9-1 逐项一致。
+
+### 打包脚本自身的坑（记录备查）
+
+- fnpack 要求 `app/ui/config` 必须存在，否则报 `Required file "app/ui/config" is missing`。校验 `fnpack` 是否真的成功时**不要把 stdout 吞掉**，且打包前先 `rm -f octopus.fpk`，否则会在失败时沿用上一次的成功产物，误判为成功。
+- 本脚本开了 `pipefail`。`tar -tzf x | grep -q pat` 中 `grep -q` 命中即退，`tar` 收 SIGPIPE 返回 141，整条管道被判失败 → 自检假报「缺文件」。**必须先把清单读进变量再匹配**（`has_outer`/`has_inner`）。
+- `wizard/install` 是必需项；旧 README「octopus 无 wizard 目录」的说法有误。
+- fnpack 输出固定名 `octopus.fpk`，需手动 `cp` 成 `-x86.fpk` 交付名。
+
+- 产物：sha256 `9d59e8d0a63b3fdbf13f334e135d807494545e86328535a6b84de28bf846a485`，22,666,716 B；副本落 `/vol2/1000/download/octopus-0.13.10-1-x86.fpk`
 
 ## 打包说明
 
