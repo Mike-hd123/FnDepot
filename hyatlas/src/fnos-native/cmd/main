@@ -115,9 +115,16 @@ case "${1:-}" in
     # ── 配置装载（v4.3.0 配置化）：优先级 shell 环境 > ${VAR_DIR}/env > 内置默认 ──
     ENV_FILE="${VAR_DIR}/env"
     if [ -f "$ENV_FILE" ]; then
+      # set -a: 文件内所有键自动 export 给子进程（server 只读环境变量；仅 source
+      # 不导出会让 HYATLAS_EMBED_KEY 等静默丢失——2026-10-08 401 事故根因）
+      set -a
       # shellcheck disable=SC1090
       . "$ENV_FILE"
+      set +a
     fi
+    # ── 旧键名兼容（4.2.0-4 时代 env 的别名，缺失才映射，不覆盖新键）──
+    [ -z "${HYATLAS_EMBED_KEY:-}" ]  && [ -n "${HYATLAS_EMBED_API_KEY:-}" ] && export HYATLAS_EMBED_KEY="$HYATLAS_EMBED_API_KEY"
+    [ -z "${HYATLAS_LLM_BASE:-}" ]   && [ -n "${HYATLAS_LLM_BASE_URL:-}" ]  && export HYATLAS_LLM_BASE="$HYATLAS_LLM_BASE_URL"
     export HYATLAS_GO_HOST="${HYATLAS_GO_HOST:-127.0.0.1}"
     export HYATLAS_GO_PORT="${HYATLAS_GO_PORT:-19528}"
     export HYATLAS_GO_DATA="${HYATLAS_GO_DATA:-${DATA_DIR}}"
