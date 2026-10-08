@@ -118,9 +118,8 @@
           "packages": {
             "x86": {
               "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.30/hyatlas-4.2.5-1-x86.fpk",
-              "sha256": null,
-              "size": null,
-              "note": "sha256/size 待重打包并上传 Release 资产后回填；原 4.2.5-1 fpk 与参考包 hyatlas-4.1.1-4-x86.fpk 均已被清理，需重跑 hyatlas/src/fnos-native/build-fpk.sh 并上传后补齐。"
+              "sha256": "9adc123350eabbcc67db2e6a893947858892ed232fe42ae734868b4cefdee43d",
+              "size": 242560436
             }
           }
         }
