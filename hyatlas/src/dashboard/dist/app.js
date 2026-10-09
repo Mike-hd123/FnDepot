@@ -128,7 +128,7 @@ function renderLoadErrors() {
   const banner = document.createElement('div');
   banner.className = 'domain-error';
   banner.style.cssText = 'margin:12px 0;padding:10px 12px;border:1px solid rgba(248,113,113,.45);color:var(--red);background:rgba(248,113,113,.06);';
-  banner.textContent = `Live ${errors.map(error => error.name).join(', ')} data is unavailable. Showing the last known values.`;
+  banner.textContent = `${errors.map(error => error.name).join('、')} 实时数据不可用，正在显示最近一次的已知值。`;
   page.prepend(banner);
 }
 
@@ -261,8 +261,8 @@ function scopeUsers(key = currentOwnerKey) {
 
 function ownerLabel(key) {
   const owner = ownerFromKey(key);
-  if (!owner) return 'All owners';
-  return owner.user_id ? `${owner.user_id} · ${owner.agent_id || 'any agent'}` : `(no user) · ${owner.agent_id || 'any agent'}`;
+  if (!owner) return '全部档案';
+  return owner.user_id ? `${owner.user_id} · ${owner.agent_id || '任意代理'}` : `（无用户）· ${owner.agent_id || '任意代理'}`;
 }
 
 // Distinct (user_id, agent_id) pairs from a /api/memories payload, with counts.
@@ -287,7 +287,7 @@ function setOwnerOptions(owners) {
   ownerOptions = owners;
   const el = document.getElementById('agent-selector');
   if (el) {
-    el.innerHTML = [`<option value="all">All owners (${owners.reduce((a, o) => a + o.count, 0)} rows)</option>`]
+    el.innerHTML = [`<option value="all">全部档案（${owners.reduce((a, o) => a + o.count, 0)} 条）</option>`]
       .concat(owners.map(o => `<option value="${esc(o.key)}">${esc(ownerLabel(o.key))} · ${esc(o.count)}</option>`))
       .join('');
     if (currentOwnerKey !== 'all' && !owners.some(o => o.key === currentOwnerKey)) {
@@ -315,7 +315,7 @@ function initAgentSelector() {
     try { localStorage.setItem('hyatlas-owner', next); } catch (e) { /* private mode */ }
     l5State.data = null;
     l5State.scope = null;
-    setScopeStatus('Loading…');
+    setScopeStatus('加载中…');
     await loadAllData();
   });
   const label = document.getElementById('scope-label');
@@ -325,7 +325,7 @@ function initAgentSelector() {
 async function loadAllData() {
   const seq = ++loadSeq;
   const agentId = currentOwnerKey;
-  setScopeStatus(`Loading ${ownerLabel(agentId)}…`);
+  setScopeStatus(`加载 ${ownerLabel(agentId)}…`);
   try {
     const [coreResult, opsResult, graphResult, qualityResult, ownersResult] = await Promise.all([
       fetchResult('core', Promise.all([
@@ -512,14 +512,14 @@ async function loadAllData() {
     const label = document.getElementById('scope-label');
     if (label) label.textContent = ownerLabel(currentOwnerKey);
     setScopeStatus(failed.length
-      ? `Updated with stale ${failed.map(result => result.name).join(', ')} data`
-      : `Updated ${new Date().toLocaleTimeString()}`);
+      ? `已更新（${failed.map(result => result.name).join('、')} 为旧数据）`
+      : `已更新 ${new Date().toLocaleTimeString()}`);
     return true;
   } catch (err) {
     console.error('Failed to load data:', err);
     if (seq === loadSeq) {
       loadErrors = [{name: 'core', error: err}];
-      setScopeStatus('Core refresh failed');
+      setScopeStatus('核心数据刷新失败');
     }
     return false;
   }
@@ -532,7 +532,7 @@ function updateGlobalStatus() {
   
   if (!statusData) {
     dot.className = 'status-dot error';
-    text.textContent = 'OFFLINE';
+    text.textContent = '离线';
     text.style.color = 'var(--red)';
     return;
   }
@@ -542,15 +542,15 @@ function updateGlobalStatus() {
 
   if (allOk) {
     dot.className = 'status-dot';
-    text.textContent = 'OPERATIONAL';
+    text.textContent = '运行中';
     text.style.color = 'var(--green)';
   } else if (coreOk) {
     dot.className = 'status-dot degraded';
-    text.textContent = 'LIMITED';
+    text.textContent = '受限';
     text.style.color = 'var(--accent)';
   } else {
     dot.className = 'status-dot error';
-    text.textContent = 'BROKEN';
+    text.textContent = '故障';
     text.style.color = 'var(--red)';
   }
   
@@ -564,23 +564,23 @@ function updateGlobalStatus() {
   if (lastMemory && lastMemory.gmt_created) {
     const ts = Number(lastMemory.gmt_created);
     if (!Number.isFinite(ts) || ts <= 0) {
-      meta.textContent = 'Last memory: —';
+      meta.textContent = '最近记忆: —';
     } else {
       const ago = Math.floor((Date.now() / 1000 - ts) / 60);
       if (ago < 60) {
-        meta.textContent = `Last memory: ${ago}m ago`;
+        meta.textContent = `最近记忆: ${ago} 分钟前`;
       } else if (ago < 1440) {
         const hours = Math.floor(ago / 60);
         const mins = ago % 60;
-        meta.textContent = `Last memory: ${hours}h ${mins}m ago`;
+        meta.textContent = `最近记忆: ${hours} 小时 ${mins} 分前`;
       } else {
         const days = Math.floor(ago / 1440);
         const hours = Math.floor((ago % 1440) / 60);
-        meta.textContent = `Last memory: ${days}d ${hours}h ago`;
+        meta.textContent = `最近记忆: ${days} 天 ${hours} 小时前`;
       }
     }
   } else {
-    meta.textContent = 'Last memory: —';
+    meta.textContent = '最近记忆: —';
   }
 }
 
@@ -613,34 +613,34 @@ function renderOverview() {
   // Stat cards
   const statsHtml = `
     <div class="stat-card">
-      <div class="stat-label">WRITES</div>
+      <div class="stat-label">写入</div>
       <div class="stat-value">${fmtCount(memWrites)}</div>
-      <div class="text-xs text-muted mt-1">memories added by agents</div>
+      <div class="text-xs text-muted mt-1">各代理写入的记忆数</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">RECALLS</div>
+      <div class="stat-label">召回</div>
       <div class="stat-value">${fmtCount(reads)}</div>
-      <div class="text-xs text-muted mt-1">searches by agents</div>
+      <div class="text-xs text-muted mt-1">各代理检索次数</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">VDB POINTS</div>
+      <div class="stat-label">向量点</div>
       <div class="stat-value">${fmtCount(vdbPoints)}</div>
-      <div class="text-xs text-muted mt-1">chroma vectors (L1-L4, L6-L7)</div>
+      <div class="text-xs text-muted mt-1">向量库条目（L1-L4、L6-L7）</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">GRAPH RELATIONS</div>
+      <div class="stat-label">图谱关系</div>
       <div class="stat-value">${fmtCount(totalLinks)}</div>
-      <div class="text-xs text-muted mt-1">L5 knowledge graph edges</div>
+      <div class="text-xs text-muted mt-1">L5 知识图谱边数</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">DISPLAY TOTAL</div>
+      <div class="stat-label">展示总数</div>
       <div class="stat-value">${fmtCount(displayTotal)}</div>
-      <div class="text-xs text-muted mt-1">L1-L4 VDB + L5-L7 graph</div>
+      <div class="text-xs text-muted mt-1">L1-L4 向量 + L5-L7 图谱</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">LAYER COVERAGE</div>
+      <div class="stat-label">分层覆盖</div>
       <div class="stat-value">${activeLayers}<span style="color: var(--muted); font-size: 20px;">/${totalLayers}</span></div>
-      <div class="text-xs text-muted mt-1">L1-L4 VDB + L5-L7 graph</div>
+      <div class="text-xs text-muted mt-1">L1-L4 向量 + L5-L7 图谱</div>
     </div>
   `;
   document.getElementById('overview-stats').innerHTML = statsHtml;
@@ -756,8 +756,8 @@ function renderMemoryStore() {
   const embedOk = statusData?.embed === 'ok';
   const llmOk = statusData?.llm === 'ok';
   const statusText = vdbOk
-    ? (embedOk && llmOk ? 'System ready (all services online)' : 'Memory readable; capture/digest limited')
-    : 'Memory store unavailable';
+    ? (embedOk && llmOk ? '系统就绪（全部服务在线）' : '记忆可读；写入/消化受限')
+    : '记忆仓库不可用';
 
   const html = `
     <div class="flex items-center gap-3 mb-3">
@@ -765,11 +765,11 @@ function renderMemoryStore() {
         <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
       </svg>
       <div>
-        <div class="text-sm font-mono">${fmtCount(vdbPoints)} VDB · ${fmtCount(displayTotal)} display</div>
+        <div class="text-sm font-mono">${fmtCount(vdbPoints)} 向量 · ${fmtCount(displayTotal)} 展示</div>
         <div class="text-xs text-muted">${statusText}</div>
       </div>
     </div>
-    <div class="text-xs text-muted mt-2">VDB: ${fmtCount(vdbPoints)} • Coding: ${fmtCount(codingTotal)}</div>
+    <div class="text-xs text-muted mt-2">向量库: ${fmtCount(vdbPoints)} • 编码: ${fmtCount(codingTotal)}</div>
   `;
 
   document.getElementById('memory-store').innerHTML = html;
@@ -799,7 +799,7 @@ function renderActivityChart() {
   
   const labels = Object.keys(days).map(d => {
     const date = new Date(d);
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' });
   });
   const data = Object.values(days);
   
@@ -812,7 +812,7 @@ function renderActivityChart() {
     data: {
       labels,
       datasets: [{
-        label: 'Memories Ingested',
+        label: '记忆写入量',
         data,
         borderColor: '#d4af37',
         backgroundColor: 'rgba(212, 175, 55, 0.1)',
@@ -861,19 +861,19 @@ function renderOperations() {
 
   const html = `
     <div class="stat-card">
-      <div class="stat-label">VDB POINTS</div>
+      <div class="stat-label">向量点</div>
       <div class="stat-value">${fmtCount(vdbPoints)}</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">DISPLAY TOTAL</div>
+      <div class="stat-label">展示总数</div>
       <div class="stat-value">${fmtCount(displayTotal)}</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">LAYERS ACTIVE</div>
+      <div class="stat-label">活跃分层</div>
       <div class="stat-value">${activeLayers}</div>
     </div>
     <div class="stat-card">
-      <div class="stat-label">CODING MEMORIES</div>
+      <div class="stat-label">编码记忆</div>
       <div class="stat-value">${fmtCount(codingTotal)}</div>
     </div>
   `;
@@ -898,8 +898,8 @@ async function performSearch() {
   }
 
   try {
-    document.getElementById('results-count').textContent = 'Searching…';
-    document.getElementById('search-results').innerHTML = '<div class="text-muted">Searching memories…</div>';
+    document.getElementById('results-count').textContent = '搜索中…';
+    document.getElementById('search-results').innerHTML = '<div class="text-muted">正在搜索记忆…</div>';
     // The layer filter is sent to the server so the limit applies to the
     // selected layer. Filtering after the fetch would hide matches that the
     // server never returned.
@@ -951,7 +951,7 @@ async function performSearch() {
     searchResults = [];
     renderSearchResults();
     document.getElementById('search-results').innerHTML =
-      `<div class="text-muted">Search failed: ${esc(err.message || String(err))}</div>`;
+      `<div class="text-muted">搜索失败: ${esc(err.message || String(err))}</div>`;
   }
 }
 
@@ -975,17 +975,17 @@ document.getElementById('clear-filters').addEventListener('click', () => {
 });
 
 function renderSearchResults() {
-  document.getElementById('results-count').textContent = `RESULTS (${searchResults.length})`;
+  document.getElementById('results-count').textContent = `结果 (${searchResults.length})`;
   if (!searchResults.length) {
-    document.getElementById('search-results').innerHTML = '<div class="text-muted">No memories matched the current query and filters.</div>';
+    document.getElementById('search-results').innerHTML = '<div class="text-muted">当前查询与筛选条件下没有匹配的记忆。</div>';
     return;
   }
 
   const scoreLabel = searchMode === 'keyword'
-    ? 'keyword/hybrid score'
+    ? '关键词/混合评分'
     : searchMode === 'hybrid'
-      ? 'hybrid retrieval score'
-      : 'semantic similarity score';
+      ? '混合检索评分'
+      : '语义相似度评分';
   // Memory content is user-controlled, so every field is escaped. Rows carry
   // only the index; the click handler reads the memory from searchResults.
   const html = searchResults.map((m, i) => {
@@ -1003,7 +1003,7 @@ function renderSearchResults() {
         </div>
         <div class="text-sm font-semibold mb-2">${esc(title)}</div>
         <div class="text-xs text-muted mb-2">${esc(snippet)}</div>
-        <div class="text-xs text-muted">${tagCount} tags</div>
+        <div class="text-xs text-muted">${tagCount} 个标签</div>
       </div>
     `;
   }).join('');
@@ -1034,11 +1034,11 @@ function showMemoryDetail(memory) {
 
   const html = `
     <div class="memory-detail">
-      <div class="text-xs text-muted mb-2">MEMORY DETAIL</div>
+      <div class="text-xs text-muted mb-2">记忆详情</div>
       <div class="flex gap-2 mb-3" style="flex-wrap: wrap; align-items: center;">
         <span class="badge badge-layer layer-${cssToken(memory.layer)}">${esc(memory.layer || '—')}</span>
         ${impBadge}
-        <span class="badge badge-importance" title="Times this memory has been recalled">↻ ${esc(acc)}</span>
+        <span class="badge badge-importance" title="该记忆被召回次数">↻ ${esc(acc)}</span>
       </div>
 
       <div class="text-xs text-muted font-mono mb-3">id: ${esc(memory.memory_id)}</div>
@@ -1047,20 +1047,20 @@ function showMemoryDetail(memory) {
       <div class="text-sm mb-4" style="white-space: pre-wrap; word-break: break-word;">${esc(title)}</div>
 
       <div class="mb-3">
-        <div class="text-xs text-muted mb-1">SCORING (4-factor)</div>
+        <div class="text-xs text-muted mb-1">评分（4 因子）</div>
         <div class="text-xs font-mono">semantic 0.50 · recency 0.30 · importance ${imp === null ? '—' : imp.toFixed(2) + ' × 0.15'} · access ${esc(acc)} × 0.05</div>
       </div>
 
       ${(memory.user_id || memory.session_id) ? `
       <div class="mb-3">
-        <div class="text-xs text-muted mb-1">PROVENANCE</div>
+        <div class="text-xs text-muted mb-1">溯源</div>
         ${memory.user_id ? `<div class="text-xs font-mono">user: ${esc(memory.user_id)}</div>` : ''}
         ${memory.session_id ? `<div class="text-xs font-mono">session: ${esc(memory.session_id)}</div>` : ''}
       </div>` : ''}
 
       ${(memory.tags || []).length > 0 ? `
       <div class="mb-3">
-        <div class="text-xs text-muted mb-1">TAGS</div>
+        <div class="text-xs text-muted mb-1">标签</div>
         ${(memory.tags || []).map(t => `<span class="badge badge-tag">${esc(t)}</span>`).join(' ')}
       </div>` : ''}
     </div>
@@ -1097,21 +1097,21 @@ function renderMemoryDetailPage(memory) {
 
   const fullContent = memory.content || '';
   const preview = fullContent.length > 80 ? fullContent.substring(0, 80) + '…' : fullContent;
-  titleEl.textContent = preview || '(empty content)';
+  titleEl.textContent = preview || '(内容为空)';
   titleEl.title = fullContent;
   const layerInfo = layerInfoFor(memory.layer);
-  const layerLabel = layerInfo ? layerInfo.name : (memory.layer || 'unknown');
+  const layerLabel = layerInfo ? layerInfo.name : (memory.layer || '未知');
   subEl.textContent  = `${layerLabel}${memory.user_id ? ' · ' + memory.user_id : ''}`;
 
   const imp = typeof memory.importance === 'number' ? memory.importance : null;
   const impCls = imp === null ? '' : imp >= 0.7 ? 'importance-high' : imp >= 0.4 ? 'importance-mid' : 'importance-low';
   const impBadge = imp === null
     ? `<span class="badge badge-importance">—</span>`
-    : `<span class="badge badge-importance ${impCls}" title="Importance (4-factor scorer, weight 0.15)">★ ${imp.toFixed(2)}</span>`;
+    : `<span class="badge badge-importance ${impCls}" title="重要性（4 因子评分器，权重 0.15）">★ ${imp.toFixed(2)}</span>`;
   const acc = typeof memory.access_count === 'number' ? memory.access_count : null;
   const accBadge = acc === null
-    ? `<span class="badge badge-importance" title="Access count not available">↻ —</span>`
-    : `<span class="badge badge-importance" title="Times this memory has been recalled (4-factor scorer, weight 0.05)">↻ ${acc.toLocaleString()}</span>`;
+    ? `<span class="badge badge-importance" title="访问次数不可用">↻ —</span>`
+    : `<span class="badge badge-importance" title="该记忆被召回次数（4 因子评分器，权重 0.05）">↻ ${acc.toLocaleString()}</span>`;
 
   // Compute the four 4-factor components from available fields. This is the
   // best-effort explanation surfaced to the user; the backend may use a
@@ -1133,7 +1133,7 @@ function renderMemoryDetailPage(memory) {
   const tagsHtml = (memory.tags && memory.tags.length > 0)
     ? `
       <div class="memory-detail-section">
-        <div class="memory-detail-section-title">TAGS</div>
+        <div class="memory-detail-section-title">标签</div>
         <div class="flex gap-2" style="flex-wrap: wrap;">${(memory.tags || []).map(t => `<span class="badge badge-tag">${escapeHtml(t)}</span>`).join('')}</div>
       </div>`
     : '';
@@ -1141,22 +1141,22 @@ function renderMemoryDetailPage(memory) {
   const provenanceHtml = (memory.user_id || memory.session_id || memory.agent_id || memory.workspace_id || memory.branch)
     ? `
       <div class="memory-detail-section">
-        <div class="memory-detail-section-title">PROVENANCE</div>
-        ${memory.user_id     ? `<div class="kv-row"><div class="kv-label">user</div><div class="kv-value font-mono">${escapeHtml(memory.user_id)}</div></div>` : ''}
-        ${memory.session_id  ? `<div class="kv-row"><div class="kv-label">session</div><div class="kv-value font-mono">${escapeHtml(memory.session_id)}</div></div>` : ''}
-        ${memory.agent_id    ? `<div class="kv-row"><div class="kv-label">agent</div><div class="kv-value font-mono">${escapeHtml(memory.agent_id)}</div></div>` : ''}
-        ${memory.workspace_id ? `<div class="kv-row"><div class="kv-label">workspace</div><div class="kv-value font-mono">${escapeHtml(memory.workspace_id)}</div></div>` : ''}
-        ${memory.branch      ? `<div class="kv-row"><div class="kv-label">branch</div><div class="kv-value font-mono">${escapeHtml(memory.branch)}</div></div>` : ''}
+        <div class="memory-detail-section-title">溯源</div>
+        ${memory.user_id     ? `<div class="kv-row"><div class="kv-label">用户</div><div class="kv-value font-mono">${escapeHtml(memory.user_id)}</div></div>` : ''}
+        ${memory.session_id  ? `<div class="kv-row"><div class="kv-label">会话</div><div class="kv-value font-mono">${escapeHtml(memory.session_id)}</div></div>` : ''}
+        ${memory.agent_id    ? `<div class="kv-row"><div class="kv-label">代理</div><div class="kv-value font-mono">${escapeHtml(memory.agent_id)}</div></div>` : ''}
+        ${memory.workspace_id ? `<div class="kv-row"><div class="kv-label">工作区</div><div class="kv-value font-mono">${escapeHtml(memory.workspace_id)}</div></div>` : ''}
+        ${memory.branch      ? `<div class="kv-row"><div class="kv-label">分支</div><div class="kv-value font-mono">${escapeHtml(memory.branch)}</div></div>` : ''}
       </div>`
     : '';
 
   const l5Extras = (memory.entity_type || memory.mention_count || memory.aliases)
     ? `
       <div class="memory-detail-section">
-        <div class="memory-detail-section-title">L5 ENTITY</div>
-        ${memory.entity_type   ? `<div class="kv-row"><div class="kv-label">type</div><div class="kv-value font-mono">${escapeHtml(memory.entity_type)}</div></div>` : ''}
-        ${memory.mention_count ? `<div class="kv-row"><div class="kv-label">mention_count</div><div class="kv-value font-mono">${escapeHtml(String(memory.mention_count))}</div></div>` : ''}
-        ${(memory.aliases && memory.aliases.length) ? `<div class="kv-row"><div class="kv-label">aliases</div><div class="kv-value font-mono">${escapeHtml(memory.aliases.join(', '))}</div></div>` : ''}
+        <div class="memory-detail-section-title">L5 实体</div>
+        ${memory.entity_type   ? `<div class="kv-row"><div class="kv-label">类型</div><div class="kv-value font-mono">${escapeHtml(memory.entity_type)}</div></div>` : ''}
+        ${memory.mention_count ? `<div class="kv-row"><div class="kv-label">提及数</div><div class="kv-value font-mono">${escapeHtml(String(memory.mention_count))}</div></div>` : ''}
+        ${(memory.aliases && memory.aliases.length) ? `<div class="kv-row"><div class="kv-label">别名</div><div class="kv-value font-mono">${escapeHtml(memory.aliases.join(', '))}</div></div>` : ''}
       </div>`
     : '';
 
@@ -1166,34 +1166,34 @@ function renderMemoryDetailPage(memory) {
         <span class="badge badge-layer layer-${cssToken(memory.layer)}">${escapeHtml(memory.layer || '—')}</span>
         ${impBadge}
         ${accBadge}
-        <span class="text-xs text-muted font-mono" title="Memory identifier">id: ${escapeHtml(memory.memory_id)}</span>
+        <span class="text-xs text-muted font-mono" title="记忆标识">id: ${escapeHtml(memory.memory_id)}</span>
       </div>
 
       <div class="panel memory-detail-content-panel">
-        <div class="memory-detail-section-title">CONTENT</div>
+        <div class="memory-detail-section-title">内容</div>
         <div class="memory-detail-content-text">${escapeHtml(fullContent)}</div>
       </div>
 
       <div class="panel">
-        <div class="memory-detail-section-title">SCORING (4-factor)</div>
+        <div class="memory-detail-section-title">评分（4 因子）</div>
         <div class="scoring-grid">
           <div class="scoring-row">
-            <div class="scoring-label">semantic</div>
+            <div class="scoring-label">语义</div>
             <div class="scoring-bar"><div class="scoring-bar-fill" style="width: ${semantic*100}%"></div></div>
-            <div class="scoring-value font-mono">${semantic.toFixed(2)} (weight)</div>
+            <div class="scoring-value font-mono">${semantic.toFixed(2)}（权重）</div>
           </div>
           <div class="scoring-row">
-            <div class="scoring-label">recency</div>
+            <div class="scoring-label">时效</div>
             <div class="scoring-bar"><div class="scoring-bar-fill" style="width: ${recency*100}%"></div></div>
-            <div class="scoring-value font-mono">${recency.toFixed(2)} (weight)</div>
+            <div class="scoring-value font-mono">${recency.toFixed(2)}（权重）</div>
           </div>
           <div class="scoring-row">
-            <div class="scoring-label">importance</div>
+            <div class="scoring-label">重要性</div>
             <div class="scoring-bar"><div class="scoring-bar-fill" style="width: ${(imp === null ? 0 : imp)*100}%"></div></div>
             <div class="scoring-value font-mono">${impVal === null ? '—' : impVal} × ${importanceWeight.toFixed(2)}</div>
           </div>
           <div class="scoring-row">
-            <div class="scoring-label">access</div>
+            <div class="scoring-label">访问</div>
             <div class="scoring-bar"><div class="scoring-bar-fill" style="width: ${Math.min(100, (acc === null ? 0 : acc)*10)}%"></div></div>
             <div class="scoring-value font-mono">${accVal} × ${accessWeight.toFixed(2)}</div>
           </div>
@@ -1201,9 +1201,9 @@ function renderMemoryDetailPage(memory) {
       </div>
 
       <div class="panel">
-        <div class="memory-detail-section-title">TIMESTAMPS</div>
-        <div class="kv-row"><div class="kv-label">created</div><div class="kv-value font-mono">${escapeHtml(createdStr)}</div></div>
-        ${updatedStr ? `<div class="kv-row"><div class="kv-label">updated</div><div class="kv-value font-mono">${escapeHtml(updatedStr)}</div></div>` : ''}
+        <div class="memory-detail-section-title">时间戳</div>
+        <div class="kv-row"><div class="kv-label">创建</div><div class="kv-value font-mono">${escapeHtml(createdStr)}</div></div>
+        ${updatedStr ? `<div class="kv-row"><div class="kv-label">更新</div><div class="kv-value font-mono">${escapeHtml(updatedStr)}</div></div>` : ''}
       </div>
 
       ${provenanceHtml}
@@ -1375,7 +1375,7 @@ function renderLayers() {
     const pct = total > 0 ? (count / total * 100).toFixed(1) : '0.0';
     const avgTags = count > 0 ? ((Number(layerTagCounts[key]) || 0) / count).toFixed(1) : '0.0';
     const dual = graphLayerKeys.has(key)
-      ? `<div class="text-xs text-muted">VDB ${fmtCount(vdbCounts[key] || 0)} · Graph ${fmtCount(graphCountsLocal[key] || count)}</div>`
+      ? `<div class="text-xs text-muted">向量 ${fmtCount(vdbCounts[key] || 0)} · 图谱 ${fmtCount(graphCountsLocal[key] || count)}</div>`
       : '';
     const source = graphLayerKeys.has(key) ? 'graph' : 'vdb';
 
@@ -1386,7 +1386,7 @@ function renderLayers() {
             <div class="layer-indicator layer-${key}" style="background: ${info.color}">${key.split('_')[0].toUpperCase()}</div>
             <div>
               <div class="font-semibold">${info.name}</div>
-              <div class="text-xs text-muted">${info.desc} · ${source}</div>
+              <div class="text-xs text-muted">${info.desc} · ${source === 'graph' ? '图谱' : '向量'}</div>
               ${dual}
             </div>
           </div>
@@ -1399,8 +1399,8 @@ function renderLayers() {
   }).join('');
 
   document.getElementById('layers-tbody').innerHTML = rows;
-  document.getElementById('layers-total').textContent = `Display total: ${fmtCount(total)} (L1-L4 VDB + L5-L7 graph)`;
-  document.getElementById('layers-active').textContent = `Layers Active: ${getActiveLayerCount()}`;
+  document.getElementById('layers-total').textContent = `展示总数: ${fmtCount(total)}（L1-L4 向量 + L5-L7 图谱）`;
+  document.getElementById('layers-active').textContent = `活跃分层: ${getActiveLayerCount()}`;
 
   // Right sidebar - layer hierarchy
   renderLayerHierarchy(layerCounts);
@@ -1416,7 +1416,7 @@ function renderLayerHierarchy(layerCounts) {
         <div class="layer-indicator" style="background: ${info.color}">${key.split('_')[0].toUpperCase()}</div>
         <div class="layer-info">
           <div class="layer-name">${info.name}</div>
-          <div class="layer-count">${count} memories</div>
+          <div class="layer-count">${count} 条记忆</div>
         </div>
       </div>
     `;
@@ -1424,20 +1424,20 @@ function renderLayerHierarchy(layerCounts) {
   
   const sidebarHtml = `
     <div class="right-section">
-      <div class="right-section-title">LAYER HIERARCHY</div>
-      <div class="text-xs text-muted mb-4">Information flows upward through abstraction.</div>
+      <div class="right-section-title">分层结构</div>
+      <div class="text-xs text-muted mb-4">信息经由抽象自下而上流动。</div>
       <div class="layer-hierarchy">${html}</div>
       <div class="text-xs text-muted mt-4">
         <div class="flex items-center gap-2 mb-2">
           <div style="width: 12px; height: 2px; background: var(--accent)"></div>
-          <span>Active Layer</span>
+          <span>活跃分层</span>
         </div>
         <div class="flex items-center gap-2">
           <div style="width: 12px; height: 2px; background: var(--border); border-style: dashed"></div>
-          <span>Empty Layer</span>
+          <span>空分层</span>
         </div>
       </div>
-      <button class="export-btn mt-4" onclick="navigateTo('observatory')">Explore in Observatory</button>
+      <button class="export-btn mt-4" onclick="navigateTo('observatory')">在星图中探索</button>
     </div>
   `;
   
@@ -1505,13 +1505,13 @@ function renderToday() {
       const title = (m.content || '');
       const preview = title.length > 100 ? title.substring(0, 100) + '…' : title;
       const ts = Number(m.gmt_created) || 0;
-      const time = ts ? new Date(ts * 1000).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' }) : '—';
+      const time = ts ? new Date(ts * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '—';
       const ago = ts ? Math.floor((Date.now() / 1000 - ts) / 60) : 0;
-      const agoText = !ts ? '—' : ago < 60 ? `${ago}m ago` : `${Math.floor(ago / 60)}h ago`;
+      const agoText = !ts ? '—' : ago < 60 ? `${ago} 分钟前` : `${Math.floor(ago / 60)} 小时前`;
 
       const imp = typeof m.importance === 'number' ? m.importance : null;
       const impCls = imp === null ? '' : imp >= 0.7 ? 'importance-high' : imp >= 0.4 ? 'importance-mid' : 'importance-low';
-      const impBadge = imp === null ? '' : `<span class="badge badge-importance ${impCls}" title="Importance score (4-factor scorer)">★ ${imp.toFixed(2)}</span>`;
+      const impBadge = imp === null ? '' : `<span class="badge badge-importance ${impCls}" title="重要性（4 因子评分器）">★ ${imp.toFixed(2)}</span>`;
 
       return `
         <div class="timeline-item" data-memory-id="${esc(m.memory_id)}">
@@ -1529,7 +1529,7 @@ function renderToday() {
       `;
     }).join('');
   
-  document.getElementById('timeline').innerHTML = html || '<div class="text-muted">No events today</div>';
+  document.getElementById('timeline').innerHTML = html || '<div class="text-muted">该时间范围内暂无记忆</div>';
   
   // Right sidebar - summary
   renderTodaySummary(filtered);
@@ -1544,22 +1544,22 @@ function renderTodaySummary(todayMemories) {
   
   const html = `
     <div class="right-section">
-      <div class="right-section-title">TODAY'S SUMMARY</div>
+      <div class="right-section-title">今日摘要</div>
       <div class="summary-grid">
         <div class="summary-card">
-          <div class="summary-label">MEMORIES INGESTED</div>
+          <div class="summary-label">写入记忆</div>
           <div class="summary-value">${todayMemories.length}</div>
         </div>
         <div class="summary-card">
-          <div class="summary-label">UNIQUE SESSIONS</div>
+          <div class="summary-label">独立会话</div>
           <div class="summary-value">${uniqueSessions}</div>
         </div>
         <div class="summary-card">
-          <div class="summary-label">UNIQUE TAGS</div>
+          <div class="summary-label">独立标签</div>
           <div class="summary-value">${uniqueTags}</div>
         </div>
         <div class="summary-card">
-          <div class="summary-label">THIS WEEK</div>
+          <div class="summary-label">本周</div>
           <div class="summary-value">${weekCount}</div>
         </div>
       </div>
@@ -1589,70 +1589,70 @@ function renderSystem() {
   
   const infoHtml = `
     <div class="kv-item">
-      <div class="kv-label">System Name</div>
+      <div class="kv-label">系统名称</div>
       <div class="kv-value">${esc(infoData?.name || '—')}</div>
     </div>
     <div class="kv-item">
-      <div class="kv-label">Version</div>
+      <div class="kv-label">版本</div>
       <div class="kv-value">${esc(infoData?.version || '—')}</div>
     </div>
     <div class="kv-item">
-      <div class="kv-label">Status</div>
+      <div class="kv-label">状态</div>
       <div class="kv-value">${esc(statusData?.status || '—')}</div>
     </div>
     <div class="kv-item">
-      <div class="kv-label">Uptime</div>
+      <div class="kv-label">运行时长</div>
       <div class="kv-value">${esc(uptime)}</div>
     </div>
     <div class="kv-item">
-      <div class="kv-label">Server Time</div>
+      <div class="kv-label">服务器时间</div>
       <div class="kv-value">${esc(new Date().toLocaleString())}</div>
     </div>
     <div class="kv-item">
-      <div class="kv-label">Platform</div>
+      <div class="kv-label">平台</div>
       <div class="kv-value">${escapeHtml((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "unknown")} (browser)</div>
     </div>
     <div class="kv-item">
-      <div class="kv-label">VDB Provider</div>
+      <div class="kv-label">向量库提供方</div>
       <div class="kv-value">${esc(statusData?.vdb_provider || '—')}</div>
     </div>
     <div class="kv-item">
-      <div class="kv-label">VDB Collection</div>
+      <div class="kv-label">向量库集合</div>
       <div class="kv-value">${esc(statusData?.vdb_collection || '—')}</div>
     </div>
     <div class="kv-item">
-      <div class="kv-label">Last Memory</div>
+      <div class="kv-label">最近记忆</div>
       <div class="kv-value">${esc(lastMemory)}</div>
     </div>
     ${layerHealthData && layerHealthData.user_id ? `
     <div class="kv-item">
-      <div class="kv-label">Digest namespace</div>
+      <div class="kv-label">消化命名空间</div>
       <div class="kv-value font-mono text-sm">${escapeHtml(layerHealthData.user_id)} / ${escapeHtml(layerHealthData.agent_id)}</div>
     </div>
     <div class="kv-item">
-      <div class="kv-label">Fresh L2 (digest fuel)</div>
+      <div class="kv-label">新鲜 L2（消化燃料）</div>
       <div class="kv-value">${esc(layerHealthData.fresh_l2_for_digest ?? '—')}</div>
     </div>
     <div class="kv-item">
-    <div class="kv-label">Graph L5 / L6 / relations (per agent)</div>
+    <div class="kv-label">图谱 L5/L6/关系数（单档案）</div>
     <div class="kv-value font-mono text-sm">${layerHealthData.graph_layer_counts ? esc(`${layerHealthData.graph_layer_counts.l5_knowledge ?? '—'} / ${layerHealthData.graph_layer_counts.l6_schema ?? '—'} / ${layerHealthData.graph_relation_count ?? '—'}`) : '—'}</div>
     </div>
     <div class="kv-item">
-    <div class="kv-label">Graph L5 / L6 / relations (global)</div>
+    <div class="kv-label">图谱 L5/L6/关系数（全局）</div>
     <div class="kv-value font-mono text-sm">${layerHealthData.graph_layer_counts_global ? esc(`${layerHealthData.graph_layer_counts_global.l5_knowledge ?? '—'} / ${layerHealthData.graph_layer_counts_global.l6_schema ?? '—'} / ${layerHealthData.graph_relation_count_global ?? '—'}`) : '—'}</div>
     </div>
     <div class="kv-item">
-      <div class="kv-label">Digest log</div>
+      <div class="kv-label">消化日志</div>
       <div class="kv-value">${escapeHtml(layerHealthData.digest_log_status || '—')}${layerHealthData.digest_log_mtime ? ` · ${new Date(layerHealthData.digest_log_mtime * 1000).toLocaleString()}` : ''}</div>
     </div>
     <div class="kv-item">
-      <div class="kv-label">Manual digest</div>
+      <div class="kv-label">手动消化</div>
       <div class="kv-value font-mono text-xs break-all">${escapeHtml(layerHealthData.digest_command || '—')}</div>
     </div>
     ` : ''}
     ${l6SchemasData && l6SchemasData.schemas && l6SchemasData.schemas.length ? `
     <div class="kv-item" style="grid-column:1/-1">
-      <div class="kv-label">L6 schemas (sample ${esc(l6SchemasData.total ?? l6SchemasData.schemas.length)} / ${esc(l6SchemasData.graph_l6_total ?? '—')} in graph)</div>
+      <div class="kv-label">L6 图式（抽样 ${esc(l6SchemasData.total ?? l6SchemasData.schemas.length)} / 图谱内共 ${esc(l6SchemasData.graph_l6_total ?? '—')}）</div>
       <ul class="text-sm" style="margin:8px 0 0;padding-left:18px;line-height:1.45">
         ${l6SchemasData.schemas.map(s => { const id = s.memory_id || s.node_id || ''; const text = s.content || s.name || ''; return `<li style="margin-bottom:8px"><span class="font-mono text-xs text-muted">${escapeHtml(id.slice(0,8))}</span> ${escapeHtml(text.slice(0,220))}${text.length > 220 ? '…' : ''}</li>`; }).join('')}
       </ul>
@@ -1671,32 +1671,32 @@ function renderSystem() {
   const storageHtml = `
     <div class="mb-4">
       <div class="flex justify-between mb-2">
-        <div class="text-sm">VDB Points (zvec raw)</div>
+        <div class="text-sm">向量点（zvec 原始）</div>
         <div class="text-sm font-mono">${fmtCount(vdbPoints)}</div>
       </div>
     </div>
     <div class="mb-4">
       <div class="flex justify-between mb-2">
-        <div class="text-sm">Display total (L1-L4 VDB + L5-L7 graph)</div>
+        <div class="text-sm">展示总数（L1-L4 向量 + L5-L7 图谱）</div>
         <div class="text-sm font-mono">${fmtCount(displayTotal)}</div>
       </div>
     </div>
     <div class="mb-4">
       <div class="flex justify-between mb-2">
-        <div class="text-sm">Graph nodes (L5-L7)</div>
+        <div class="text-sm">图谱节点（L5-L7）</div>
         <div class="text-sm font-mono">${fmtCount(graphTotal)}</div>
       </div>
     </div>
     <div class="mb-4">
       <div class="flex justify-between mb-2">
-        <div class="text-sm">Coding Memories</div>
+        <div class="text-sm">编码记忆</div>
         <div class="text-sm font-mono">${fmtCount(codingTotal)}</div>
       </div>
     </div>
     <div>
       <div class="flex justify-between mb-2">
-        <div class="text-sm">Disk Usage</div>
-        <div class="text-sm font-mono">${Array.isArray(storageData?.files) ? `${fmtCount(storageData.files.length)} files · ${(storageData.files.reduce((a, f) => a + (Number(f.size) || 0), 0) / 1048576).toFixed(2)} MB` : '—'}</div>
+        <div class="text-sm">磁盘占用</div>
+        <div class="text-sm font-mono">${Array.isArray(storageData?.files) ? `${fmtCount(storageData.files.length)} 个文件 · ${(storageData.files.reduce((a, f) => a + (Number(f.size) || 0), 0) / 1048576).toFixed(2)} MB` : '—'}</div>
       </div>
     </div>
   `;
@@ -1705,18 +1705,18 @@ function renderSystem() {
   
   // Components health
   const components = [
-    { name: 'Vector Database', status: statusData?.vdb },
-    { name: 'Embedding Service', status: statusData?.embed },
-    { name: 'LLM Service', status: statusData?.llm }
+    { name: '向量数据库', status: statusData?.vdb },
+    { name: '嵌入服务', status: statusData?.embed },
+    { name: 'LLM 服务', status: statusData?.llm }
   ];
   
   const state = c => c.status === 'ok'
-    ? { dot: '', color: 'var(--green)', label: 'Healthy' }
-    : (c.name === 'LLM Service' && c.status === 'unused')
-      ? { dot: 'degraded', color: 'var(--muted)', label: 'Not used in this mode' }
-    : (c.name === 'LLM Service' && String(c.status || '').match(/rate_limited|warning/i))
-      ? { dot: 'degraded', color: 'var(--accent)', label: 'Limited' }
-      : { dot: 'error', color: 'var(--red)', label: 'Error' };
+    ? { dot: '', color: 'var(--green)', label: '健康' }
+    : (c.name === 'LLM 服务' && c.status === 'unused')
+      ? { dot: 'degraded', color: 'var(--muted)', label: '该模式未使用' }
+    : (c.name === 'LLM 服务' && String(c.status || '').match(/rate_limited|warning/i))
+      ? { dot: 'degraded', color: 'var(--accent)', label: '受限' }
+      : { dot: 'error', color: 'var(--red)', label: '异常' };
   const healthHtml = components.map(c => {
     const s = state(c);
     return `
@@ -1739,10 +1739,10 @@ function renderSystem() {
     <div class="flex items-center gap-3 mb-3">
       <div class="status-dot ${allOk ? '' : (coreOk ? 'degraded' : 'error')}"></div>
       <div class="text-lg font-semibold" style="color: ${allOk ? 'var(--green)' : (coreOk ? 'var(--accent)' : 'var(--red)')}">
-        ${allOk ? 'OPERATIONAL' : (coreOk ? 'LIMITED' : 'BROKEN')}
+        ${allOk ? '运行中' : (coreOk ? '受限' : '故障')}
       </div>
     </div>
-    <div class="text-sm text-muted">${allOk ? 'All systems are running normally.' : (coreOk ? 'Memory is readable; capture/digest may be provider-limited.' : 'Core memory components need attention.')}</div>
+    <div class="text-sm text-muted">${allOk ? '所有系统运行正常。' : (coreOk ? '记忆可读；写入/消化可能受提供方限制。' : '核心记忆组件需要关注。')}</div>
   `;
   
   document.getElementById('system-status').innerHTML = statusHtml;
@@ -1756,26 +1756,26 @@ function renderSystem() {
       <div class="panel-title mb-3">${c.name.toUpperCase()}</div>
       <div class="kv-list">
         <div class="kv-item">
-          <div class="kv-label">Status</div>
+          <div class="kv-label">状态</div>
           <div class="kv-value" style="color: ${c.status === 'ok' ? 'var(--green)' : 'var(--red)'}">${esc(c.status)}</div>
         </div>
-        ${c.name === 'Vector Database' ? `
+        ${c.name === '向量数据库' ? `
           <div class="kv-item">
-            <div class="kv-label">Provider</div>
+            <div class="kv-label">提供方</div>
             <div class="kv-value">${esc(statusData?.vdb_provider || '—')}</div>
           </div>
           <div class="kv-item">
-            <div class="kv-label">Collection</div>
+            <div class="kv-label">集合</div>
             <div class="kv-value">${esc(statusData?.vdb_collection || '—')}</div>
           </div>
           <div class="kv-item">
-            <div class="kv-label">Points</div>
+            <div class="kv-label">点数</div>
             <div class="kv-value">${fmtCount(getVdbPoints())}</div>
           </div>
         ` : ''}
-        ${c.name === 'Embedding Service' ? `
+        ${c.name === '嵌入服务' ? `
           <div class="kv-item">
-            <div class="kv-label">Dimensions</div>
+            <div class="kv-label">维度</div>
             <div class="kv-value">${esc(statusData?.embed_dims || '—')}</div>
           </div>
         ` : ''}
@@ -1798,19 +1798,19 @@ function renderSystem() {
         <div class="kv-value">${escapeHtml(runtime.bind_host || '—')}</div>
       </div>
       <div class="kv-item">
-        <div class="kv-label">BIND_PORT</div>
+        <div class="kv-label">监听端口</div>
         <div class="kv-value">${esc(runtime.bind_port ?? '—')}</div>
       </div>
       <div class="kv-item">
-        <div class="kv-label">REFRESH_S</div>
+        <div class="kv-label">刷新间隔(秒)</div>
         <div class="kv-value">${esc(runtime.refresh_seconds ?? REFRESH_S)}</div>
       </div>
       <div class="kv-item">
-        <div class="kv-label">PLATFORM</div>
+        <div class="kv-label">运行平台</div>
         <div class="kv-value">${escapeHtml(runtime.platform || '—')}</div>
       </div>
       <div class="kv-item">
-        <div class="kv-label">User IDs</div>
+        <div class="kv-label">用户 ID</div>
         <div class="kv-value">${USER_IDS.map(esc).join(', ')}</div>
       </div>
     </div>
@@ -1887,7 +1887,7 @@ function renderQuality() {
     let visitLine = '';
     if (visit && visit.composite_delta != null && visit.composite_delta !== 0) {
       const sign = visit.composite_delta > 0 ? '+' : '';
-      visitLine = `<p class="quality-visit-note">${sign}${esc(visit.composite_delta)} overall ${escapeHtml(visit.label || '')}</p>`;
+      visitLine = `<p class="quality-visit-note">${sign}${esc(visit.composite_delta)} 综合 ${escapeHtml(visit.label || '')}</p>`;
     }
 
     vitalsEl.innerHTML = `
@@ -1905,9 +1905,9 @@ function renderQuality() {
       </div>
       <div class="quality-pulse-row">${pulseHtml}</div>
       <div class="quality-hero-bars quality-hero-bars-compact">
-        ${barRow('Evolution', scores.evolution, 100)}
-        ${barRow('Activity', scores.activity, 100)}
-        ${barRow('Latency', scores.latency, 100)}
+        ${barRow('演进', scores.evolution, 100)}
+        ${barRow('活跃度', scores.activity, 100)}
+        ${barRow('时延', scores.latency, 100)}
       </div>`;
   }
 
@@ -1919,9 +1919,9 @@ function renderQuality() {
   const bdEl = document.getElementById('quality-breakdown');
   if (bdEl) {
     const sections = [
-      ['Evolution score adds up to', breakdown.evolution],
-      ['Activity score adds up to', breakdown.activity],
-      ['Latency score', breakdown.latency],
+      ['演进评分构成', breakdown.evolution],
+      ['活跃度评分构成', breakdown.activity],
+      ['时延评分', breakdown.latency],
     ];
     bdEl.innerHTML = sections.map(([title, items]) => {
       if (!items || !items.length) return '';
@@ -1933,11 +1933,11 @@ function renderQuality() {
   const glossEl = document.getElementById('quality-glossary');
   if (glossEl) {
     const keys = [
-      ['composite', 'Overall'],
-      ['fresh_l2', 'Fresh L2 queue'],
-      ['l6', 'L6 schemas'],
-      ['relations', 'Graph relations'],
-      ['llm_tokens', 'LLM tokens (7d)'],
+      ['composite', '综合'],
+      ['fresh_l2', '新鲜 L2 队列'],
+      ['l6', 'L6 图式'],
+      ['relations', '图谱关系'],
+      ['llm_tokens', 'LLM 令牌（7 天）'],
     ];
     glossEl.innerHTML = keys.map(([k, title]) => `
       <div class="kv-item"><div class="kv-label">${escapeHtml(title)}</div>
@@ -1948,15 +1948,15 @@ function renderQuality() {
   if (liveEl) {
     const tpm = snap.tokens_per_memory_index;
     liveEl.innerHTML = `
-      <div class="kv-item"><div class="kv-label">LLM tokens on memory writes (7d)</div>
+      <div class="kv-item"><div class="kv-label">记忆写入消耗的 LLM 令牌（7 天）</div>
         <div class="kv-value font-mono">${llm.total != null ? esc(Number(llm.total).toLocaleString()) : '—'}</div></div>
-      <div class="kv-item"><div class="kv-label">Tokens per VDB point</div>
+      <div class="kv-item"><div class="kv-label">每个向量点的令牌数</div>
         <div class="kv-value">${tpm != null ? esc(tpm) : '—'}</div></div>
-      <div class="kv-item"><div class="kv-label">Writes / digests (7d)</div>
+      <div class="kv-item"><div class="kv-label">写入 / 消化（7 天）</div>
         <div class="kv-value">${esc(snap.sys1_writes_7d ?? '—')} / ${esc(snap.sys2_digests_7d ?? '—')}</div></div>
-      <div class="kv-item"><div class="kv-label">Fresh L2 · digest log</div>
+      <div class="kv-item"><div class="kv-label">新鲜 L2 · 消化日志</div>
         <div class="kv-value">${esc(snap.fresh_l2_for_digest ?? '—')} · <strong>${escapeHtml(snap.digest_log_status || '—')}</strong></div></div>
-      <div class="kv-item"><div class="kv-label">L5 / L6 / L7 · relations</div>
+      <div class="kv-item"><div class="kv-label">L5 / L6 / L7 · 关系</div>
         <div class="kv-value font-mono">${esc(graph.l5 ?? '—')} / ${esc(graph.l6 ?? '—')} / ${esc(graph.l7 ?? '—')} · ${esc(graph.relations ?? '—')}</div></div>
     `;
   }
@@ -1973,7 +1973,7 @@ function renderQuality() {
         <div class="quality-tip priority-${cssToken(t.priority || 'low')}">
           <div class="quality-tip-title">${escapeHtml(t.title || '')}</div>
           <p>${escapeHtml(t.body || '')}</p>
-          <p class="text-muted text-sm"><strong>Do:</strong> ${escapeHtml(t.action || '')}</p>
+          <p class="text-muted text-sm"><strong>建议:</strong> ${escapeHtml(t.action || '')}</p>
         </div>`).join('');
     }
   }
@@ -1993,9 +1993,9 @@ function renderRadarChart(components) {
   const uptimeScore = Math.min(uptimeHours / 24 * 100, 100);
   
   const data = {
-    labels: ['VDB Health', 'Embed Health', 'LLM Health', 'Layer Coverage', 'Uptime'],
+    labels: ['向量库健康', '嵌入健康', 'LLM 健康', '分层覆盖', '运行时长'],
     datasets: [{
-      label: 'System Health',
+      label: '系统健康',
       data: [
         components[0].status === 'ok' ? 100 : 0,
         components[1].status === 'ok' ? 100 : 0,
@@ -2044,7 +2044,7 @@ function formatUptime(seconds) {
   const days = Math.floor(seconds / 86400);
   const hours = Math.floor((seconds % 86400) / 3600);
   const mins = Math.floor((seconds % 3600) / 60);
-  return `${days}d ${hours}h ${mins}m`;
+  return `${days}天 ${hours}小时 ${mins}分`;
 }
 
 // Right Sidebar
@@ -2118,30 +2118,30 @@ function renderOverviewSidebar() {
 
   const html = `
     <div class="right-section">
-      <div class="right-section-title">RECENT INGESTION</div>
+      <div class="right-section-title">最近写入</div>
       <div class="ingest-tabs">
-        ${tabBtn('all',    'All')}
-        ${tabBtn('vdb',    'VDB')}
-        ${tabBtn('coding', 'Coding')}
-        ${tabBtn('l2_raw', 'L1_RAW')}
+        ${tabBtn('all',    '全部')}
+        ${tabBtn('vdb',    '向量')}
+        ${tabBtn('coding', '编码')}
+        ${tabBtn('l2_raw', 'L1_原始')}
       </div>
-      ${recent.length === 0 ? '<div class="text-xs text-muted" style="margin-top: 12px;">No recent memories in this filter</div>' : recent.map(m => {
+      ${recent.length === 0 ? '<div class="text-xs text-muted" style="margin-top: 12px;">此筛选条件下暂无近期记忆</div>' : recent.map(m => {
         const title = (m.content || '').substring(0, 50) + '...';
         const ts = Number(sortKey(m)) || 0;
         const ago = ts ? Math.floor((Date.now() / 1000 - ts) / 60) : 0;
-        const agoText = !ts ? '—' : (ago < 1 ? 'just now' : (ago < 60 ? `${ago}m ago` : `${Math.floor(ago / 60)}h ago`));
+        const agoText = !ts ? '—' : (ago < 1 ? '刚刚' : (ago < 60 ? `${ago} 分钟前` : `${Math.floor(ago / 60)} 小时前`));
         const wasUpdated = m.gmt_updated && m.gmt_created && (Number(m.gmt_updated) - Number(m.gmt_created) > 60);
         const titleAttr = wasUpdated
-          ? `Created ${ts ? new Date(Number(m.gmt_created) * 1000).toLocaleString() : '—'} • Updated ${ts ? new Date(Number(m.gmt_updated) * 1000).toLocaleString() : '—'}`
-          : `Created ${ts ? new Date(Number(m.gmt_created) * 1000).toLocaleString() : '—'}`;
+          ? `创建于 ${ts ? new Date(Number(m.gmt_created) * 1000).toLocaleString() : '—'} • 更新于 ${ts ? new Date(Number(m.gmt_updated) * 1000).toLocaleString() : '—'}`
+          : `创建于 ${ts ? new Date(Number(m.gmt_created) * 1000).toLocaleString() : '—'}`;
 
         return `
                   <div class="ingestion-item" data-memory-id="${esc(m.memory_id)}">
                     <div class="ingestion-title" title="${escapeHtml(titleAttr)}">${escapeHtml(title)}</div>
                     <div class="ingestion-meta">
                       <span class="badge badge-layer layer-${cssToken(m.layer || 'l3_fact')}" style="font-size: 9px; padding: 2px 6px;">${esc(m.layer || '—')}</span>
-                      ${typeof m.importance === 'number' ? `<span class="badge badge-importance ${m.importance >= 0.7 ? 'importance-high' : m.importance >= 0.4 ? 'importance-mid' : 'importance-low'}" style="font-size: 9px; padding: 2px 6px;" title="Importance">★ ${m.importance.toFixed(2)}</span>` : ''}
-                      <span>${agoText}${wasUpdated ? ' <span style="color:#888;" title="Memory was updated, not created">⟳</span>' : ''}</span>
+                      ${typeof m.importance === 'number' ? `<span class="badge badge-importance ${m.importance >= 0.7 ? 'importance-high' : m.importance >= 0.4 ? 'importance-mid' : 'importance-low'}" style="font-size: 9px; padding: 2px 6px;" title="重要性">★ ${m.importance.toFixed(2)}</span>` : ''}
+                      <span>${agoText}${wasUpdated ? ' <span style="color:#888;" title="记忆被更新而非新建">⟳</span>' : ''}</span>
                     </div>
                   </div>
                 `;
@@ -2149,11 +2149,11 @@ function renderOverviewSidebar() {
     </div>
     
     <div class="right-section">
-      <div class="right-section-title">MEMORY INSIGHT</div>
+      <div class="right-section-title">记忆洞察</div>
       <div class="text-sm">
-        <div class="mb-2">Most active layer: <span class="font-mono">${esc(getMostActiveLayer())}</span></div>
-        <div class="mb-2">VDB points: <span class="font-mono">${fmtCount(getVdbPoints())}</span> · display: <span class="font-mono">${fmtCount(getLayerTotal())}</span></div>
-        <div class="mb-2">Active layers: <span class="font-mono">${getActiveLayerCount()}</span></div>
+        <div class="mb-2">最活跃分层: <span class="font-mono">${esc(getMostActiveLayer())}</span></div>
+        <div class="mb-2">向量点: <span class="font-mono">${fmtCount(getVdbPoints())}</span> · 展示: <span class="font-mono">${fmtCount(getLayerTotal())}</span></div>
+        <div class="mb-2">活跃分层: <span class="font-mono">${getActiveLayerCount()}</span></div>
       </div>
     </div>
   `;

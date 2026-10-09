@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -20,7 +20,7 @@
 <body>
 <div class="boot-screen" id="boot-screen">
   <div class="boot-logo">HyAtlas</div>
-  <div class="boot-sub">AI Memory Atlas</div>
+  <div class="boot-sub">AI 记忆图谱</div>
   <div class="boot-bar"><div class="boot-bar-fill"></div></div>
 </div>
 
@@ -30,9 +30,9 @@
     <img class="brand-mark" src="assets/hy-memory-icon.png?v=2" alt="Hy-Memory">
     <div>
       <h1>HyAtlas</h1>
-      <div class="tagline">AI MEMORY ATLAS</div>
+      <div class="tagline">AI 记忆图谱</div>
       <div class="official-ref">
-        <a href="https://memory.hunyuan.tencent.com" target="_blank" rel="noopener noreferrer" title="Official Hy-Memory framework by Tencent Hunyuan">official framework ↗</a>
+        <a href="https://memory.hunyuan.tencent.com" target="_blank" rel="noopener noreferrer" title="腾讯混元官方 Hy-Memory 框架">官方框架 ↗</a>
       </div>
     </div>
   </div>
@@ -114,7 +114,7 @@
   <div class="sidebar-status">
     <div class="status-indicator">
       <div class="status-dot" id="global-status-dot"></div>
-      <div class="status-text" id="global-status-text">OPERATIONAL</div>
+      <div class="status-text" id="global-status-text">运行中</div>
     </div>
     <div class="status-meta" id="global-status-meta">上次同步：—</div>
   </div>
@@ -122,11 +122,11 @@
 
 <!-- Main Content -->
 <div class="main-content">
-  <div class="scope-bar" role="region" aria-label="Memory profile scope">
+  <div class="scope-bar" role="region" aria-label="记忆档案范围">
     <div class="scope-bar-label">记忆范围</div>
     <label class="scope-select-wrap" for="agent-selector">
-      <span class="text-xs text-muted">Profile</span>
-      <select class="filter-select" id="agent-selector" aria-label="Owner">
+      <span class="text-xs text-muted">档案</span>
+      <select class="filter-select" id="agent-selector" aria-label="档案">
         <option value="all">全部档案</option>
         <!-- owner options are filled from the data (user_id / agent_id pairs) -->
       </select>
@@ -142,27 +142,27 @@
     <!-- Page 1: Overview -->
     <div class="page-section active" id="page-overview">
       <div class="page-header">
-        <div class="page-label">01 // OVERVIEW</div>
+        <div class="page-label">01 // 总览</div>
         <h1 class="page-title">总览</h1>
-        <div class="page-subtitle">Complete system snapshot and memory intelligence overview.</div>
+        <div class="page-subtitle">系统全景与记忆智能一览。</div>
       </div>
       
       <div class="stat-grid" id="overview-stats"></div>
       
       <div class="panel">
         <div class="panel-header">
-          <div class="panel-title">MEMORY COMPOSITION</div>
+          <div class="panel-title">记忆构成</div>
         </div>
         <div id="composition-bar"></div>
         <div class="composition-caption" id="composition-caption">
           <span class="caption-icon">ⓘ</span>
-          <span class="caption-text">Layers reflect <strong>durable user knowledge</strong> (L0–L7). Task memories from coding sessions are in a separate journal — see Today → Coding Memories. L6 schemas &amp; L7 intentions come from the periodic System2 digest (run <code>python %LOCALAPPDATA%\hermes\scripts\run_hyatlas_digest.py</code>).</span>
+          <span class="caption-text">分层反映的是<strong>持久用户知识</strong>（L0–L7）。编码会话的任务记忆存放在独立日志 —— 见「今日 → 编码记忆」。L6 图式与 L7 意图来自周期性 System2 消化（运行 <code>python %LOCALAPPDATA%\hermes\scripts\run_hyatlas_digest.py</code>)。</span>
         </div>
       </div>
 
       <div class="panel">
         <div class="panel-header">
-          <div class="panel-title">MEMORIES INGESTED</div>
+          <div class="panel-title">记忆写入</div>
         </div>
         <div class="chart-container">
           <canvas id="activity-chart"></canvas>
@@ -171,20 +171,20 @@
 
       <div class="panel">
         <div class="panel-header">
-          <div class="panel-title">MEMORY STORE</div>
+          <div class="panel-title">记忆仓库</div>
         </div>
         <div id="memory-store"></div>
       </div>
       
       <div class="panel">
         <div class="panel-header">
-          <div class="panel-title">OPERATIONS</div>
+          <div class="panel-title">运行统计</div>
         </div>
         <div class="stat-grid" id="operations-stats"></div>
         <div class="flex gap-3 mt-4">
-          <button class="btn" onclick="navigateTo('explore')">Explore Memory</button>
-          <button class="btn" onclick="navigateTo('layers')">View Layers</button>
-          <button class="btn" onclick="navigateTo('today')">Today's Digest</button>
+          <button class="btn" onclick="navigateTo('explore')">记忆检索</button>
+          <button class="btn" onclick="navigateTo('layers')">查看分层</button>
+          <button class="btn" onclick="navigateTo('today')">今日摘要</button>
         </div>
       </div>
     </div>
@@ -192,9 +192,9 @@
     <!-- Page 2: Memory Observatory -->
     <div class="page-section" id="page-observatory">
       <div class="page-header">
-        <div class="page-label">02 // MEMORY OBSERVATORY</div>
+        <div class="page-label">02 // 记忆观测</div>
         <h1 class="page-title">记忆观测</h1>
-        <div class="page-subtitle">Radial time map of every memory — radius is recency, angle is layer (L1 at 12 o'clock, clockwise). Hover to inspect, drag to pan, scroll to zoom, scrub the timeline to replay.</div>
+        <div class="page-subtitle">以径向时间图展示全部记忆 —— 半径代表新近度，角度代表分层（L1 位于 12 点方向，顺时针）。悬停查看详情，拖拽平移，滚轮缩放，拖动时间轴回放。</div>
       </div>
 
       <div class="graph-wrapper" id="starmap-root">
@@ -205,45 +205,45 @@
     <!-- Page 3: Explore Memory -->
     <div class="page-section" id="page-explore">
       <div class="page-header">
-        <div class="page-label">03 // EXPLORE MEMORY</div>
+        <div class="page-label">03 // 探索记忆</div>
         <h1 class="page-title">探索记忆</h1>
-        <div class="page-subtitle">Search, discover, and inspect memories across the system.</div>
+        <div class="page-subtitle">搜索、发现并检查系统中的记忆。</div>
       </div>
       
       <div class="panel">
-        <input type="text" class="input mb-4" id="search-input" placeholder="Search memories...">
+        <input type="text" class="input mb-4" id="search-input" placeholder="搜索记忆…">
         
         <div class="tabs mb-4">
-          <div class="tab active" data-mode="semantic">SEMANTIC</div>
-          <div class="tab" data-mode="keyword">KEYWORD</div>
-          <div class="tab" data-mode="hybrid">HYBRID</div>
+          <div class="tab active" data-mode="semantic">语义</div>
+          <div class="tab" data-mode="keyword">关键词</div>
+          <div class="tab" data-mode="hybrid">混合</div>
         </div>
         
         <div class="filter-row">
           <select class="filter-select" id="filter-layer">
-            <option value="">All Layers</option>
-            <option value="l1_profile">L1 Profile</option>
-            <option value="l2_raw">L2 Raw</option>
-            <option value="l3_fact">L3 Facts</option>
-            <option value="l4_summary">L4 Summaries</option>
-            <option value="l5_knowledge">L5 Knowledge</option>
-            <option value="l6_schema">L6 Schemas</option>
-            <option value="l7_intention">L7 Intentions</option>
+            <option value="">全部分层</option>
+            <option value="l1_profile">L1 档案</option>
+            <option value="l2_raw">L2 原始</option>
+            <option value="l3_fact">L3 事实</option>
+            <option value="l4_summary">L4 摘要</option>
+            <option value="l5_knowledge">L5 知识</option>
+            <option value="l6_schema">L6 图式</option>
+            <option value="l7_intention">L7 意图</option>
           </select>
           <select class="filter-select" id="filter-time">
-            <option value="">All Time</option>
-            <option value="1">Last 24h</option>
-            <option value="7">Last 7 days</option>
-            <option value="30">Last 30 days</option>
+            <option value="">全部时间</option>
+            <option value="1">近 24 小时</option>
+            <option value="7">近 7 天</option>
+            <option value="30">近 30 天</option>
           </select>
-          <button class="btn" id="clear-filters">Clear</button>
+          <button class="btn" id="clear-filters">清除</button>
         </div>
         
         <div class="flex justify-between items-center mb-4">
-          <div class="text-sm text-muted" id="results-count">RESULTS (0)</div>
+          <div class="text-sm text-muted" id="results-count">结果 (0)</div>
           <select class="filter-select" id="sort-by">
-            <option value="relevance">Sort by Relevance</option>
-            <option value="recent">Sort by Recent</option>
+            <option value="relevance">按相关度排序</option>
+            <option value="recent">按时间排序</option>
           </select>
         </div>
         
@@ -254,26 +254,26 @@
     <!-- Page 4: Memory Layers -->
     <div class="page-section" id="page-layers">
       <div class="page-header">
-        <div class="page-label">04 // MEMORY LAYERS</div>
+        <div class="page-label">04 // 分层视图</div>
         <h1 class="page-title">分层视图</h1>
-        <div class="page-subtitle">Structure that organizes memory from raw signals to meta principles.</div>
+        <div class="page-subtitle">从原始信号到元原则的记忆组织结构。</div>
       </div>
       
       <div class="panel">
         <table class="table" id="layers-table">
           <thead>
             <tr>
-              <th>NAME & DESCRIPTION</th>
-              <th>COUNT</th>
-              <th>% OF TOTAL</th>
-              <th>TAGS</th>
+              <th>名称与描述</th>
+              <th>数量</th>
+              <th>占比</th>
+              <th>标签</th>
             </tr>
           </thead>
           <tbody id="layers-tbody"></tbody>
         </table>
         <div class="flex justify-between items-center mt-4 text-sm text-muted">
-          <div id="layers-total">Total: 0</div>
-          <div id="layers-active">Layers Active: 0</div>
+          <div id="layers-total">共 0 条</div>
+          <div id="layers-active">活跃分层: 0</div>
         </div>
       </div>
     </div>
@@ -281,59 +281,59 @@
     <!-- Page 5: Today / Activity -->
     <div class="page-section" id="page-today">
       <div class="page-header">
-        <div class="page-label">05 // TODAY / ACTIVITY</div>
+        <div class="page-label">05 // 今日 / 活动</div>
         <h1 class="page-title">今日</h1>
-        <div class="page-subtitle">Timeline of the last 24 hours of memory activity, events, and system operations.</div>
+        <div class="page-subtitle">最近 24 小时的记忆活动、事件与系统操作时间线。</div>
       </div>
       
       <div class="tabs mb-4">
-        <div class="tab active" data-filter="all">All</div>
-        <div class="tab" data-filter="vdb">VDB Memories</div>
-        <div class="tab" data-filter="coding">Coding Memories</div>
+        <div class="tab active" data-filter="all">全部</div>
+        <div class="tab" data-filter="vdb">向量记忆</div>
+        <div class="tab" data-filter="coding">编码记忆</div>
       </div>
       
       <div class="timeline" id="timeline"></div>
       
-      <button class="export-btn" id="export-json">Export JSON</button>
+      <button class="export-btn" id="export-json">导出 JSON</button>
     </div>
     
     <!-- Page 6: Settings / System -->
     <div class="page-section" id="page-system">
       <div class="page-header">
-        <div class="page-label">06 // SETTINGS / SYSTEM</div>
+        <div class="page-label">06 // 设置 / 系统</div>
         <h1 class="page-title">设置</h1>
-        <div class="page-subtitle">System configuration, status, and diagnostics.</div>
+        <div class="page-subtitle">系统配置、状态与诊断。</div>
       </div>
       
       <div class="tabs mb-4">
-        <div class="tab active" data-tab="system">System</div>
-        <div class="tab" data-tab="components">Components</div>
-        <div class="tab" data-tab="config">Configuration</div>
-        <div class="tab" data-tab="diagnostics">Diagnostics</div>
+        <div class="tab active" data-tab="system">系统</div>
+        <div class="tab" data-tab="components">组件</div>
+        <div class="tab" data-tab="config">配置</div>
+        <div class="tab" data-tab="diagnostics">诊断</div>
       </div>
       
       <div id="tab-system" class="tab-content active">
         <div class="flex gap-4">
           <div style="flex: 1;">
             <div class="panel">
-              <div class="panel-title mb-4">SYSTEM INFORMATION</div>
+              <div class="panel-title mb-4">系统信息</div>
               <div class="kv-list" id="system-info"></div>
             </div>
             
             <div class="panel">
-              <div class="panel-title mb-4">STORAGE</div>
+              <div class="panel-title mb-4">存储</div>
               <div id="storage-info"></div>
             </div>
           </div>
           
           <div style="flex: 1;">
             <div class="panel">
-              <div class="panel-title mb-4">COMPONENTS HEALTH</div>
+              <div class="panel-title mb-4">组件健康</div>
               <div id="components-health"></div>
             </div>
             
             <div class="panel">
-              <div class="panel-title mb-4">SYSTEM STATUS</div>
+              <div class="panel-title mb-4">系统状态</div>
               <div id="system-status"></div>
               <div class="radar-container">
                 <canvas id="radar-chart"></canvas>
@@ -345,21 +345,21 @@
       
       <div id="tab-components" class="tab-content" style="display:none;">
         <div class="panel">
-          <div class="panel-title mb-4">COMPONENT DETAILS</div>
+          <div class="panel-title mb-4">组件详情</div>
           <div id="component-details"></div>
         </div>
       </div>
       
       <div id="tab-config" class="tab-content" style="display:none;">
         <div class="panel">
-          <div class="panel-title mb-4">CONFIGURATION</div>
+          <div class="panel-title mb-4">配置</div>
           <div id="config-info"></div>
         </div>
       </div>
       
       <div id="tab-diagnostics" class="tab-content" style="display:none;">
         <div class="panel">
-          <div class="panel-title mb-4">DIAGNOSTICS</div>
+          <div class="panel-title mb-4">诊断</div>
           <pre id="diagnostics-json" style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text); white-space: pre-wrap; overflow-x: auto;"></pre>
         </div>
       </div>
@@ -368,9 +368,9 @@
     <!-- Page: Quality Metrics -->
     <div class="page-section" id="page-quality">
       <div class="page-header">
-        <div class="page-label">08 // QUALITY METRICS</div>
+        <div class="page-label">08 // 质量指标</div>
         <h1 class="page-title">质量指标</h1>
-        <div class="page-subtitle">Live health of your memory — no setup, trends update every time you open this page.</div>
+        <div class="page-subtitle">记忆实时健康度 —— 无需配置，每次打开自动刷新趋势。</div>
       </div>
 
       <div class="panel quality-vitals-panel">
@@ -378,24 +378,24 @@
       </div>
 
       <div class="panel">
-        <div class="panel-title mb-4">LIVE SIGNALS (7D)</div>
+        <div class="panel-title mb-4">实时信号（7 天）</div>
         <div class="kv-list" id="quality-live"></div>
       </div>
 
       <div class="panel" id="quality-nudge-panel" style="display:none;">
-        <div class="panel-title mb-4">GENTLE NUDGE</div>
+        <div class="panel-title mb-4">温馨提示</div>
         <div id="quality-tips"></div>
       </div>
 
       <details class="panel">
-        <summary class="panel-title" style="cursor: pointer; list-style: none;">How scores are calculated</summary>
+        <summary class="panel-title" style="cursor: pointer; list-style: none;">评分如何计算</summary>
         <p class="composition-caption mb-3" id="quality-weights"></p>
         <div id="quality-breakdown"></div>
         <div class="kv-list mt-4" id="quality-glossary"></div>
       </details>
 
       <details class="panel" style="margin-top: 1rem;">
-        <summary class="panel-title" style="cursor: pointer; list-style: none;">Advanced (raw JSON)</summary>
+        <summary class="panel-title" style="cursor: pointer; list-style: none;">高级（原始 JSON）</summary>
         <pre id="quality-json" style="font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--text); white-space: pre-wrap; overflow-x: auto; max-height: 320px; margin-top: 12px;"></pre>
       </details>
     </div>
@@ -403,9 +403,9 @@
     <!-- Page 7: L5 Knowledge Graph -->
     <div class="page-section" id="page-l5">
       <div class="page-header">
-        <div class="page-label">07 // KNOWLEDGE GRAPH (L5)</div>
+        <div class="page-label">07 // 知识图谱 (L5)</div>
         <h1 class="page-title">L5 知识图谱</h1>
-        <div class="page-subtitle">Entities and relations extracted from your memories. Built by LLM batch extraction from L2_facts; persisted in Kuzu.</div>
+        <div class="page-subtitle">从记忆中抽取的实体与关系。由 LLM 从 L2 事实批量抽取，持久化于 Kuzu 图数据库。</div>
       </div>
 
       <!-- Stats panel -->
@@ -416,7 +416,7 @@
       <!-- Filter bar -->
       <div class="panel">
         <div class="flex gap-3 items-center" style="flex-wrap: wrap;">
-          <input type="text" id="l5-search" class="form-input" placeholder="Search entities (name or alias)..."
+          <input type="text" id="l5-search" class="form-input" placeholder="搜索实体（名称或别名）…"
                  style="flex: 1; min-width: 200px;" />
           <div class="flex gap-2" id="l5-type-chips" style="flex-wrap: wrap;"></div>
           <div class="flex gap-2" id="l5-relation-chips" style="flex-wrap: wrap;"></div>
@@ -427,13 +427,13 @@
       <div class="flex gap-4" style="align-items: flex-start;">
         <div style="flex: 1; min-width: 0;">
           <div class="panel">
-            <div class="panel-title mb-3" id="l5-entities-title">ENTITIES</div>
+            <div class="panel-title mb-3" id="l5-entities-title">实体</div>
             <div id="l5-entities-list" style="max-height: 60vh; overflow-y: auto;"></div>
           </div>
         </div>
         <div style="flex: 1; min-width: 0;">
           <div class="panel">
-            <div class="panel-title mb-3" id="l5-relations-title">RELATIONS</div>
+            <div class="panel-title mb-3" id="l5-relations-title">关系</div>
             <div id="l5-relations-list" style="max-height: 60vh; overflow-y: auto;"></div>
           </div>
         </div>
@@ -447,7 +447,7 @@
           <span class="back-arrow">&larr;</span>
           <span>返回</span>
         </button>
-        <div class="page-label" style="margin-bottom: 0;">MEMORY DETAIL</div>
+        <div class="page-label" style="margin-bottom: 0;">记忆详情</div>
       </div>
       <div class="page-header" style="margin-bottom: 16px;">
         <h1 class="page-title" id="memory-detail-title">记忆</h1>

@@ -62,7 +62,7 @@ async function initL5Page() {
     renderL5();
   } catch (e) {
     document.getElementById('l5-stats').innerHTML =
-      '<div class="text-muted">Failed to load the L5 knowledge graph. Check Settings → System and refresh.</div>';
+      '<div class="text-muted">L5 知识图谱加载失败。请前往「设置 → 系统」查看后刷新。</div>';
   }
 }
 
@@ -80,22 +80,22 @@ function renderL5() {
     .map(([t, n]) => `${escapeHtml(t)}: ${escapeHtml(n)}`)
     .join('  ');
   document.getElementById('l5-stats').innerHTML = `
-    <div class="kv"><span class="kv-k">NODES</span><span class="kv-v">${escapeHtml(d.node_count)}</span></div>
-    <div class="kv"><span class="kv-k">RELATIONS</span><span class="kv-v">${escapeHtml(d.relation_count)}</span></div>
-    <div class="kv"><span class="kv-k">LOADED AT</span><span class="kv-v">${escapeHtml(d.exported_at || new Date().toISOString().slice(0, 19).replace('T', ' '))}</span></div>
-    <div class="kv"><span class="kv-k">ENTITY TYPES</span><span class="kv-v">${typeDistHtml}</span></div>
-    <div class="kv"><span class="kv-k">RELATION TYPES</span><span class="kv-v">${relDistHtml}</span></div>
+    <div class="kv"><span class="kv-k">节点数</span><span class="kv-v">${escapeHtml(d.node_count)}</span></div>
+    <div class="kv"><span class="kv-k">关系数</span><span class="kv-v">${escapeHtml(d.relation_count)}</span></div>
+    <div class="kv"><span class="kv-k">加载时间</span><span class="kv-v">${escapeHtml(d.exported_at || new Date().toISOString().slice(0, 19).replace('T', ' '))}</span></div>
+    <div class="kv"><span class="kv-k">实体类型</span><span class="kv-v">${typeDistHtml}</span></div>
+    <div class="kv"><span class="kv-k">关系类型</span><span class="kv-v">${relDistHtml}</span></div>
   `;
 
   // Type chips (All + each type)
   const allTypes = Object.keys(d.type_distribution || {}).sort();
   // data-type holds the exact entity type (escaped for the attribute) so the
   // chip filter compares the same string the nodes carry.
-  const chips = ['<span class="l5-chip ' + (l5State.selectedType === null ? 'active' : '') + '" data-type="">ALL</span>']
+  const chips = ['<span class="l5-chip ' + (l5State.selectedType === null ? 'active' : '') + '" data-type="">全部</span>']
     .concat(allTypes.map(t => `<span class="l5-chip ${l5State.selectedType === t ? 'active' : ''}" data-type="${escapeAttr(t)}">${escapeHtml(t)}</span>`));
   document.getElementById('l5-type-chips').innerHTML = chips.join('');
   const relations = Object.keys(d.relation_type_distribution || {}).sort();
-  const relChips = ['<span class="l5-chip ' + (l5State.selectedRelation === null ? 'active' : '') + '" data-relation="">ALL RELATIONS</span>']
+  const relChips = ['<span class="l5-chip ' + (l5State.selectedRelation === null ? 'active' : '') + '" data-relation="">全部关系</span>']
     .concat(relations.map(t => `<span class="l5-chip ${l5State.selectedRelation === t ? 'active' : ''}" data-relation="${escapeAttr(t)}">${escapeHtml(t)}</span>`));
   document.getElementById('l5-relation-chips').innerHTML = relChips.join('');
 
@@ -173,19 +173,19 @@ function renderL5EntitiesAndRelations() {
 
   // Render entities
   document.getElementById('l5-entities-title').textContent =
-    `ENTITIES (${nodes.length}${l5State.selectedType ? ' of ' + l5State.data.nodes.length : ''})`;
+    `实体（${nodes.length}${l5State.selectedType ? ' / 共 ' + l5State.data.nodes.length : ''}）`;
   const entHtml = nodes.length === 0
-    ? '<div class="text-muted">No entities match the current filter.</div>'
+    ? '<div class="text-muted">当前筛选条件下没有匹配的实体。</div>'
     : nodes.slice(0, 200).map(n => {
         const selected = l5State.selectedEntity === n.name ? ' selected' : '';
         const aliasStr = n.aliases && n.aliases.length
-          ? `<div class="l5-aliases">aka: ${n.aliases.map(a => escapeHtml(a)).join(', ')}</div>`
+          ? `<div class="l5-aliases">别名: ${n.aliases.map(a => escapeHtml(a)).join(', ')}</div>`
           : '';
         const source = n.source
-          ? `<span class="l5-source">source: ${escapeHtml(n.source)}</span>`
+          ? `<span class="l5-source">来源: ${escapeHtml(n.source)}</span>`
           : '';
         const created = n.created_at
-          ? `<span class="l5-source">created: ${escapeHtml(n.created_at)}</span>`
+          ? `<span class="l5-source">创建于: ${escapeHtml(n.created_at)}</span>`
           : '';
         return `<div class="l5-entity${selected}" data-name="${escapeAttr(n.name)}">
           <span class="l5-type-badge l5-type-${cssToken(n.entity_type)}">${escapeHtml(n.entity_type)}</span>
@@ -196,7 +196,7 @@ function renderL5EntitiesAndRelations() {
         </div>`;
       }).join('');
   document.getElementById('l5-entities-list').innerHTML = entHtml +
-    (nodes.length > 200 ? `<div class="text-muted mt-2">…and ${nodes.length - 200} more (refine your filter to see them)</div>` : '');
+    (nodes.length > 200 ? `<div class="text-muted mt-2">…另有 ${nodes.length - 200} 项未显示（可缩小筛选范围查看）</div>` : '');
 
   // Wire up entity click handlers
   document.querySelectorAll('#l5-entities-list .l5-entity').forEach(el => {
@@ -209,9 +209,9 @@ function renderL5EntitiesAndRelations() {
 
   // Render relations
   document.getElementById('l5-relations-title').textContent =
-    `RELATIONS (${rels.length}${l5State.selectedEntity ? ' involving ' + l5State.selectedEntity : ''})`;
+    `关系（${rels.length}${l5State.selectedEntity ? ' · 涉及 ' + l5State.selectedEntity : ''}）`;
   const relHtml = rels.length === 0
-    ? '<div class="text-muted">No relations match the current filter.</div>'
+    ? '<div class="text-muted">当前筛选条件下没有匹配的关系。</div>'
     : rels.slice(0, 200).map(r => `
         <div class="l5-relation">
           <span class="l5-rel-name">${escapeHtml(r.a)}</span>
@@ -222,6 +222,6 @@ function renderL5EntitiesAndRelations() {
         </div>
       `).join('');
   document.getElementById('l5-relations-list').innerHTML = relHtml +
-    (rels.length > 200 ? `<div class="text-muted mt-2">…and ${rels.length - 200} more (refine your filter to see them)</div>` : '');
+    (rels.length > 200 ? `<div class="text-muted mt-2">…另有 ${rels.length - 200} 项未显示（可缩小筛选范围查看）</div>` : '');
 }
 
