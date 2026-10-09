@@ -30,7 +30,7 @@ REF_FPK="/vol2/1000/download/hyatlas-4.3.3-1-x86.fpk"   # 241,916,249B sha ce362
 
 # SHA_BIN must be recomputed against the freshly built bin/hyatlas-go-linux-amd64 for 4.5.0-1 (fork-src @ hyatlas-v450-sync).
 # Do NOT ship fpk with the placeholder below; run sha256sum on the binary and replace.
-SHA_BIN="TBD-4.5.0-1-recompute-before-packing"
+SHA_BIN="ebe501d000a9ed5e39c3aa48a5bdece7f86da6688a888aa378709a0585979919"   # 实测：b19fcf4 树双跨挂载副本(-trimpath)复现两次同 sha，且与 task-9 交付锚点 --expect 吻合；14,738,272B
 SHA_ONNX="8a3f371a7e535e25d3d5a0ff0c0501a605ef0b62577800d2bf4b1fc76d6cbcf1"
 SHA_ORT="99458e9d185dfa1a9b5f6510790ede3bedc25dea378adb904ce292b517eeaecf"
 SHA_TOK="7dfbf1966ebf99d471c3796e9b457329d2b2182b817e144f1e904b957745c839"

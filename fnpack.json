@@ -144,6 +144,17 @@
               "size": 241916249
             }
           }
+        },
+        "4.5.0-1": {
+          "changelog": "v4.5.0-1（2026-10-09）：同步上游 HyAtlas v4.4.0 + v4.5.0（v4.3.3..v4.5.0 = 27 commits / 66 files / +12223-2616）。①搜索 hybrid：keyword.go(BM25)+fusion.go(RRF k=60)，HYATLAS_MIN_SCORE 默认 0.60，reader=legacy/keyword/hybrid 三态；L5 知识图谱现可搜索(l5index.go)，占全层搜索≤40%。②维护端点：POST /api/v1/admin/compact_raw(不可逆) 与 /api/v1/admin/dedupe_facts，默认 403，需 HYATLAS_ADMIN=on。③Consolidation：batch 默认 200→50；按 owner 分组不跨 user；事实改 supersede 不删除；L5 边需 ≥2 轮 corroboration；fingerprint 从 count@timestamp 改 fact IDs 哈希 ⇒ 升级后每个 owner 会重跑一次 consolidate。④安全：routes() 抽出并套 guardLocal(HYATLAS_ALLOWED_HOSTS)+limitBody(8MiB)；fnOS 网关已把 Host 改写成 127.0.0.1:19528，经面板访问无需设白名单。⑤新 env：HYATLAS_ADMIN/ALLOWED_HOSTS/CONSOLIDATE_GRAPH/DEDUPE_SCORE/MIN_SCORE/USER_ALIASES（env.example 已补，全部注释态默认不改行为）。⑥修复上游同步引入的两处 fork 回归（dashboard 经 go:embed 内嵌进二进制，故两者都要求重编）：汉化回归 app.js 汉字 86→1088(基线997)、index.html 102→630(基线575)；功能回归恢复移动端抽屉导航(setupMobileNav/mobile-menu-btn/sidebar-backdrop，styles.css @media 断点 2→4)与时间线载入更多/区间 tab(timelineCache/loadMoreTimeline)。残留：app.js 尚有约 4.5% 上游新增英文文案未译，下版补。⚠ 上游 4 个 L1 mirror 相关测试(TestMergedPreferenceReplacesItsL1Mirror + 3 个 TestPromoteDedupe*)在 fork 语义下失败（fork 主动移除 L1 mirror），装机功能不受影响。打包：二进制=本分支源码 go1.26.5 本地编译（CGO_ENABLED=1 + -trimpath + GOAMD64=v1，非上游 CI 产物，sha ebe501d0，14,738,272B；经 /tmp(ext2) 与 /vol2(btrfs) 两份不同绝对路径副本各编一次、sha 逐字节相同确认可复现）。模型三件套沿用 4.3.0-1/4.3.3-1 同款，onnx 8a3f371a / ort 99458e9d / tok 7dfbf196 逐件零漂移；gateway_proxy.py 856441ee 未动。产物 hyatlas-4.5.0-1-x86.fpk 242,203,662B sha256=5aa78ebe2ef092a8ef3417d87ae41d6292b0b3d022d912fb586bab3580a4dc32。4.3.0-1/4.3.3-1 可覆盖升级，无数据迁移；升级动作见 changelog ③ 与 compact_raw 前置备份。",
+          "updated_at": "2026-10-09T10:22:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.10.08/hyatlas-4.5.0-1-x86.fpk",
+              "sha256": "5aa78ebe2ef092a8ef3417d87ae41d6292b0b3d022d912fb586bab3580a4dc32",
+              "size": 242203662
+            }
+          }
         }
       }
     },
