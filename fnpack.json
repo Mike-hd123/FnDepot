@@ -155,6 +155,17 @@
               "size": 242203662
             }
           }
+        },
+        "4.5.0-2": {
+          "changelog": "4.5.0-2：delete_all 防误删加固（本机 10-09 误删 104223 条后复盘）。①默认 dry_run：不带 dry_run=false 时只统计不删，返回 will_delete 计数，与 /api/v1/admin/* 维护端点同一套约定；②按 id 的窄删除（memory_forget 用法）永不拦截，支持多个 ?id= 与逗号列表，未知 id 回报 not_found 不静默少删；③宽范围（只给单个 user_id 或 agent_id，单机部署下即约等于全库）写操作需 HYATLAS_ADMIN=on 且 confirm_mass_delete=true；④命中数超过 HYATLAS_DELETE_MAX（默认 1000）需 confirm_mass_delete=true；⑤空 body 一律按全库擦除对待；实际删除写审计日志（scope/命中数/RemoteAddr/User-Agent）。根因是护栏原设计只拦完全无范围的调用，带任一范围即放行——4.3.0-1 与 4.5.0-1 语义相同，非 4.5.0 同步引入。二进制 sha256 4a39e8e0（go1.26.5，CGO_ENABLED=1 + -trimpath + GOAMD64=v1，三次重编逐字节一致）。含 4.5.0-1 全部上游同步内容。",
+          "updated_at": "2026-10-09T15:30:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.10.08/hyatlas-4.5.0-2-x86.fpk",
+              "sha256": "a2a70072b77026aa7f4b5545863741f81243beac038c907f3ec8377d5e8fdde6",
+              "size": 242218811
+            }
+          }
         }
       }
     },
