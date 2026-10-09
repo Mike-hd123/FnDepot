@@ -18,10 +18,10 @@ func TestSupersedeEdgesClosesOnlyOngoingEdges(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Two sources; the superseded one owns exactly one edge.
-	if err := s.AddEdgeWithSource("alice", "knows", "bob", "mem-victim"); err != nil {
+	if err := s.AddEdgeWithSource("alice", "", "alice", "knows", "bob", "mem-victim"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddEdgeWithSource("carol", "owns", "dave", "mem-keeper"); err != nil {
+	if err := s.AddEdgeWithSource("carol", "", "carol", "owns", "dave", "mem-keeper"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -58,7 +58,7 @@ func TestSupersedeEdgesIsMonotonic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddEdgeWithSource("a", "r", "b", "src1"); err != nil {
+	if err := s.AddEdgeWithSource("", "", "a", "r", "b", "src1"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -93,7 +93,7 @@ func TestSupersedeEdgesSurvivesRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AddEdgeWithSource("a", "r", "b", "src"); err != nil {
+	if err := s.AddEdgeWithSource("", "", "a", "r", "b", "src"); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.SupersedeEdges("src", time.Now().Unix()); err != nil {

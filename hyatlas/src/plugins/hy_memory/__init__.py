@@ -27,12 +27,14 @@ import json
 import logging
 import os
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 
 from .client import HyatlasClient, HyatlasClientError, HyatlasUnreachable
+from . import settings
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,26 @@ TRUSTED_SOURCE_KINDS = frozenset({
     "backfill",        # P0-b runbook winners
     "dream",           # cron consolidation products
 })
+# Per-message and per-turn caps on what sync_turn sends. A turn is the user's
+# message and the assistant's reply. Tool output and compaction summaries are not
+# memories; sending them made raw rows of 200,000+ characters that the extraction
+# LLM then had to read in full.
+_MAX_MESSAGE_CHARS = 4000
+_MAX_TURN_CHARS = 12000
+
+
+def _clip(text: str, limit: int) -> str:
+    """Cut text to limit characters, saying how much was dropped."""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + f"\n…[truncated {len(text) - limit} chars]"
+
+
+def _is_compaction(text: str) -> bool:
+    """Hermes' context-compaction summary, detected the way Hermes itself does
+    (agent/context_compressor.py): a marker near the start of the message."""
+    head = text[:200]
+    return "CONTEXT COMPACTION" in head or "Conversation Summary" in head
 
 
 # =============================================================================
@@ -158,10 +180,20 @@ class HyatlasMemoryProvider(MemoryProvider):
         self._user_id: str = ""
         self._agent_id: str = ""
         self._prefetch_lock = threading.Lock()
-        self._prefetch_result: str = ""
-        self._adjudicator: Optional[Any] = None  # lazy P0-b conflict wrapper
-        self._process: Optional[Any] = None  # lazy import to keep _load_config cheap
-        self._version = "4.0.1"
+        # Last recall per session, the fallback when a live search fails. Keyed by
+        # session so concurrent sessions (gateway and CLI) never see each other's.
+        self._prefetch_cache: "OrderedDict[str, str]" = OrderedDict()
+        # Message count already synced per session, so _build_turn_text sends
+        # only what the server has not seen. Bounded: a long-lived gateway
+        # touches far more sessions than it can hold, and the cost of evicting
+        # one is a re-flush of that session's current turn, not a correctness
+        # failure.
+        self._synced: "OrderedDict[str, int]" = OrderedDict()
+        # Fork (fnos): lazy adjudicator + process handles, both resolved on
+        # first use so _load_config stays cheap.
+        self._adjudicator: Optional[Any] = None
+        self._process: Optional[Any] = None
+        self._version = "4.5.0"
 
     # --- Required ABC methods ---
 
@@ -183,8 +215,8 @@ class HyatlasMemoryProvider(MemoryProvider):
         """True iff the v4 server is reachable on the configured port.
 
         Does NOT auto-start the server — that's a separate decision
-        via ``hermes hyatlas start`` (or the plugin's auto_start
-        config flag, honored at initialize() time).
+        via ``hermes hyatlas start`` (or the
+        plugin's auto_start config flag, honored at initialize() time).
         """
         try:
             client = self._ensure_client()
@@ -199,10 +231,9 @@ class HyatlasMemoryProvider(MemoryProvider):
             return "server_host not configured"
         port = self._config.get("server_port", 0)
         return (
-            f"HyAtlas v4 not reachable at "
-            f"{self._config.get('server_host')}:{port}. "
-            f"Start it with `hermes hyatlas start` (auto-starts the Go binary) "
-            f"or run the binary directly: `hyatlas-go`."
+            f"HyAtlas v4 not reachable at {self._origin()}. "
+            "Start it with `hermes hyatlas start`. The `hermes hyatlas` command "
+            "exists only while memory.provider is hyatlas (`hermes memory setup`)."
         )
 
     def initialize(self, session_id: str, **kwargs: Any) -> None:
@@ -218,10 +249,8 @@ class HyatlasMemoryProvider(MemoryProvider):
             return
 
         # Auto-start the server if configured
-        if self._config.get("auto_start") and not self._client.is_reachable():
-            self._ensure_server_running()
-            # Wait briefly for the server to come up
-            if not self._client.wait_until_reachable(timeout=30.0):
+        if settings.truthy(self._config.get("auto_start")) and not self._client.is_reachable():
+            if not self._ensure_server_running():
                 logger.warning(
                     "auto_start enabled but server did not become reachable within 30s"
                 )
@@ -284,7 +313,8 @@ class HyatlasMemoryProvider(MemoryProvider):
                     agent_id=args.get("agent_id", self._agent_id) or self._agent_id,
                     layer=args.get("layer", "") or "",
                     limit=int(args.get("limit", 20)),
-                    include_raw=bool(args.get("include_raw", False)),
+                    include_raw=(None if args.get("include_raw") is None
+                                 else bool(args.get("include_raw"))),
                 )
                 return json.dumps(items)
             if tool_name == "hyatlas_add":
@@ -327,17 +357,36 @@ class HyatlasMemoryProvider(MemoryProvider):
             f"(server: 127.0.0.1:{port}). "
             "Use the `hyatlas_search` tool to recall relevant past context, "
             "`hyatlas_recent` to see the latest memories, and `hyatlas_add` "
-            "to record durable facts. The `hy_memory_save` tool (the standard "
-            "Hermes memory tool) is mirrored automatically to v4's L1 Profile "
-            "layer."
+            "to record durable facts. Adds through the standard Hermes "
+            "`memory` tool are also stored in v4 as raw memories; v4 fills the "
+            "L1 Profile layer when extraction labels them as user preferences "
+            "(pro and ultra modes)."
         )
 
     # --- Optional: prefetch (sync, returns cached result) ---
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Return the most recent prefetched result (set by queue_prefetch)."""
+        """Recall for the turn about to run, searched on that turn's own message.
+
+        Hermes passes the current message and bounds this call with a timeout, and a
+        local search takes ~100 ms, so recall is live rather than the previous
+        turn's. If the search fails, the session's last recall is returned instead.
+        """
+        if query and self._client:
+            try:
+                results = self._client.search(
+                    query=query,
+                    user_id=self._user_id,
+                    agent_id=self._agent_id,
+                    limit=5,
+                )
+                formatted = self._format_prefetch(results, query)
+                self._store_prefetch(session_id, formatted)
+                return formatted
+            except Exception as e:
+                logger.debug("prefetch search failed, using cached recall: %s", e)
         with self._prefetch_lock:
-            return self._prefetch_result
+            return self._prefetch_cache.get(session_id, "")
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         """Fire-and-forget recall for the next agent turn."""
@@ -353,8 +402,7 @@ class HyatlasMemoryProvider(MemoryProvider):
                     limit=5,
                 )
                 formatted = self._format_prefetch(results, query)
-                with self._prefetch_lock:
-                    self._prefetch_result = formatted
+                self._store_prefetch(session_id, formatted)
             except Exception as e:
                 logger.debug("prefetch failed: %s", e)
 
@@ -423,19 +471,16 @@ class HyatlasMemoryProvider(MemoryProvider):
         content: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Mirror Hermes' built-in memory tool writes to v4.
+        """Mirror Hermes' built-in memory tool ``add`` writes to v4.
 
-        Hermes' built-in memory tool is the agent's primary way to save
-        atomic facts (it's trained in the system prompt). v4 mirrors
-        those writes to L1 Profile (user preferences) or a dedicated
-        "atomic" layer. Only ``add`` actions are mirrored — replace/remove
-        are handled by the built-in file store.
+        The write is a plain ``/api/v1/add``: it is stored as a raw (L2) memory,
+        tagged with ``write_origin`` and ``target`` in its metadata. It does not
+        write to L1 Profile directly. L1 fills later, when extraction labels the
+        memory as a user preference (pro and ultra modes). replace and remove
+        are handled by Hermes' built-in file store and are not mirrored.
         """
         if action != "add" or not self._client or not content:
             return
-        layer = "l1_profile" if target == "user" else "l1_profile"
-        # v4 maps everything user-written to L1 Profile; the layer
-        # distinction (user vs project) is preserved in metadata.
         meta = dict(metadata or {})
         meta.setdefault("write_origin", "memory_tool")
         meta.setdefault("target", target)
@@ -476,34 +521,15 @@ class HyatlasMemoryProvider(MemoryProvider):
     # --- Optional: config wizard surface ---
 
     def get_config_schema(self) -> List[Dict[str, Any]]:
-        return [
-            {
-                "key": "server_host",
-                "description": "HyAtlas v4 server host",
-                "default": "127.0.0.1",
-            },
-            {
-                "key": "server_port",
-                "description": "HyAtlas v4 server port",
-                "default": 19528,
-            },
-            {
-                "key": "user_id",
-                "description": "Default user_id (profile-scoped in config.yaml)",
-                "default": "default",
-            },
-            {
-                "key": "agent_id",
-                "description": "Default agent_id (overridden by agent_identity kwarg)",
-                "default": "default",
-            },
-            {
-                "key": "auto_start",
-                "description": "Auto-start the Go binary if not reachable",
-                "default": False,
-                "choices": [True, False],
-            },
-        ]
+        """Settings this provider exposes, derived from :mod:`settings`.
+
+        Not a literal here: the manifest declares the same fourteen settings for the
+        Desktop settings form, and the two drifted until the provider offered
+        only five — so four settings existed in ``plugin.yaml`` but were
+        invisible to ``hermes memory setup``. A test pins the two together.
+        """
+        return list(settings.config_schema())
+
 
     def save_config(self, values: Dict[str, Any], hermes_home: str) -> None:
         """Persist non-secret config to ``$HERMES_HOME/hy_memory.json``.
@@ -588,26 +614,95 @@ class HyatlasMemoryProvider(MemoryProvider):
     ) -> str:
         """Concatenate turn into a single text for v4's LLM extraction.
 
-        Preference order: full messages thread (richest), then the
-        passed user/assistant pair.
+        ``sync_turn`` is called after every turn with the full conversation so
+        far, so sending all of *messages* would re-upload the entire transcript
+        each time — quadratic in conversation length, and the server would
+        re-extract facts from messages it already saw. Only user and assistant
+        text is sent, compaction summaries are skipped, and each message and the
+        whole turn are capped.
+
+        The caller's ``user_content`` / ``assistant_content`` pair is exactly
+        one turn, so that is the baseline and it is never dropped. *messages*
+        is used only to close gaps: if the thread has grown past the count last
+        synced for this session, the messages in between are turns this provider
+        never reported (an earlier failure, or a caller that jumped straight
+        here), and they are flushed so the gap does not silently lose memory.
+
+        Growth is tracked per session. A thread that shrinks means context
+        compression rewrote the history, so the index is reset and the single
+        reported turn is used — re-flushing a compressed thread would re-send
+        content the server already has.
         """
-        if messages:
-            parts = []
-            for m in messages:
-                role = m.get("role", "")
-                content = m.get("content", "")
-                if not content or role == "system":
-                    continue
-                parts.append(f"{role.upper()}: {content}")
-            if parts:
-                return "\n\n".join(parts)
-        # Fallback
+        if not messages:
+            return self._turn_pair(user_content, assistant_content)
+
+        seen = self._synced.get(session_id)
+        if seen is None:
+            # First turn seen for this session. Adopt the thread's current
+            # length as the baseline instead of 0: everything already in it
+            # predates this provider instance, and flushing it would upload the
+            # whole transcript to the extraction LLM on the first turn after
+            # every gateway restart. The turn the caller is reporting is
+            # carried by user_content / assistant_content, so nothing is lost.
+            self._record_synced(session_id, len(messages))
+            return self._turn_pair(user_content, assistant_content)
+
+        if len(messages) <= seen:
+            # Compressed or replayed thread — the index is meaningless now.
+            self._record_synced(session_id, len(messages))
+            return self._turn_pair(user_content, assistant_content)
+
+        new = messages[seen:]
+        self._record_synced(session_id, len(messages))
+        parts = []
+        for m in new:
+            role = m.get("role", "")
+            content = m.get("content", "")
+            if not content or role not in ("user", "assistant"):
+                continue
+            if isinstance(content, list):
+                content = " ".join(
+                    str(b.get("text", "")) for b in content
+                    if isinstance(b, dict)
+                ).strip()
+            if content and not _is_compaction(content):
+                parts.append(f"{role.upper()}: {_clip(content, _MAX_MESSAGE_CHARS)}")
+        if parts:
+            return _clip("\n\n".join(parts), _MAX_TURN_CHARS)
+        # The new messages carried no usable content (tool stubs, empty roles);
+        # fall back to the reported turn so nothing is lost.
+        return self._turn_pair(user_content, assistant_content)
+
+    _SYNCED_MAX = 64
+
+    def _record_synced(self, session_id: str, count: int) -> None:
+        """Remember how much of *session_id*'s thread has been synced.
+
+        Evicts least-recently-used sessions past ``_SYNCED_MAX``. Losing an
+        entry costs a re-adopt on that session's next turn, never a correctness
+        failure, so a long-lived gateway cannot grow this without bound.
+        """
+        self._synced[session_id] = count
+        self._synced.move_to_end(session_id)
+        while len(self._synced) > self._SYNCED_MAX:
+            self._synced.popitem(last=False)
+
+    @staticmethod
+    def _turn_pair(user_content: str, assistant_content: str) -> str:
         parts = []
         if user_content:
-            parts.append(f"USER: {user_content}")
+            parts.append(f"USER: {_clip(user_content, _MAX_MESSAGE_CHARS)}")
         if assistant_content:
-            parts.append(f"ASSISTANT: {assistant_content}")
+            parts.append(f"ASSISTANT: {_clip(assistant_content, _MAX_MESSAGE_CHARS)}")
         return "\n\n".join(parts)
+
+    def _store_prefetch(self, session_id: str, text: str) -> None:
+        """Remember the last recall for session_id, bounded like _synced."""
+        with self._prefetch_lock:
+            self._prefetch_cache[session_id] = text
+            self._prefetch_cache.move_to_end(session_id)
+            while len(self._prefetch_cache) > self._SYNCED_MAX:
+                self._prefetch_cache.popitem(last=False)
 
     def _format_prefetch(self, results: Dict[str, Any], query: str) -> str:
         """Format v4's 3-channel search result into a prompt block.
@@ -652,21 +747,25 @@ class HyatlasMemoryProvider(MemoryProvider):
             + "\n</relevant-memories>"
         )
 
-    def _ensure_server_running(self) -> None:
-        """Lazy import + invoke the process manager to spawn the Go binary."""
-        if self._process is not None:
-            return
+    def _ensure_server_running(self) -> bool:
+        """Start the Go binary through the shared launcher; True iff it answers.
+
+        Same path as ``hermes hyatlas start``: an already-running server is
+        detected rather than spawned over, and the pidfile is written only for a
+        child that stayed alive.
+        """
         try:
             from . import process as process_mod
         except ImportError as e:
             logger.debug("process module unavailable: %s", e)
-            return
-        self._process = process_mod.HyatlasProcess(self._config)
-        try:
-            self._process.start()
-        except Exception as e:
-            logger.warning("failed to auto-start hyatlas-go: %s", e)
-            self._process = None
+            return False
+        result = process_mod.start_server(self._config, timeout=30.0)
+        if not result.get("ok"):
+            logger.warning("failed to auto-start hyatlas-go: %s", result.get("error"))
+            return False
+        if result.get("already_running"):
+            logger.info("hyatlas auto_start: %s", result.get("message"))
+        return bool(result.get("reachable"))
 
 
 # =============================================================================
@@ -710,6 +809,13 @@ def _slash_hyatlas(raw_args: str) -> str:
 
     try:
         provider = HyatlasMemoryProvider()
+        # start and stop manage the server, so they must run whether or not it answers.
+        if cmd == "start":
+            from . import process as process_mod
+            return json.dumps(process_mod.start_server(provider._config))
+        if cmd == "stop":
+            from . import process as process_mod
+            return json.dumps(process_mod.HyatlasProcess.stop_running(provider._config))
         if not provider.is_available():
             return json.dumps({
                 "ok": False,

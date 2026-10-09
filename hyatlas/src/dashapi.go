@@ -25,10 +25,32 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/tuancookiez-hub/hyatlas-v4/graph"
 	"github.com/tuancookiez-hub/hyatlas-v4/memory"
 )
+
+// graphOwner reads the owner filter the graph endpoints accept as user_id and
+// agent_id. An empty value, and "all" (which the dashboard sends for every
+// agent), both mean no filter.
+func graphOwner(userID, agentID string) (string, string) {
+	return ownerFilter(userID), ownerFilter(agentID)
+}
+
+func ownerFilter(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "all" {
+		return ""
+	}
+	return v
+}
+
+// graphScope is the graph.Scope for an owner filter read by graphOwner.
+func graphScope(uid, aid string) graph.Scope {
+	return graph.Scope{UserID: uid, AgentID: aid}
+}
 
 // gmtCreated converts an RFC3339 ts string to unix seconds (dashboard expects a number).
 func gmtCreated(ts string) int64 {
@@ -44,14 +66,17 @@ func writeJSON(w http.ResponseWriter, code int, v any) { jsonResponse(w, code, v
 
 func (s *Server) handleDashStatus(w http.ResponseWriter, r *http.Request) {
 	write := "ok"
-	if s.lastExtractErr != "" {
-		write = "degraded: " + s.lastExtractErr
+	if errStr := s.extractErr(); errStr != "" {
+		write = "degraded: " + errStr
 	}
 	writeJSON(w, 200, map[string]any{
-		"status":   "ok",
-		"vdb":      "ok",
-		"embed":    "ok",
-		"llm":      "ok",
+		"status": "ok",
+		"vdb":    "ok",
+		"embed":  "ok",
+		// Same gate as /api/v1/status, so the dashboard cannot show a healthy LLM
+		// in lite (which never calls one) or in a mode with no credential.
+		"llm":      s.llmState(),
+		"mode":     string(s.mode.OrDefault()),
 		"layers":   s.store.LayerCounts(),
 		"total":    s.store.TotalMemories(),
 		"pipeline": write,
@@ -80,19 +105,13 @@ func (s *Server) handleDashInfo(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDashMemories(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	limit := atoi(q.Get("limit"), 100)
-	offset := atoi(q.Get("offset"), 0)
-	layer := memory.Layer(q.Get("layer"))
+	// "all" from the dashboard means no owner filter, as on the graph endpoints.
+	uid, aid := graphOwner(q.Get("user_id"), q.Get("agent_id"))
 	order := q.Get("order")
 	if order != "asc" {
 		order = "desc"
 	}
-	// The UI's scope selector sends agent_id=all for the unscoped view; the
-	// store must treat it as "no filter" (it is not a literal agent id).
-	agentID := q.Get("agent_id")
-	if agentID == "all" {
-		agentID = ""
-	}
-	items, total := s.store.List(layer, q.Get("user_id"), agentID, limit, offset, false)
+	items, total := s.store.List(memory.Layer(q.Get("layer")), uid, aid, limit, atoi(q.Get("offset"), 0), false)
 	if order == "asc" {
 		// store.List returns ts-desc; reverse a copy for ascending order.
 		for i, j := 0, len(items)-1; i < j; i, j = i+1, j-1 {
@@ -268,7 +287,8 @@ func (s *Server) handleDashLayerHealth(w http.ResponseWriter, r *http.Request) {
 // falls back to "—").
 func (s *Server) handleDashL6Schemas(w http.ResponseWriter, r *http.Request) {
 	n := atoi(r.URL.Query().Get("n"), 6)
-	items, _ := s.store.List(memory.L6Schema, "", "", n, 0, false)
+	uid, aid := graphOwner(r.URL.Query().Get("user_id"), r.URL.Query().Get("agent_id"))
+	items, _ := s.store.List(memory.L6Schema, uid, aid, n, 0, false)
 	out := make([]map[string]any, 0, len(items))
 	for _, it := range items {
 		out = append(out, map[string]any{
@@ -293,6 +313,7 @@ func (s *Server) handleDashL5Graph(w http.ResponseWriter, r *http.Request) {
 	layer := r.URL.Query().Get("layer")
 	n := atoi(r.URL.Query().Get("n"), 500)
 	wantRels := r.URL.Query().Get("rels") != "false"
+	uid, aid := graphOwner(r.URL.Query().Get("user_id"), r.URL.Query().Get("agent_id"))
 
 	type dashNode struct {
 		ID    string `json:"id"`
@@ -306,6 +327,9 @@ func (s *Server) handleDashL5Graph(w http.ResponseWriter, r *http.Request) {
 		Layer        string   `json:"layer,omitempty"`
 		MentionCount int      `json:"mention_count"`
 		Aliases      []string `json:"aliases"`
+		// v4 owner fields (dashboard_contract test)
+		UserID  string `json:"user_id,omitempty"`
+		AgentID string `json:"agent_id,omitempty"`
 	}
 	type dashRel struct {
 		From     string  `json:"from"`
@@ -317,12 +341,16 @@ func (s *Server) handleDashL5Graph(w http.ResponseWriter, r *http.Request) {
 		B            string  `json:"b"`
 		RelationType string  `json:"relation_type"`
 		Confidence   float64 `json:"confidence"`
+		// v4 owner + citation fields (dashboard_contract test)
+		Sources []string `json:"sources"`
+		UserID  string   `json:"user_id,omitempty"`
+		AgentID string   `json:"agent_id,omitempty"`
 	}
 
 	if layer == "" || layer == "l5_knowledge" {
 		// Unbounded snapshot: true totals for node_count/relation_count, the
 		// emitted lists stay capped at n (v3.5 shipped a capped node list too).
-		allNodes, allEdges := s.store.Graph().Snapshot(0)
+		allNodes, allEdges := s.store.Graph().SnapshotScoped(graphScope(uid, aid), 0)
 		labelOf := make(map[string]string, len(allNodes))
 		degree := make(map[string]int, len(allNodes))
 		for _, nd := range allNodes {
@@ -337,9 +365,17 @@ func (s *Server) handleDashL5Graph(w http.ResponseWriter, r *http.Request) {
 			}
 			degree[e.From]++
 			degree[e.To]++
+			srcs := e.Sources
+			if srcs == nil && e.Source != "" {
+				srcs = []string{e.Source}
+			}
+			if srcs == nil {
+				srcs = []string{}
+			}
 			rels = append(rels, dashRel{
 				From: e.From, To: e.To, Relation: e.Relation, Weight: e.Weight,
 				A: a, B: b, RelationType: e.Relation, Confidence: e.Weight,
+				Sources: srcs, UserID: e.UserID, AgentID: e.AgentID,
 			})
 		}
 		// Distributions reflect the WHOLE graph (not the display-capped lists):
@@ -376,6 +412,7 @@ func (s *Server) handleDashL5Graph(w http.ResponseWriter, r *http.Request) {
 				ID: nd.ID, Label: nd.Label, Type: nd.Type,
 				NodeID: nd.ID, Name: nd.Label, EntityType: et,
 				MentionCount: mc, Aliases: []string{},
+				UserID: nd.UserID, AgentID: nd.AgentID,
 			})
 		}
 		if !wantRels {
@@ -394,13 +431,14 @@ func (s *Server) handleDashL5Graph(w http.ResponseWriter, r *http.Request) {
 	}
 	// L6/L7 views render their layer items as pseudo-nodes (real content, real
 	// layer). v3.5 shape: name/node_id + the v4-native layer key.
-	items, _ := s.store.List(memory.Layer(layer), "", "", n, 0, false)
+	items, _ := s.store.List(memory.Layer(layer), uid, aid, n, 0, false)
 	nodes := make([]dashNode, 0, len(items))
 	for _, it := range items {
 		nodes = append(nodes, dashNode{
 			ID: it.ID, Label: it.Content, Type: it.Layer,
 			NodeID: it.ID, Name: it.Content, EntityType: it.Layer,
 			Layer: it.Layer, MentionCount: 1, Aliases: []string{},
+			UserID: it.UserID, AgentID: it.AgentID,
 		})
 	}
 	rels := []any{}
@@ -573,7 +611,7 @@ func (s *Server) handleDashSearch(w http.ResponseWriter, r *http.Request) {
 	if len(body.AgentIDs) > 0 {
 		agentID = body.AgentIDs[0]
 	}
-	res, err := s.store.Search(body.Query, limit, "", userID, agentID, false)
+	res, err := s.store.Search(body.Query, limit, memory.Layer(""), userID, agentID)
 	if err != nil {
 		writeJSON(w, 500, map[string]any{"error": err.Error()})
 		return

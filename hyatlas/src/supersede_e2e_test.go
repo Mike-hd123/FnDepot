@@ -27,7 +27,7 @@ func TestPatchSupersedeClosesGraphEdgesAndAsOf(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := srv.store.Graph().AddEdgeWithSource("用户", "lives_in", "岑村", srcID); err != nil {
+	if err := srv.store.Graph().AddEdgeWithSource("", "", "用户", "lives_in", "岑村", srcID); err != nil {
 		t.Fatal(err)
 	}
 	// The edge records RecordedAt/ValidFrom = now (second resolution). Wait a
@@ -93,7 +93,7 @@ func TestPatchSupersedeClosesGraphEdgesAndAsOf(t *testing.T) {
 func TestPatchNonSupersedeLeavesGraphOpen(t *testing.T) {
 	srv := newTestServer(t, "test", "test")
 	srcID, _ := addDoc(srv.store, memory.L2Raw, "普通原始记忆", map[string]string{})
-	if err := srv.store.Graph().AddEdgeWithSource("猫", "likes", "罐头", srcID); err != nil {
+	if err := srv.store.Graph().AddEdgeWithSource("", "", "猫", "likes", "罐头", srcID); err != nil {
 		t.Fatal(err)
 	}
 

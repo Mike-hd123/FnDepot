@@ -1,5 +1,301 @@
 # Changelog
 
+## [4.5.0] — 2026-10-09
+
+Fixes found by running 4.4.0 against a real store. The largest: the Hermes plugin
+stored each turn with all of its tool output (raw rows up to 1.6 MB), recall used the
+previous turn's message, and plugin searches ignored the owner. Upgrading an existing
+store: see *Upgrading a store written before 4.5.0* in `plugins/hyatlas/after-install.md`.
+
+### Changed
+
+- **Default consolidation batch is 50 facts, not 200.** A free reasoning model took 4
+  to 10+ minutes on 200 facts and often missed the 10-minute pass limit; 50 came back
+  in about two and a half. `HYATLAS_CONSOLIDATE_BATCH` still overrides it.
+
+- **L5 knowledge is searchable.** L5 lived only in the graph (`graph.json`), so search
+  could never return it: on a real store L5 took none of 70 search slots. Each graph
+  edge is now also stored as an L5 memory ("Foxtrot uses Postgres 16") with its owner
+  and sources, under an ID derived from the edge, so re-citing it adds nothing. Edges
+  from older versions are indexed at startup, in the background. Checked end to end
+  on fresh stores: `lite` fills L2 only, `pro` fills L1-L4 and L7, and `ultra` fills
+  all seven layers, each one found by a layer-scoped search.
+- **Ownerless memories are found under an owner filter.** Rows written before owners
+  were recorded (on a real store, 1,385 of 1,395 graph relations) were invisible to
+  every plugin search, which always names an owner. Search now includes rows with
+  no owner at all, as the graph endpoints already do.
+- **L5 takes at most 40% of an all-layer search** (2 of 5 slots). Indexed old graph
+  relations are short and near-identical; uncapped they filled 4 of 5 slots for
+  "how do I start the hyatlas server" and pushed out the answer. A search scoped to
+  `l5_knowledge` is not capped.
+- **`HYATLAS_CONSOLIDATE_GRAPH=off` stops L5 and the arc** (on by default). With it
+  off, the consolidation prompt does not ask for them and `/api/v1/status`
+  `mode_detail` says so.
+- **De-duplication never merges rows whose numbers differ.** Embeddings barely see
+  numbers: "open PR #101722" and "open PR #96783" scored 0.992 alike. The write-time
+  fact rule, L5 indexing and `dedupe_facts` now also require the same set of digit
+  runs, since keeping two near-identical rows costs little and merging two true ones
+  loses one. On a real graph this cut 165 L5 duplicates to 127.
+- **The consolidation report separates merges from drops.** `absorbed` counts facts
+  folded into a merged fact; `dropped` now counts only facts dropped as stale, each
+  with a reason. `dropped` used to include both, so a pass that only merged looked
+  like data loss (a real pass reported "dropped 15" when all 16 facts were merged).
+- **Near-identical graph relations are not indexed twice.** A relation whose L5
+  document would be at least `HYATLAS_DEDUPE_SCORE` similar to one already indexed for
+  the same owner is not indexed (the graph keeps it), and
+  `dedupe_facts` accepts `"layer": "l5_knowledge"` to merge the ones already stored.
+- **A consolidation drop needs a reason.** The model returns
+  `{"id": ..., "reason": ...}`; a drop without a reason (including the old bare-id
+  form) is not applied, and the reason is kept on the dropped row as `drop_reason`.
+  The prompt now says a durable fact is never stale only because it is old.
+  `/api/v1/list?include_superseded=true` shows `drop_reason` on dropped rows.
+- **Search embeds the query once.** A search across aliased owners ran one vector
+  query per owner and layer, and chromem embedded the query text for each: 21
+  embeddings for three aliased IDs. Now one embedding serves them all.
+
+### Fixed
+
+- **A turn is stored as the turn, not the transcript.** `sync_turn` receives the whole
+  thread, and the plugin sent every message since its last sync, including each
+  tool result and, after context compaction, the compaction summary. Raw rows reached
+  200,000 to 1,650,000 characters, and the extraction LLM read each in full. Only user
+  and assistant text is sent now, compaction summaries are skipped, and each message
+  (4,000 chars) and turn (12,000 chars) is capped. (`plugins/hyatlas/__init__.py`
+  `_build_turn_text`)
+- **Recall uses the current message.** `prefetch()` ignored its query and returned the
+  results `queue_prefetch` cached after the previous turn, in one slot shared by all
+  sessions. It now searches the message it is given (Hermes bounds the call with a
+  timeout) and keeps a per-session fallback for when the search fails.
+- **Search honours `user_id` and `agent_id`.** The plugin sends singular fields, and
+  `/api/v1/search` read only `user_ids` / `agent_ids`, so every plugin search was
+  unscoped. Both shapes work now. (`server.go` `handleSearch`)
+
+- **Search drops repeats and weak matches.** An L3 preference and its L1 Profile
+  mirror carry the same text and both came back; now one hit per text is kept (the
+  L1 Profile one). Hits below `HYATLAS_MIN_SCORE` (default 0.60) are dropped, so an
+  off-topic query returns nothing instead of five unrelated memories. A request can
+  override the floor with `min_score`. (`server.go` `refineHits`)
+- **A restated fact replaces the old one.** Before an extracted L3 fact is written,
+  the owner's nearest live fact is looked up; at `HYATLAS_DEDUPE_SCORE` (default 0.92)
+  or above, the new fact supersedes it and its L1 mirrors. Newest wins, so a changed
+  value replaces the stale one. About a quarter of facts had a near-twin before this.
+  (`server.go` `promoteExtractionDedupe`)
+- **Extraction input is capped at 16,000 bytes**, whatever the client sends.
+
+### Added
+
+- **Maintenance endpoints for stores written before this release.** Both are POST,
+  default to a dry run (`{"dry_run": false}` applies), and answer only when the
+  server runs with `HYATLAS_ADMIN=on`; otherwise they return 403, because
+  `compact_raw` cannot be undone and any local process can reach the port.
+  - `/api/v1/admin/compact_raw` rewrites each raw row to what the plugin stores now:
+    user and assistant text only, compaction summaries dropped, 4,000 bytes per
+    message and 12,000 per turn. IDs, metadata and the extracted flag are kept, and
+    the index is written once. On a real store: 522 rows, 241 MB of text to 5.7 MB;
+    the data dir went from 491 MB to 29 MB and startup RAM from 1.15 GB to 180 MB.
+  - `/api/v1/admin/dedupe_facts` applies the write-time de-dup rule to facts already
+    stored: per owner, newest first, an older fact at or above the threshold
+    (default `HYATLAS_DEDUPE_SCORE`) is superseded by the newer one. On a real
+    store: 280 of 2,687 facts.
+- **Hybrid search.** `/api/v1/search` now fuses the vector ranking with a BM25 keyword
+  ranking (reciprocal rank fusion, k 60). Embeddings blur exact identifiers: on a real
+  store, `HYATLAS_SYNC_EXTRACT`, `19528`, `RSI(2)` and `Reg-T` each found none of the
+  facts that contain them; with keyword search they find 2 to 5 of 5. A keyword hit
+  must contain all of a short query's terms (three quarters of a longer one), so
+  off-topic queries still return nothing. Raw rows are left out of keyword search.
+  The request's `reader` picks the ranking: `legacy` is vector only, `hybrid_tag`
+  keyword only, anything else (and none, which is what the plugin sends) hybrid, so
+  the dashboard's Semantic, Keyword and Hybrid tabs now differ. (`keyword.go`,
+  `fusion.go`)
+- **`HYATLAS_USER_ALIASES`** groups user IDs that belong to one person
+  (`"id1,id2;id3,id4"`). A search for any of them covers the whole group.
+  (`server.go` `parseUserAliases`, `store.go` `SearchOwners`)
+
+- **A late deadline cut no longer counts as a window failure.** When the pass
+  deadline cut an owner's call after earlier owners' calls had spent the time, the
+  cut counted toward `maxWindowFails`, so with a slow model a healthy window of a
+  large owner was skipped after three passes. That cut now leaves the window's walk
+  state alone and the next pass starts with that owner. An owner cut while it had
+  the whole budget still counts the cut as a failure. (`consolidate.go` `Once`)
+- **Each consolidation call is logged** with its owner, window, fact count, result
+  and duration, so a slow model shows up in the log rather than only as a deadline
+  error in the report.
+- **An empty LLM reply names its `finish_reason`,** so a reply the provider cut off
+  (`length`) can be told apart from one that came back blank. (`llm.go` `chat`)
+- **Two model-directory tests pass on Windows.** They set `HOME` but not
+  `USERPROFILE`, which `os.UserHomeDir` reads on Windows, and one picked up a real
+  installer model directory on a machine that had run the installer.
+  (`model_dir_test.go`, `server_embed_test.go`)
+
+## [4.4.0] — 2026-10-08
+
+Everything on `claude/busy-faraday-3tvefr` since v4.3.3. Several items are
+behaviour changes that a client or script may notice.
+
+### Security
+
+- **Dashboard XSS fixed.** Server-derived values (memory content, layer names,
+  owner keys, search results, L5 labels) reached `innerHTML` unescaped. Every such
+  value now goes through `escapeHtml` or `escapeAttr`, and CSS class names go through
+  `cssToken`. Quotes are escaped too, so the escaping holds inside attribute values.
+  (`dashboard/dist/app.js`, `dashboard/dist/js/l5.js`)
+- **DNS-rebinding and cross-site guard.** A `Host` that names a DNS name gets 403 on
+  every bind address and every route, including `/healthz`, unless the name is in
+  `HYATLAS_ALLOWED_HOSTS` (comma-separated hostnames; a port in an entry is ignored).
+  Localhost and IP literals always pass. An `Origin` that is not loopback, not the
+  request's own host and not allowlisted gets 403, and so does `Origin: null` or a
+  non-http(s) origin. A `Sec-Fetch-Site: cross-site` request gets 403. Requests with
+  no `Origin` (curl, the Hermes plugin) are not affected by the `Origin` rule. A
+  plugin `server_host` that is a DNS name needs the same allowlist entry on the
+  server, or the plugin reports it unreachable. (`server.go` `guardLocal`,
+  `originAllowed`)
+
+### Removed
+
+- The Docker setup is gone. Build or download the binary instead (see README).
+
+### Changed (server)
+
+- **`delete_all` needs `POST` or `DELETE` and a scope.** It requires at least one
+  of `id`, `layer`, `user_id`, `agent_id`, or `all=true`. An unscoped call is refused.
+- **Request bodies are capped at 8 MiB.**
+- **Graph data without an owner stays visible.** Rows written before owners were
+  recorded carry no `user_id` / `agent_id`. They appear under every owner filter, so
+  single-user data from older releases keeps working.
+- **Consolidation batches run in windows.** An owner with more facts than
+  `HYATLAS_CONSOLIDATE_BATCH` is consolidated in successive windows across passes,
+  not only its first batch each time.
+- **Ultra refuses to start when `HYATLAS_CONSOLIDATE_EVERY` is zero or negative.**
+  This is fatal at startup. Use `HYATLAS_MODE=pro` to run without the slow path.
+- **Consolidation is per owner.** A pass groups facts by `user_id` / `agent_id`
+  and never merges across owners.
+- **Facts are superseded, not deleted.** An ultra merge or drop sets `invalid_at`
+  and `superseded_by`. `GET /api/v1/list` returns them with `include_superseded=true`.
+- **L5 relations need at least two distinct turns** of corroboration before they
+  become graph edges. A single turn no longer creates one.
+- **The graph is owner-scoped with multiple sources.** `/api/v1/edges`,
+  `/api/v1/graph` and `/api/v1/list` accept `user_id` and `agent_id`. An edge
+  keeps every source memory that supports it.
+- **Raw retention keeps evidence.** With `HYATLAS_RAW_RETENTION` set, raw rows that
+  still back a live fact or edge are kept, not only rows an edge cites directly.
+- **`/api/v1/status` consolidation fields.** `consolidations` and
+  `last_consolidated` reset on restart. `consolidations` is `-1` when the mode has
+  no slow path (`lite`, `pro`).
+- **`session_id` is stored on add.**
+- **Model directory search order** when `HYATLAS_MODEL_DIR` is unset:
+  `<cwd>/models`, then `<exe dir>/models`, then the installer default
+  (`~/.hyatlas/models`, or `%LOCALAPPDATA%\hyatlas\models` on Windows).
+- **`/api/v1/reprocess` walks unextracted rows oldest first.** Without `ids`, it takes
+  up to `max` raw rows that extraction has not reached, ordered by `ts` then `id`.
+  Extracted rows are removed before the cut, so they cannot hide an older backlog.
+  `skipped` is 0 on this path. With `ids`, extracted rows are re-extracted.
+  (`server.go` `unextractedRaw`)
+- **`GET /api/v1/graph` reads `node`, `user_id` and `agent_id` from the query string.**
+  The JSON body still wins when both are sent. (`server.go` `handleGraph`)
+- **`agent_id=all` on `/api/memories` and `/api/l6-schemas`** means no owner filter,
+  as it does on the graph endpoints. (`dashapi.go` `graphOwner`)
+- **Consolidation fingerprint format changed.** An owner's watermark is now a hash of
+  its sorted fact IDs. A watermark written in the old `count@timestamp` form never
+  matches, so each owner runs once after upgrading. (`consolidate.go`
+  `idsFingerprint`)
+- **Consolidation windows alternate and recover.** After an owner's facts change, a
+  pass alternates between the newest window and the next window of the walk. An
+  owner stays due until every window has been covered since the change. A window
+  that fails three passes in a row is skipped and reported in `errors`. The count
+  applies to the walk position only.
+  (`consolidate.go` `Once`, `maxWindowFails`)
+- **Soft and fatal write failures.** An LLM call or reply failure, and a failed merge
+  or supersede, keep the owner due for a retry. A failed arc, schema, L5 edge or L1
+  mirror write is reported in `errors` and is not retried, because the facts were
+  already reconciled. An owner with nothing due makes no LLM call.
+  (`consolidate.go` `consolidateScope`)
+- **Embedding runs outside the write lock.** `Add` computes the embedding before it
+  takes `rowMu`, so a slow embedder no longer stalls writes and supersedes.
+  (`store.go` `Add`)
+- **Re-citing an L5 edge keeps `recorded_at`.** New sources are appended; the first
+  record time stays, so earlier as-of snapshots keep the edge. (`graph/graph.go`)
+
+### Changed (Hermes plugin)
+
+- `config.yaml` is read through `hermes_yaml`.
+- A server the plugin spawns defaults to `sync: off`, so a Hermes turn never waits
+  on the LLM. An exported `HYATLAS_SYNC_EXTRACT` still wins.
+- On Windows, the `launcher_path` script runs only when it is configured. It is never discovered.
+- `on_memory_write` stores a plain raw (L2) add, tagged with its target. It no
+  longer claims an L1 Profile mirror. L1 fills through extraction in `pro` and `ultra`.
+- The `llm_key` setting no longer carries a platform link. Any OpenAI-compatible
+  key works.
+- **Auto-start takes a lock.** When two Hermes sessions auto-start at the same time,
+  only one starts the server. The other finds it running.
+- **Recent memories include raw rows in lite.** `hermes hyatlas recent` and the
+  `hyatlas_recent` tool include L2 raw rows by default in `lite`, its only stored
+  layer. `--include-raw` / `--no-include-raw` and the tool's `include_raw` argument
+  override the default. Other modes leave raw rows out by default.
+- **Start lock falls back on filesystems without locking.** If the filesystem cannot
+  lock at all, the start proceeds unlocked with a logged warning.
+- **Setting descriptions say what an empty value means.** `llm_base`, `llm_model`,
+  `llm_key`, `mode` and `sync` now state what the server does when they are empty, and
+  where the key is kept. (`plugins/hyatlas/settings.py`, `plugin.yaml`)
+- **Source-build installer picks onnxruntime for the CPU.** On a source build,
+  `scripts/install.sh` fetches the onnxruntime 1.28.1 package that matches the CPU:
+  Linux x64 or aarch64, macOS arm64, Windows x64 or arm64 (Intel macOS stops with
+  a clear error: there is no onnxruntime package for it). Release binaries skip
+  this step.
+
+### Changed (dashboard and installer)
+
+- **Dashboard owner selector.** It lists the `(user_id, agent_id)` pairs seen in the
+  most recent 1000 memories, with "All owners" as the default. The choice is kept in
+  `localStorage`, and a choice that no longer exists falls back to All owners.
+- **Dashboard Explore search** is wired to `/api/v1/search`. The day filter is applied
+  in the browser. The semantic, keyword and hybrid tabs are sent as `reader`, which the
+  server does not read yet, so they return the same results.
+- **Installer runs its questions on `/dev/tty`.** Under `curl | bash`, the mode,
+  endpoint and key are asked on the terminal. With no terminal at all, exported
+  `HYATLAS_MODE`, `HYATLAS_LLM_BASE`, `HYATLAS_LLM_MODEL` and `HYATLAS_LLM_KEY` are
+  saved to `$HERMES_HOME/.env` (default `~/.hermes/.env`), created with mode 0600
+  under `umask 077`.
+- **Installer verification has four outcomes**, each with its own final line and exit
+  code: `installed and verified` (0), `binary verified, model missing` (1), `NOT
+  verified` (1), and `skipped, not verified` (0, a source build with
+  `HYATLAS_NO_MODEL=1`).
+- **Source builds clone `HYATLAS_VERSION`.** The default branch is built only when that
+  tag is missing and `HYATLAS_VERSION` is not set, with a warning. The installer
+  requires Go 1.26 or newer for a source build.
+- **Installer refuses a bad exported mode.** An exported `HYATLAS_MODE` that is not
+  `lite`, `pro` or `ultra` stops the installer with an error. It is no longer written
+  to `.env`, where the server would refuse to start.
+- **Installer PATH and Windows paths.** It does not add a `PATH` line when the install
+  directory is already in the shell rc file, and it converts the install path with
+  `cygpath` under Git Bash.
+
+### Fixed
+
+- **Installer restores terminal echo on Ctrl-C** at the hidden key prompt. The
+  background verification probe is also stopped, and its data directory removed, on any
+  exit, including Ctrl-C.
+- **The dashboard renders again.** The L5 page referenced `currentAgentId`, which the
+  owner-scope rewrite had removed, so it threw. It now uses `currentOwnerKey`, and its
+  stats render escaped values. (`dashboard/dist/js/l5.js`, `dashboard/dist/app.js`)
+- **`HYATLAS_GO_HOST` accepts IPv6.** Brackets are optional, and the listen address is
+  built with `net.JoinHostPort`. (`server.go`)
+- **`hermes hyatlas start` no longer double-spawns.** It reports `already_running`
+  (with the pid when the pidfile is valid) and never writes over a live pidfile.
+- **The pidfile is written only after the child is seen alive.** A child that
+  dies on startup is reported as `ok: false` and leaves no pidfile.
+- **`hermes hyatlas stop` reports the truth.** It returns `ok: false` when the
+  server still answers but was not started by the plugin. It no longer reports
+  `stopped: true` for a dead pid.
+- **`/hyatlas start` and `/hyatlas stop` work when the server is down.** They ran
+  the availability check first, so they could never start or stop anything.
+- **The unreachable hint says `hermes hyatlas start`,** and notes that the
+  `hermes hyatlas` command appears only once `memory.provider` is `hyatlas`.
+- **The installer keeps going when the model download fails.** A source build
+  still installs the binary, prints the manual steps, and exits non-zero at the end.
+  Release binaries are embedded, so they skip the model download.
+- **README size claims corrected.** The embedded release binary is about 160 MB
+  because it carries the model. The plain build is small and needs a model folder.
+
 ## [4.3.3] — 2026-10-08
 
 Two defects in the shared LLM call path, both found by running a real

@@ -43,7 +43,7 @@ func TestSearchFiltersExpired(t *testing.T) {
 	}
 
 	// default: expired filtered out
-	res, err := srv.store.Search("记忆优化探针", 10, "", "", "", false)
+	res, err := srv.store.SearchIncludeExpired("记忆优化探针", 10, memory.Layer(""), "", "", false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,7 +54,7 @@ func TestSearchFiltersExpired(t *testing.T) {
 		t.Error("live doc missing from search")
 	}
 	// include_expired: both visible
-	res, err = srv.store.Search("记忆优化探针", 10, "", "", "", true)
+	res, err = srv.store.SearchIncludeExpired("记忆优化探针", 10, memory.Layer(""), "", "", true)
 	if err != nil {
 		t.Fatal(err)
 	}

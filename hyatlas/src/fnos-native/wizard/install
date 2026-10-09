@@ -1,11 +1,11 @@
 [
   {
-    "stepTitle": "HyAtlas v4.3.3-1 安装说明",
+    "stepTitle": "HyAtlas v4.5.0-1 安装说明",
     "items": [
       {
         "type": "tips",
         "label": "",
-        "helpText": "HyAtlas v4.3.3-1 (Go)\nupstream: tuancookiez-hub/HyAtlas-Memory (Apache-2.0)\n\n• 服务以专用用户 hy-memory 运行；安装/升级自动自愈数据共享链接（shares→/vol1/@appshare）。\n• v4 监听 127.0.0.1:19528，桌面图标经 fnOS 网关 /app/hyatlas 打开面板。\n• 本版起配置集中在 /vol1/@appdata/hyatlas/env（安装自动生成，升级只补新键不覆盖你的修改）。\n• 抽取模式 HYATLAS_MODE（默认 ultra）：lite=完全不调 LLM 数据不出机器；pro=每轮抽取；ultra=另加定期慢路径整合（L5 知识/L6 schema/跨会话脉络）。\n• LLM 需 BASE/MODEL/KEY 三项齐全才启用（默认指向本机 Octopus 8081 + flash；key 自动从 v3 配置或 Octopus master_key 兜底）。留空则只存原始记忆+本地向量，状态报 unconfigured。\n• Embedding 默认本机 wrapper(18080, bge-large-zh 1024d)；可切 bge 走包内进程内 ORT int8。\n• 数据目录 /vol1/@appshare/hyatlas/go-data 独立持久；升级不清数据；L2 raw 默认永不删除。"
+        "helpText": "HyAtlas v4.5.0-1 (Go)\nupstream: tuancookiez-hub/HyAtlas-Memory (Apache-2.0)\n\n• 服务以专用用户 hy-memory 运行；安装/升级自动自愈数据共享链接（shares→/vol1/@appshare）。\n• v4 监听 127.0.0.1:19528，桌面图标经 fnOS 网关 /app/hyatlas 打开面板。\n• 本版起配置集中在 /vol1/@appdata/hyatlas/env（安装自动生成，升级只补新键不覆盖你的修改）。\n• 抽取模式 HYATLAS_MODE（默认 ultra）：lite=完全不调 LLM 数据不出机器；pro=每轮抽取；ultra=另加定期慢路径整合（L5 知识/L6 schema/跨会话脉络）。\n• LLM 需 BASE/MODEL/KEY 三项齐全才启用（默认指向本机 Octopus 8081 + flash；key 自动从 v3 配置或 Octopus master_key 兜底）。留空则只存原始记忆+本地向量，状态报 unconfigured。\n• Embedding 默认本机 wrapper(18080, bge-large-zh 1024d)；可切 bge 走包内进程内 ORT int8。\n• 数据目录 /vol1/@appshare/hyatlas/go-data 独立持久；升级不清数据；L2 raw 默认永不删除。"
       }
     ]
   }

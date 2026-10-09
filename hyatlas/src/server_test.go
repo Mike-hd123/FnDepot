@@ -117,39 +117,54 @@ func TestPromoteExtractionThreadsSource(t *testing.T) {
 	}
 }
 
-// A preference fact mirrors into L1 Profile, and that mirror carries provenance
-// too — otherwise the profile channel cannot be traced back to a conversation.
+// System1 extractor must not write L1, and (as of the 4.5.0 sync) it also no
+// longer writes a second "twin" L3 row. The source_kind=agent_extract duplicate
+// was removed for two reasons: (a) it broke 4.5.0 turn-sized consolidation — a
+// twin without source_id looks like its own observation to consolidate.go, so a
+// single turn inflated to two "distinct" ones; (b) it defeated write-time
+// dedupe, which supersedes only one nearest fact, so a twin survived every
+// restatement as a permanent near-duplicate — the noise 4.5.0 was built to
+// remove. See server.go promoteExtractionDedupe for the full rationale, and
+// hy450-sync/merge-execution.md for the historical-twin cleanup path.
+//
+// L1 is writable only through explicit /add or /patch, so it stays an
+// agent-curated identity channel; adjudication lives agent-side in the plugin.
+// The System2 consolidate pass still mirrors merged user_preferences into L1
+// (consolidate.go), so a merged preference reaches the profile view — just not
+// every single extracted one.
+//
+// This test replaces upstream v4.5.0's
+// TestPromoteExtractionMirrorsPreferencesToProfile, which asserted the L1
+// mirror fork deliberately removed (plan v2 §3④': the mirror was the only
+// automated write path into L1 and the source of profile contradictions from
+// untrusted external content).
+//
+// DELIBERATE BEHAVIOUR CHANGE — not an assertion loosened to make a test pass.
+// L1 stays 0 (fork core intent, unchanged); L3 goes from 2 to 1 (twin removed).
 func TestPromoteExtractionKeepsPreferencesOutOfProfile(t *testing.T) {
-// fork (fnos) policy, plan v2 §3④': the async extractor must NOT write L1
-// profile. user_preferences facts stay in L3, one copy tagged
-// source_kind=agent_extract so they remain retrievable. L1 is writable only
-// through explicit /add and /patch (adjudication lives agent-side). This
-// replaces upstream's TestPromoteExtractionMirrorsPreferencesToProfile,
-// which asserted the mirror this fork deliberately removed: the mirror was
-// the only automated write path into L1 and the source of profile
-// contradictions from external content.
-srv := newTestServer(t, "test", "test")
-sourceID := "mem-pref-source"
-promoteExtraction(srv.store, &Extraction{
-Facts: []Fact{{Data: "prefers tabs over spaces", Layer: "user_preferences"}},
-}, "default", "default", sourceID)
+	srv := newTestServer(t, "test", "test")
+	sourceID := "mem-pref-source"
+	promoteExtraction(srv.store, &Extraction{
+		Facts: []Fact{{Data: "prefers tabs over spaces", Layer: "user_preferences"}},
+	}, "default", "default", sourceID)
 
-if _, total := srv.store.List("l1_profile", "", "", 1, 0, false); total != 0 {
-t.Fatalf("L1 profile count = %d, want 0 (extractor must not write L1)", total)
-}
-rows, total := srv.store.List("l3_fact", "", "", 10, 0, false)
-if total != 2 {
-t.Fatalf("L3 fact count = %d, want 2 (plain + agent_extract copy)", total)
-}
-tagged := false
-for _, r := range rows {
-if r.Meta["source_kind"] == "agent_extract" {
-tagged = true
-}
-}
-if !tagged {
-t.Error("no L3 row tagged source_kind=agent_extract")
-}
+	if _, total := srv.store.List("l1_profile", "", "", 1, 0, false); total != 0 {
+		t.Fatalf("L1 profile count = %d, want 0 (extractor must not write L1)", total)
+	}
+	rows, total := srv.store.List("l3_fact", "", "", 10, 0, false)
+	if total != 1 {
+		t.Fatalf("L3 fact count = %d, want 1 (single row, no agent_extract twin)", total)
+	}
+	r := rows[0]
+	if r.Meta["source_id"] != sourceID {
+		t.Errorf("source_id = %q, want %q (twin-less row must keep provenance)", r.Meta["source_id"], sourceID)
+	}
+	if r.Meta["source_layer_label"] != "user_preferences" {
+		t.Errorf("source_layer_label = %q, want user_preferences", r.Meta["source_layer_label"])
+	}
+	if r.Meta["source_kind"] == "agent_extract" {
+		t.Errorf("source_kind = %q, want empty (twin must not be written)", r.Meta["source_kind"])
+	}
 }
 
 // Summary and intention are System1 products and must still be written.
