@@ -3,12 +3,18 @@
 #
 # 输入来源：
 #   - fpk 控制层（cmd/config/wizard/manifest/ICON）：本目录归档原件
-#   - Go 二进制：bin/hyatlas-go-linux-amd64（v4.3.0 merge 后 go1.26.5 本地编译，
-#     CGO_ENABLED=1 -trimpath GOAMD64=v1，非 embedded；sha 01bec179）
+#   - Go 二进制：bin/hyatlas-go-linux-amd64（本分支源码 go1.26.5 本地编译，
+#     CGO_ENABLED=1 -trimpath GOAMD64=v1，非上游 CI 产物；含 dashboard go:embed 内嵌前端，
+#     故 dashboard 有改动必须重编后重新打包装入 SHA_BIN，只改 manifest 不算交付）
 #   - 模型三件套（~355MB，超 GitHub 100MB 限制不入库）：按 MODEL_SRC → /tmp/b2-models
-#     → 从 4.1.1-4 fpk 提取的顺序解析；sha256 断言防漂移
+#     → 从 REF_FPK 内层 app.tgz 提取的顺序解析；sha256 断言防漂移。
+#     REF_FPK 原指 4.2.5-1，该 fpk 已从 download 目录消失（兜底路径断裂），
+#     现改指现存的 4.3.3-1 —— 两者内层模型 sha 实测逐件相同，不引入漂移。
 #
-# 用法: bash build-fpk.sh [输出路径]   （默认 /vol2/1000/download/hyatlas-4.1.1-5-x86.fpk）
+# 用法: bash build-fpk.sh [输出路径]
+# ⚠ OUT 默认值是 /vol02/1000-1-13b246aa/… = fuse.rclone WebDAV 挂载（见 mount），
+#   脚本要写 out+'.tmp' 再 os.replace，走该挂载有大文件重命名风险；
+#   打包请显式传本地路径：bash build-fpk.sh /vol2/1000/download/hyatlas-4.5.0-1-x86.fpk
 #
 # 与 4.1.1-2 时代的字节级等价构建差异：
 #   - 4.1.1-5 控制层与二进制均有变更，不再做 REF 产物 sha 等价断言；
@@ -20,7 +26,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="${1:-/vol02/1000-1-13b246aa/download/hyatlas-4.5.0-1-x86.fpk}"
-REF_FPK="/vol02/1000-1-13b246aa/download/hyatlas-4.2.5-1-x86.fpk"
+REF_FPK="/vol2/1000/download/hyatlas-4.3.3-1-x86.fpk"   # 241,916,249B sha ce362d5d… 实测存在；其内层模型三件套 sha 与 SHA_ONNX/SHA_ORT/SHA_TOK 逐件相同
 
 # SHA_BIN must be recomputed against the freshly built bin/hyatlas-go-linux-amd64 for 4.5.0-1 (fork-src @ hyatlas-v450-sync).
 # Do NOT ship fpk with the placeholder below; run sha256sum on the binary and replace.
@@ -28,6 +34,28 @@ SHA_BIN="TBD-4.5.0-1-recompute-before-packing"
 SHA_ONNX="8a3f371a7e535e25d3d5a0ff0c0501a605ef0b62577800d2bf4b1fc76d6cbcf1"
 SHA_ORT="99458e9d185dfa1a9b5f6510790ede3bedc25dea378adb904ce292b517eeaecf"
 SHA_TOK="7dfbf1966ebf99d471c3796e9b457329d2b2182b817e144f1e904b957745c839"
+
+# ── SHA_BIN 自检闸（防"只改 manifest 不动二进制"）────────────────────────────
+# sha256sum -c 只能证明"bin/ 里的文件 == SHA_BIN 写的值"，两者一起写旧值照样全绿。
+# 所以在组装前硬性拒绝：仍是占位符 / 不是 64 位十六进制 / 等于历史已出货二进制的 sha。
+case "$SHA_BIN" in
+  TBD*|*recompute*|*[!0-9a-fA-F]*)
+    echo "FATAL: SHA_BIN 非法（占位符或不是 64 位十六进制 sha256）: '$SHA_BIN'" >&2
+    echo "       对 bin/hyatlas-go-linux-amd64 跑 sha256sum 后填入实际值" >&2; exit 1;;
+esac
+[ "${#SHA_BIN}" = 64 ] || { echo "FATAL: SHA_BIN 长度 ${#SHA_BIN} != 64" >&2; exit 1; }
+[ -f "$HERE/bin/hyatlas-go-linux-amd64" ] || { echo "FATAL: 缺 $HERE/bin/hyatlas-go-linux-amd64" >&2; exit 1; }
+ACTUAL_BIN_SHA="$(sha256sum "$HERE/bin/hyatlas-go-linux-amd64" | cut -d' ' -f1)"
+[ "$ACTUAL_BIN_SHA" = "$SHA_BIN" ] || { echo "FATAL: SHA_BIN($SHA_BIN) != bin/ 实际 sha($ACTUAL_BIN_SHA)" >&2; exit 1; }
+case "$ACTUAL_BIN_SHA" in
+  01bec1798c50456672b2a2980aa931b994d10e55f6c97caebea60b3ce73abdce)
+    echo "FATAL: bin/ 仍是 4.3.3-1 出货二进制（01bec179），不能以 4.5.0-1 名义打包" >&2; exit 1;;
+  83740365a1235a2dc0086be35c1d7667dd7eb7817c0ff09d1b229e3df18d2b4d)
+    echo "FATAL: bin/ 仍是 4.3.0-1 出货二进制（83740365），不能以 4.5.0-1 名义打包" >&2; exit 1;;
+  f9acdf9f4917df1f73a609ce975d4651684a6d0ccdd533f071a7ee66a8c47c2d)
+    echo "WARN: bin/ 是 dashboard 汉化修复前的 f9acdf9f —— 若 i18n 补全已合入则本值应已变化" >&2;;
+esac
+echo "SHA_BIN 自检通过: $ACTUAL_BIN_SHA ($(stat -c '%s' "$HERE/bin/hyatlas-go-linux-amd64") B)"
 
 STAGING="$(mktemp -d)"
 trap 'rm -rf "$STAGING"' EXIT
