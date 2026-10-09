@@ -52,6 +52,9 @@ type Server struct {
 	dedupeScore float64
 	// admin is HYATLAS_ADMIN: whether the /api/v1/admin/* maintenance endpoints answer.
 	admin bool
+	// deleteMax is HYATLAS_DELETE_MAX: the largest single /api/v1/delete_all request
+	// that runs without confirm_mass_delete=true (see deleteGuard in delete_guard.go).
+	deleteMax int
 	// fork (fnos): actual embedder dimension (1024 for bge-large-zh); status
 	// must report what the store indexes, not a hardcoded 384.
 	embedDims int
@@ -831,6 +834,14 @@ func atoi(s string, def int) int {
 	return n
 }
 
+// handleDelete is POST /api/v1/delete_all. It removes docs by explicit ids (narrow,
+// always allowed) or by a layer/user_id/agent_id scope (wide, gated).
+//
+// The request shape is unchanged since 4.1: scoping may arrive as query params
+// (curl style) or as a JSON body (the hyatlas plugin's client style), query wins,
+// and `id` may repeat for a batch. Everything from "how many rows would this hit"
+// onwards is decided by deleteGuard so the endpoint and the tests share one
+// implementation of the policy.
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	// A delete is destructive, so only the verbs that name one are accepted. A
 	// GET from a link prefetcher or a crawler must not reach the wipe path.
@@ -839,15 +850,18 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, 405, map[string]any{"deleted_count": 0, "error": "method not allowed: use POST or DELETE"})
 		return
 	}
-	// Scoping may arrive as query params (curl style) OR as a JSON body
-	// (the hyatlas plugin's client style). Read both, query wins.
+	// Scoping may arrive as query params (curl style) OR as a JSON body (the
+	// hyatlas plugin's client style). Query wins. Dry run defaults to true, the
+	// same convention as the maintenance endpoints.
 	var body struct {
-		ID      string `json:"id"`
-		Layer   string `json:"layer"`
-		UserID  string `json:"user_id"`
-		AgentID string `json:"agent_id"`
-		All     bool   `json:"all"`
-		Confirm string `json:"confirm"`
+		ID                string `json:"id"`
+		Layer             string `json:"layer"`
+		UserID            string `json:"user_id"`
+		AgentID           string `json:"agent_id"`
+		All               bool   `json:"all"`
+		Confirm           string `json:"confirm"`
+		DryRun            *bool  `json:"dry_run"`
+		ConfirmMassDelete bool   `json:"confirm_mass_delete"`
 	}
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&body)
@@ -864,28 +878,76 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	agentID := first(q.Get("agent_id"), body.AgentID)
 	// all=true is the explicit wipe. confirm=wipe-all is the older spelling of
 	// the same opt-in, kept so existing callers keep working.
-	all := q.Get("all") == "true" || body.All || first(q.Get("confirm"), body.Confirm) == "wipe-all"
+	confirmAll := q.Get("all") == "true" || body.All || first(q.Get("confirm"), body.Confirm) == "wipe-all"
+	// id arrives as one value, as several values, or as a comma list. All three
+	// are kept; the server reports any id it does not recognise rather than
+	// silently deleting fewer rows than the caller asked for.
 	ids := []string{}
-	if idStr := first(q.Get("id"), body.ID); idStr != "" {
-		ids = append(ids, idStr)
+	if idList := q["id"]; len(idList) > 0 {
+		ids = append(ids, idList...)
+	} else if body.ID != "" {
+		ids = append(ids, body.ID)
 	}
-	// layer "*" means "everything" — same as an unscoped wipe.
+	flat := make([]string, 0, len(ids))
+	for _, idStr := range ids {
+		for _, one := range strings.Split(idStr, ",") {
+			one = strings.TrimSpace(one)
+			if one != "" {
+				flat = append(flat, one)
+			}
+		}
+	}
+	ids = flat
+	// layer "*" means "everything" - same as an unscoped wipe.
 	if layer == "*" {
 		layer = ""
 	}
-	// Guard: a call with no filter is a full-store wipe. Require at least one
-	// scope, or an explicit all=true.
-	if len(ids) == 0 && layer == "" && userID == "" && agentID == "" && !all {
-		jsonResponse(w, 400, map[string]any{
-			"deleted_count": 0,
-			"error":         "unscoped delete refused: pass layer/user_id/agent_id/id, or all=true to wipe the entire store",
-		})
-		return
+	massOK := body.ConfirmMassDelete || q.Get("confirm_mass_delete") == "true"
+	// dry_run is a JSON body field, not a query param. An empty body is the one
+	// shape that must never write, so a request that names no scope at all is
+	// treated as a full-store wipe no matter how the dry_run flag was spelled.
+	dry := body.DryRun == nil || *body.DryRun
+	if len(ids) == 0 && layer == "" && userID == "" && agentID == "" && !confirmAll {
+		dry = false
 	}
-	deleted, err := s.store.Delete(ids, memory.Layer(layer), userID, agentID)
-	jsonResponse(w, 200, map[string]any{"deleted_count": deleted, "error": errStr(err)})
-}
 
+	// The audit line records who asked, so a deletion stays attributable.
+	scope := deleteScope{
+		IDs:        ids,
+		Layer:      layer,
+		UserID:     userID,
+		AgentID:    agentID,
+		All:        confirmAll,
+		DryRun:     dry,
+		MassOK:     massOK,
+		Max:        s.deleteMax,
+		Admin:      s.admin,
+		RemoteAddr: r.RemoteAddr,
+		UserAgent:  r.UserAgent(),
+	}
+
+	g := s.deleteGuard(scope)
+	resp := map[string]any{
+		"dry_run":       g.DryRun,
+		"scope":         g.ScopeDesc,
+		"will_delete":   g.WillDelete,
+		"delete_max":    g.Max,
+		"deleted_count": g.Deleted,
+	}
+	if g.OverCap {
+		resp["over_cap"] = true
+	}
+	if len(g.NotFound) > 0 {
+		resp["not_found"] = strings.Join(g.NotFound, ",")
+	}
+	if g.Error != "" {
+		resp["error"] = g.Error
+	}
+	if !g.DryRun {
+		s.auditDelete(g, scope)
+	}
+	jsonResponse(w, g.Status, resp)
+}
 func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	counts := s.store.LayerCounts()
 	jsonResponse(w, 200, map[string]any{
@@ -1402,6 +1464,8 @@ type runtimeCfg struct {
 	// Admin is HYATLAS_ADMIN: whether the maintenance endpoints are enabled. Off
 	// unless set to on/true/1/yes, because compact_raw cannot be undone.
 	Admin bool
+	// DeleteMax is HYATLAS_DELETE_MAX: the cap on one delete_all request.
+	DeleteMax int
 }
 
 // Defaults that decide what leaves the machine:
@@ -1447,6 +1511,7 @@ func resolveRuntime() runtimeCfg {
 		Batch:        envInt("HYATLAS_CONSOLIDATE_BATCH", defaultBatch),
 		Graph:        !envOff("HYATLAS_CONSOLIDATE_GRAPH"),
 		Admin:        envOn("HYATLAS_ADMIN"),
+		DeleteMax:    envInt("HYATLAS_DELETE_MAX", defaultDeleteMax),
 		Host:         strings.Trim(envOr("HYATLAS_GO_HOST", defaultHost), "[]"),
 		Port:         envOr("HYATLAS_GO_PORT", defaultPort),
 		DataDir:      dataDir,
@@ -1681,6 +1746,7 @@ func main() {
 	srv.minScore = rt.MinScore
 	srv.dedupeScore = rt.DedupeScore
 	srv.admin = rt.Admin
+	srv.deleteMax = rt.DeleteMax
 	if rt.Admin {
 		log.Print("HYATLAS_ADMIN=on: /api/v1/admin/compact_raw and /api/v1/admin/dedupe_facts are enabled")
 	}
@@ -1919,6 +1985,12 @@ func isLoopbackHost(h string) bool {
 // on a real store with bge-small: on-topic queries never put a relevant hit below
 // 0.67, and off-topic queries never scored above 0.55. 0 disables the floor.
 const defaultMinScore = 0.60
+
+// defaultDeleteMax caps one /api/v1/delete_all request. It sits above the plugin's
+// per-request id batch size (plugins/hy_memory/client.py sends ids in chunks of
+// 100) so a normal memory_forget keeps working, and below the blast radius of a
+// whole-store scope.
+const defaultDeleteMax = 1000
 
 // defaultDedupeScore is the similarity at or above which a newly extracted fact is
 // treated as a restatement of the owner's nearest existing fact, which it then

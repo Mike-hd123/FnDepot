@@ -81,7 +81,7 @@ type MemoryStore struct {
 	searches   atomic.Uint64
 	countsPath string
 	// embed dimension (384 en / 1024 zh), set at open time
-	dims       int
+	dims int
 
 	// --- index write coalescing (reduces SSD writes from ~11 GB/day to ~0.5 GB/day) ---
 	// Each persistIndex() call marks dirty + schedules a debounced flush. Rapid
@@ -122,9 +122,9 @@ func NewMemoryStore(ctx context.Context, dir string, embed Embedder, graphPath s
 	s := &MemoryStore{db: db, g: g, embed: embed, ctx: ctx,
 		cols: map[memory.Layer]*chromem.Collection{}, index: map[string]DocIndex{},
 		superseded: map[string]memory.Layer{}, hidden: map[memory.Layer]int{},
-		indexPath:  filepath.Join(dir, "doc_index.json"),
-		countsPath: filepath.Join(dir, "usage.json"),
-		dims:       dims,
+		indexPath:    filepath.Join(dir, "doc_index.json"),
+		countsPath:   filepath.Join(dir, "usage.json"),
+		dims:         dims,
 		indexFlushCh: make(chan struct{})}
 	// load persisted counters before rebuildIndex so writes/searches survive restart.
 	s.loadUsage()
@@ -373,12 +373,12 @@ func (s *MemoryStore) searchWhere(qv []float32, limit int, layer memory.Layer, w
 		}
 		s.mu.RLock()
 		for _, r := range res {
-		if _, dead := s.superseded[r.ID]; dead {
-			continue
-		}
-		if !includeExpired && validUntilExpired(r.Metadata["valid_until"]) {
-			continue
-		}
+			if _, dead := s.superseded[r.ID]; dead {
+				continue
+			}
+			if !includeExpired && validUntilExpired(r.Metadata["valid_until"]) {
+				continue
+			}
 			hits = append(hits, SearchHit{ID: r.ID, Content: r.Content,
 				Score: r.Similarity, Layer: memory.Layer(l), Meta: r.Metadata})
 		}
@@ -536,10 +536,17 @@ func (s *MemoryStore) list(layer memory.Layer, userID, agentID string, limit, of
 	return all[offset:end], total
 }
 
-// Delete removes docs by id (or by layer/user/agent scope). Returns count deleted.
-func (s *MemoryStore) Delete(ids []string, layer memory.Layer, userID, agentID string) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// deleteTargets computes the ids a Delete(ids, layer, userID, agentID) call would
+// remove. It is the single source of truth for the target set: Delete uses it under
+// the write lock, and DeleteMatchCount uses it under a read lock, so the dry-run
+// preview and the real deletion cannot disagree about what matches.
+// It must be called with s.mu held (R or W).
+//
+// Explicit ids win over the layer/user/agent scope. Superseded rows are targeted
+// too: Delete has always removed a scoped row whether or not it was superseded, and
+// matching that here is what makes a dry-run count equal to the count actually
+// deleted.
+func (s *MemoryStore) deleteTargets(ids []string, layer memory.Layer, userID, agentID string) map[string]bool {
 	targets := map[string]bool{}
 	if len(ids) > 0 {
 		for _, id := range ids {
@@ -547,20 +554,39 @@ func (s *MemoryStore) Delete(ids []string, layer memory.Layer, userID, agentID s
 				targets[id] = true
 			}
 		}
-	} else {
-		for id, d := range s.index {
-			if layer != "" && d.Layer != string(layer) {
-				continue
-			}
-			if userID != "" && d.UserID != userID {
-				continue
-			}
-			if agentID != "" && d.AgentID != agentID {
-				continue
-			}
-			targets[id] = true
-		}
+		return targets
 	}
+	for id, d := range s.index {
+		if layer != "" && d.Layer != string(layer) {
+			continue
+		}
+		if userID != "" && d.UserID != userID {
+			continue
+		}
+		if agentID != "" && d.AgentID != agentID {
+			continue
+		}
+		targets[id] = true
+	}
+	return targets
+}
+
+// DeleteMatchCount reports how many docs a Delete(ids, layer, userID, agentID) call
+// would remove, without removing them. This is what /api/v1/delete_all reports as
+// will_delete on a dry run, so a caller can see the blast radius before opting in.
+// The count therefore includes superseded rows, because Delete removes those too;
+// TotalMemories does not. The two are deliberately different.
+func (s *MemoryStore) DeleteMatchCount(ids []string, layer memory.Layer, userID, agentID string) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.deleteTargets(ids, layer, userID, agentID))
+}
+
+// Delete removes docs by id (or by layer/user/agent scope). Returns count deleted.
+func (s *MemoryStore) Delete(ids []string, layer memory.Layer, userID, agentID string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	targets := s.deleteTargets(ids, layer, userID, agentID)
 	deleted := 0
 	for id := range targets {
 		d := s.index[id]
@@ -575,15 +601,15 @@ func (s *MemoryStore) Delete(ids []string, layer memory.Layer, userID, agentID s
 
 // GetDoc returns one document from the exact index.
 func (s *MemoryStore) GetMany(ids []string) []DocIndex {
-s.mu.RLock()
-defer s.mu.RUnlock()
-out := make([]DocIndex, 0, len(ids))
-for _, id := range ids {
-if d, ok := s.index[id]; ok {
-out = append(out, d)
-}
-}
-return out
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]DocIndex, 0, len(ids))
+	for _, id := range ids {
+		if d, ok := s.index[id]; ok {
+			out = append(out, d)
+		}
+	}
+	return out
 }
 
 func (s *MemoryStore) GetDoc(id string) (DocIndex, bool) {
