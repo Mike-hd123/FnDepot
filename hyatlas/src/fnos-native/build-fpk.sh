@@ -1,5 +1,5 @@
 #!/bin/bash
-# HyAtlas v4.5.0-1 fpk 构建（同步上游 v4.4.0 + v4.5.0：BM25+向量 hybrid 搜索、owner 分组 consolidation、compact_raw/dedupe_facts 维护端点、B2 内置 ORT int8 bge-large-zh）
+# HyAtlas v4.5.0-2 fpk 构建（同步上游 v4.4.0 + v4.5.0：BM25+向量 hybrid 搜索、owner 分组 consolidation、compact_raw/dedupe_facts 维护端点、B2 内置 ORT int8 bge-large-zh）
 #
 # 输入来源：
 #   - fpk 控制层（cmd/config/wizard/manifest/ICON）：本目录归档原件
@@ -14,7 +14,7 @@
 # 用法: bash build-fpk.sh [输出路径]
 # ⚠ OUT 默认值是 /vol02/1000-1-13b246aa/… = fuse.rclone WebDAV 挂载（见 mount），
 #   脚本要写 out+'.tmp' 再 os.replace，走该挂载有大文件重命名风险；
-#   打包请显式传本地路径：bash build-fpk.sh /vol2/1000/download/hyatlas-4.5.0-1-x86.fpk
+#   打包请显式传本地路径：bash build-fpk.sh /vol2/1000/download/hyatlas-4.5.0-2-x86.fpk
 #
 # 与 4.1.1-2 时代的字节级等价构建差异：
 #   - 4.1.1-5 控制层与二进制均有变更，不再做 REF 产物 sha 等价断言；
@@ -25,12 +25,12 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-OUT="${1:-/vol02/1000-1-13b246aa/download/hyatlas-4.5.0-1-x86.fpk}"
+OUT="${1:-/vol02/1000-1-13b246aa/download/hyatlas-4.5.0-2-x86.fpk}"
 REF_FPK="/vol2/1000/download/hyatlas-4.3.3-1-x86.fpk"   # 241,916,249B sha ce362d5d… 实测存在；其内层模型三件套 sha 与 SHA_ONNX/SHA_ORT/SHA_TOK 逐件相同
 
-# SHA_BIN must be recomputed against the freshly built bin/hyatlas-go-linux-amd64 for 4.5.0-1 (fork-src @ hyatlas-v450-sync).
+# SHA_BIN must be recomputed against the freshly built bin/hyatlas-go-linux-amd64 for 4.5.0-2 (fork-src @ hyatlas-v450-sync).
 # Do NOT ship fpk with the placeholder below; run sha256sum on the binary and replace.
-SHA_BIN="ebe501d000a9ed5e39c3aa48a5bdece7f86da6688a888aa378709a0585979919"   # 实测：b19fcf4 树双跨挂载副本(-trimpath)复现两次同 sha，且与 task-9 交付锚点 --expect 吻合；14,738,272B
+SHA_BIN="4a39e8e02cf564c1b0c085a1ec216d02ba0eb4bea952ca95b77c1163bd76e95b"   # 实测：b6fccf0 树(-trimpath)两次重编逐字节一致；14,758,776B；delete_all 护栏加固
 SHA_ONNX="8a3f371a7e535e25d3d5a0ff0c0501a605ef0b62577800d2bf4b1fc76d6cbcf1"
 SHA_ORT="99458e9d185dfa1a9b5f6510790ede3bedc25dea378adb904ce292b517eeaecf"
 SHA_TOK="7dfbf1966ebf99d471c3796e9b457329d2b2182b817e144f1e904b957745c839"
@@ -49,9 +49,9 @@ ACTUAL_BIN_SHA="$(sha256sum "$HERE/bin/hyatlas-go-linux-amd64" | cut -d' ' -f1)"
 [ "$ACTUAL_BIN_SHA" = "$SHA_BIN" ] || { echo "FATAL: SHA_BIN($SHA_BIN) != bin/ 实际 sha($ACTUAL_BIN_SHA)" >&2; exit 1; }
 case "$ACTUAL_BIN_SHA" in
   01bec1798c50456672b2a2980aa931b994d10e55f6c97caebea60b3ce73abdce)
-    echo "FATAL: bin/ 仍是 4.3.3-1 出货二进制（01bec179），不能以 4.5.0-1 名义打包" >&2; exit 1;;
+    echo "FATAL: bin/ 仍是 4.3.3-1 出货二进制（01bec179），不能以 4.5.0-2 名义打包" >&2; exit 1;;
   83740365a1235a2dc0086be35c1d7667dd7eb7817c0ff09d1b229e3df18d2b4d)
-    echo "FATAL: bin/ 仍是 4.3.0-1 出货二进制（83740365），不能以 4.5.0-1 名义打包" >&2; exit 1;;
+    echo "FATAL: bin/ 仍是 4.3.0-1 出货二进制（83740365），不能以 4.5.0-2 名义打包" >&2; exit 1;;
   f9acdf9f4917df1f73a609ce975d4651684a6d0ccdd533f071a7ee66a8c47c2d)
     echo "WARN: bin/ 是 dashboard 汉化修复前的 f9acdf9f —— 若 i18n 补全已合入则本值应已变化" >&2;;
 esac
@@ -227,8 +227,8 @@ fi
 # 2) manifest 版本/appname
 GOT_VER=$(tar -xOf "$OUT" manifest | awk -F'= *' '$1 ~ /^version/ {print $2}' | tr -d ' ')
 GOT_APP=$(tar -xOf "$OUT" manifest | awk -F'= *' '$1 ~ /^appname/ {print $2}' | tr -d ' ')
-if [ "$GOT_VER" != "4.5.0-1" ] || [ "$GOT_APP" != "hyatlas" ]; then
-  echo "FAIL: manifest appname=$GOT_APP version=$GOT_VER (expected hyatlas 4.5.0-1)" >&2; FAIL=1
+if [ "$GOT_VER" != "4.5.0-2" ] || [ "$GOT_APP" != "hyatlas" ]; then
+  echo "FAIL: manifest appname=$GOT_APP version=$GOT_VER (expected hyatlas 4.5.0-2)" >&2; FAIL=1
 fi
 
 # 3) shares 自愈回调在位（install/upgrade 双回调都含特征串）
@@ -256,5 +256,5 @@ if [ "$FAIL" != "0" ]; then
   echo "STRUCTURE CHECK FAILED" >&2
   exit 1
 fi
-echo "PASS: structure ok (manifest 4.5.0-1, shares-heal callbacks present, app payload complete incl env.example)"
+echo "PASS: structure ok (manifest 4.5.0-2, shares-heal callbacks present, app payload complete incl env.example)"
 echo "$OUT  $((GOT_SIZE/1024/1024))MB  sha256=$GOT_SHA"
