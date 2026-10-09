@@ -42,6 +42,15 @@ let l5Graph = null;  // full response from /api/l5/graph
 let activityChart = null;
 let radarChart = null;
 
+// fork (fnos) — timeline cache (task-9 restore from 5f2ea6e): accumulate fetched pages
+// per owner scope (deduped by memory_id), so 载入更多 pages back through history
+// across the 30s auto-refresh (each refresh only re-fetches the newest page).
+let timelineCache = [];
+let timelineScope = null;      // owner key the cache belongs to
+let timelineSeen = new Set();  // memory_ids in the cache
+let timelineRange = '24h';     // '24h' | '7d' | 'all' (时间范围 tabs)
+let timelineOffset = 0;        // next /api/memories page offset
+
 // Layer definitions
 const LAYERS = {
   'l1_profile': { name: '档案', desc: '基础信息与身份标识', color: '#4a6fa5' },
@@ -496,6 +505,27 @@ async function loadAllData() {
     graphRelations = l5Graph?.relations || [];
     activityMemories = [...vdbMemories, ...codingMemories];
     observatoryMemories = [...vdbMemories, ...graphNodes];
+
+    // fork (fnos) — merge the freshly fetched page into the timeline cache,
+    // resetting when the owner scope changes. Cap at 3000 rows so a long-lived
+    // dashboard cannot grow the cache unbounded across many loadMoreTimeline hits.
+    if (timelineScope !== currentOwnerKey) {
+      timelineScope = currentOwnerKey;
+      timelineCache = [];
+      timelineSeen = new Set();
+      timelineOffset = 0;
+    }
+    for (const m of activityMemories) {
+      if (m && m.memory_id && !timelineSeen.has(m.memory_id)) {
+        timelineSeen.add(m.memory_id);
+        timelineCache.push(m);
+      }
+    }
+    if (timelineCache.length > 3000) {
+      timelineCache.sort((a, b) => Number(b.gmt_created || 0) - Number(a.gmt_created || 0));
+      timelineCache.length = 3000;
+      timelineSeen = new Set(timelineCache.map(m => m.memory_id));
+    }
 
 
     storageData = storage;
@@ -1449,11 +1479,23 @@ function renderLayerHierarchy(layerCounts) {
 // Today / Activity
 let todayFilter = 'all';
 
-document.querySelectorAll('#page-today .tab').forEach(tab => {
+// fork (fnos) — content-filter tabs (全部/向量记忆/编码记忆). Scoped to
+// [data-filter] so the range-bar tabs ([data-range]) added below do not
+// cross-trigger each other's active class.
+document.querySelectorAll('#page-today .tab[data-filter]').forEach(tab => {
   tab.addEventListener('click', () => {
-    document.querySelectorAll('#page-today .tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('#page-today .tab[data-filter]').forEach(t => t.classList.remove('active'));
     tab.classList.add('active');
     todayFilter = tab.dataset.filter;
+    renderToday();
+  });
+});
+
+// fork (fnos) — Timeline range tabs (时间范围): 24h / 7天 / 全部 (task-9 restore)
+document.querySelectorAll('#timeline-range-bar .tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    timelineRange = tab.dataset.range || '24h';
+    document.querySelectorAll('#timeline-range-bar .tab').forEach(t => t.classList.toggle('active', t === tab));
     renderToday();
   });
 });
@@ -1485,35 +1527,57 @@ document.getElementById('export-json').addEventListener('click', () => {
   URL.revokeObjectURL(url);
 });
 
+// fork (fnos) — renderToday (task-9 restore): reads from the accumulated
+// timelineCache (not just the 24h flat slice) so 载入更多 pages back through
+// history. Range tabs (24h/7天/全部) filter the cache; todayFilter (all/vdb/
+// coding) is preserved from upstream. XSS helpers escapeHtml/esc/cssToken are
+// kept from upstream v4.5.0 — never reintroduce inline onclick here; the
+// click delegation via data-memory-id is installed earlier (see timeline-item
+// handler).
 function renderToday() {
-  const since = Date.now() - 24 * 60 * 60 * 1000;
+  const ranges = { '24h': 24 * 3600, '7d': 7 * 86400, 'all': 0 };
+  const rangeSec = ranges[timelineRange] || 0;
+  const cutoff = rangeSec ? Date.now() / 1000 - rangeSec : 0;
 
-  let filtered = activityMemories.filter(m => {
-    const created = tsToDate(m.gmt_created);
-    return created && created.getTime() >= since;
+  let items = timelineCache.filter(m => {
+    const ts = Number(m.gmt_created || 0);
+    return ts > 0 && (!cutoff || ts >= cutoff);
   });
-  
   if (todayFilter === 'vdb') {
-    filtered = filtered.filter(m => m.user_id !== 'coding');
+    items = items.filter(m => m.user_id !== 'coding');
   } else if (todayFilter === 'coding') {
-    filtered = filtered.filter(m => m.user_id === 'coding');
+    items = items.filter(m => m.user_id === 'coding');
   }
-  
-  filtered.sort((a, b) => b.gmt_created - a.gmt_created);
-  
-  const html = filtered.slice(0, 20).map(m => {
-      const title = (m.content || '');
-      const preview = title.length > 100 ? title.substring(0, 100) + '…' : title;
-      const ts = Number(m.gmt_created) || 0;
-      const time = ts ? new Date(ts * 1000).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' }) : '—';
-      const ago = ts ? Math.floor((Date.now() / 1000 - ts) / 60) : 0;
-      const agoText = !ts ? '—' : ago < 60 ? `${ago} 分钟前` : `${Math.floor(ago / 60)} 小时前`;
+  items.sort((a, b) => Number(b.gmt_created || 0) - Number(a.gmt_created || 0));
 
-      const imp = typeof m.importance === 'number' ? m.importance : null;
-      const impCls = imp === null ? '' : imp >= 0.7 ? 'importance-high' : imp >= 0.4 ? 'importance-mid' : 'importance-low';
-      const impBadge = imp === null ? '' : `<span class="badge badge-importance ${impCls}" title="重要性（4 因子评分器）">★ ${imp.toFixed(2)}</span>`;
+  // Cap DOM rows; the rest stay reachable via 载入更多 + narrower range.
+  const MAX_ROWS = 500;
+  const shown = items.slice(0, MAX_ROWS);
 
-      return `
+  const fmtDay = new Intl.DateTimeFormat('zh-CN', { month: 'long', day: 'numeric', weekday: 'short' });
+  let html = '';
+  let lastDay = '';
+  for (const m of shown) {
+    const ts = Number(m.gmt_created) || 0;
+    const d = new Date(ts * 1000);
+    const dayKey = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+    if (dayKey !== lastDay) {
+      lastDay = dayKey;
+      html += `<div class="timeline-day-header" style="margin:14px 0 8px;font-weight:600;color:var(--accent);font-size:12px;letter-spacing:.05em;">${escapeHtml(fmtDay.format(d))}</div>`;
+    }
+    const title = (m.content || '');
+    const preview = title.length > 140 ? title.substring(0, 140) + '…' : title;
+    const time = d.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+    const ago = Math.floor((Date.now() / 1000 - ts) / 60);
+    // fork (fnos) — N 分钟前 / 小时前 / 天前 三档相对时间（task-9 restore）。
+    // 上游只到小时档，跨天列表全显 "N 小时前" 到 240+，不可读。
+    const agoText = ago < 60 ? `${ago} 分钟前` : ago < 1440 ? `${Math.floor(ago / 60)} 小时前` : `${Math.floor(ago / 1440)} 天前`;
+
+    const imp = typeof m.importance === 'number' ? m.importance : null;
+    const impCls = imp === null ? '' : imp >= 0.7 ? 'importance-high' : imp >= 0.4 ? 'importance-mid' : 'importance-low';
+    const impBadge = imp === null ? '' : `<span class="badge badge-importance ${impCls}" title="重要性（4 因子评分器）">★ ${imp.toFixed(2)}</span>`;
+
+    html += `
         <div class="timeline-item" data-memory-id="${esc(m.memory_id)}">
           <div class="timeline-dot"></div>
           <div class="timeline-content">
@@ -1522,18 +1586,64 @@ function renderToday() {
             <div class="flex gap-2 mt-2" style="flex-wrap: wrap; align-items: center;">
               <span class="badge badge-layer layer-${cssToken(m.layer)}">${esc(m.layer)}</span>
               ${impBadge}
+              ${m.session_id ? `<span class="badge badge-tag" title="会话">${escapeHtml(String(m.session_id).slice(0, 18))}</span>` : ''}
               ${(m.tags || []).slice(0, 3).map(t => `<span class="badge badge-tag">${esc(t)}</span>`).join('')}
             </div>
           </div>
         </div>
       `;
-    }).join('');
-  
+  }
+
   document.getElementById('timeline').innerHTML = html || '<div class="text-muted">该时间范围内暂无记忆</div>';
-  
-  // Right sidebar - summary
-  renderTodaySummary(filtered);
+
+  // fork (fnos) — range tabs active state + count line + load-more button.
+  const rangeBar = document.getElementById('timeline-range-bar');
+  if (rangeBar) {
+    rangeBar.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.range === timelineRange));
+  }
+  const cnt = document.getElementById('timeline-count');
+  if (cnt) cnt.textContent = `共 ${items.length} 条${items.length > shown.length ? `（显示最近 ${shown.length} 条）` : ''}`;
+  const more = document.getElementById('timeline-load-more');
+  if (more) {
+    // Keep the button visible whenever there may be more history; clicking
+    // with nothing new simply reports "已载入更多 0 条".
+    more.style.display = '';
+  }
+
+  // Right sidebar - summary (reuse old summary logic on the filtered set)
+  renderTodaySummary(items);
 }
+
+// fork (fnos) — 载入更多历史 (task-9 restore): fetch the next /api/memories page
+// under the current owner scope and merge into timelineCache, then re-render.
+// Uses scopedPath so the request honours the same [user_id, agent_id] pair the
+// dashboard already filters on. Never resets timelineCache; only appends.
+async function loadMoreTimeline() {
+  try {
+    const nextOff = timelineOffset || 100;  // first page loaded by loadAllData is 100 wide
+    const path = scopedPath(`/api/memories?limit=200&offset=${nextOff}`);
+    const resp = await fetchJSON(path);
+    const mg = resp && resp.memories;
+    const batch = Array.isArray(mg) ? mg : (mg ? [...(mg.profile || []), ...(mg.proactive || []), ...(mg.normal || [])] : []);
+    if (Array.isArray(resp?.items) && !batch.length) batch.push(...resp.items);
+    let added = 0;
+    for (const m of batch) {
+      if (m && m.memory_id && !timelineSeen.has(m.memory_id)) {
+        timelineSeen.add(m.memory_id);
+        timelineCache.push(m);
+        added++;
+      }
+    }
+    timelineCache.sort((a, b) => Number(b.gmt_created || 0) - Number(a.gmt_created || 0));
+    timelineOffset = nextOff + 200;
+    renderToday();
+    setScopeStatus(`时间线已载入更多 ${added} 条`);
+  } catch (err) {
+    console.error('loadMoreTimeline failed:', err);
+    setScopeStatus('时间线载入失败');
+  }
+}
+window.__loadMoreTimeline = loadMoreTimeline;
 
 function renderTodaySummary(todayMemories) {
   const uniqueSessions = new Set(todayMemories.map(m => m.session_id)).size;
@@ -2184,6 +2294,36 @@ function debounce(fn, delay) {
     timeout = setTimeout(() => fn(...args), delay);
   };
 }
+
+// fork (fnos) — Mobile nav drawer (≤860px): hamburger toggles sidebar,
+// backdrop/tap closes, nav-item click auto-closes, resize回落清态。
+// Restored from fork 5f2ea6e after the v4.5.0 sync dropped it (task-9).
+function setupMobileNav() {
+  const btn = document.getElementById("mobile-menu-btn");
+  const backdrop = document.getElementById("sidebar-backdrop");
+  const sidebar = document.querySelector(".sidebar");
+  if (!btn || !backdrop || !sidebar) return;
+  const close = () => document.body.classList.remove("nav-open");
+  const toggle = () => document.body.classList.toggle("nav-open");
+  btn.addEventListener("click", (e) => { e.stopPropagation(); toggle(); });
+  backdrop.addEventListener("click", close);
+  // 点导航项跳页后自动收起抽屉（移动端）
+  sidebar.addEventListener("click", (e) => {
+    if (e.target.closest(".nav-item")) close();
+  });
+  // 桌面宽度回落时清理抽屉状态
+  window.addEventListener("resize", () => {
+    if (window.innerWidth > 860) close();
+  });
+}
+setupMobileNav();
+
+// fork (fnos) — 载入更多历史 button (task-9 restore). Bound once at page init;
+// element may be missing on non-today pages, so guard.
+(function bindLoadMoreTimeline() {
+  const btn = document.getElementById('timeline-load-more');
+  if (btn) btn.addEventListener('click', () => window.__loadMoreTimeline && window.__loadMoreTimeline());
+})();
 
 // Init
 initAgentSelector();

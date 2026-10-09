@@ -18,6 +18,10 @@
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+<button class="mobile-menu-btn" id="mobile-menu-btn" type="button" aria-label="打开导航菜单">
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+</button>
+<div class="sidebar-backdrop" id="sidebar-backdrop"></div>
 <div class="boot-screen" id="boot-screen">
   <div class="boot-logo">HyAtlas</div>
   <div class="boot-sub">AI 记忆图谱</div>
@@ -291,9 +295,23 @@
         <div class="tab" data-filter="vdb">向量记忆</div>
         <div class="tab" data-filter="coding">编码记忆</div>
       </div>
-      
+
+      <!-- fork (fnos) — 时间范围 tabs (task-9 restore): 24h / 7天 / 全部.
+           data-range 由 app.js 的 #timeline-range-bar .tab 处理器读取；
+           与上面的 [data-filter] 内容过滤独立，两套 active 状态各管各的。 -->
+      <div class="tabs mb-4" id="timeline-range-bar">
+        <div class="tab active" data-range="24h">近 24 小时</div>
+        <div class="tab" data-range="7d">近 7 天</div>
+        <div class="tab" data-range="all">全部</div>
+      </div>
+      <div class="kv-list" id="timeline-count" style="margin-bottom:8px;"></div>
+
       <div class="timeline" id="timeline"></div>
-      
+
+      <!-- fork (fnos) — 载入更多历史 (task-9 restore). 由 app.js bindLoadMoreTimeline 挂 click 处理，
+           不用 inline onclick；renderToday 会把 display 打开。 -->
+      <button class="export-btn" id="timeline-load-more" style="display:none;margin-top:12px;">载入更多历史</button>
+
       <button class="export-btn" id="export-json">导出 JSON</button>
     </div>
     
