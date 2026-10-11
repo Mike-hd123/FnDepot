@@ -1,10 +1,18 @@
 # wechat-on-cloud.fpk — 云微(飞牛云微信) 安装包
 
-- 版本：1.4.9（面板自报 WOC_VERSION 跟随上游）
-- 打包时间：2026-08-31
+- 版本：1.5.2-1（飞牛包版本 = 上游版本-本地修订号；面板自报 WOC_VERSION 见下）
+- 打包时间：2026-10-12
+- 面板自报版本：`cmd/main` 的 `WOC_VERSION` 固定 `1.5.1`（面板自身更新检测口径，与飞牛包版本解耦）
 - 上游项目：[Gloridust/WechatOnCloud](https://github.com/Gloridust/WechatOnCloud)（fork 存档：[Mike-hd123/WechatOnCloud](https://github.com/Gloridust/WechatOnCloud)）
 - 源码：本目录 `src/`（含全部 NAS 适配改动）
-- 打包方式：fnOS `fnpack build`
+- 打包方式：`src/fnos-native/build.sh`（默认走定档 `app.tgz`；`--from-source` 用 `build-app.sh` 从 panel 源码产出的 `app.new.tgz`）
+
+## 1.5.2-1 变更（2026-10-12）
+
+- 合并上游 v1.5.2：QQ 下载实时签名校验（#153，裸链一律 403）、诊断包新增桌面服务段（nginx/KasmVNC 端口监听 + error.log）、NO_IPV6 诊断行、Admin 页删过时「QQ 只对大陆开放」文案。
+- **修残包**：定档 `app.tgz` 此前缺 `tar.ts` / `upload.ts`（二者被 `docker.ts:12`、`index.ts:125` 硬 import），从仓库重建即崩；现已补回，`server/src` 下 12 个 `.ts` 齐全。
+- web-dist 重建。
+- `cmd/main` 的 `WOC_VERSION` 保持 `1.5.1` 未动。
 
 ## 相对上游的核心改动（全部已进 src/ 存档）
 

@@ -58,6 +58,17 @@
               "size": 15598576
             }
           }
+        },
+        "1.5.2-1": {
+          "changelog": "1.5.2-1（2026-10-12）：修残包——定档 app.tgz 缺 tar.ts/upload.ts（被 docker.ts:12、index.ts:125 硬 import，从仓库重建必崩），改全量重建，server/src 12 个 .ts 齐全。合并上游 v1.5.2——docker.ts 诊断包新增桌面服务 nginx/KasmVNC 端口与 error.log 段、Admin.tsx 删「QQ 只对大陆开放」过时文案、app-ctl.sh QQ 下载改实时签名(#153，裸链 403)。面板版本对齐上游 1.5.2。ipvlan woc-lan/数据 bind/孤儿目录扫描/触屏/电源下拉/host-guard/trim-api 全部本地定制存活。",
+          "updated_at": "2026-10-12T07:15:00+08:00",
+          "packages": {
+            "all": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.10.12/wechat-on-cloud-1.5.2-1.fpk",
+              "sha256": "92087deb57409ca202b8c038413add7f67e06ef2d64f953c1f4e9fbd46f5c823",
+              "size": 15646875
+            }
+          }
         }
       }
     },

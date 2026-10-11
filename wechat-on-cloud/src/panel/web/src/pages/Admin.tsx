@@ -2405,7 +2405,7 @@ function CreateInstance({ subs, onClose, onDone }: { subs: PanelUser[]; onClose:
           目录只能点选、不可手输；已授权目录在选择器里无法再次被选，可从上方点选。提交时校验授权，未授权会红字提示。数据存到 <code>{'{目录}'}/woc-data-{'{id}'}</code>（自动创建）。
         </div>
         {appType === 'qq' && (
-          <div className="muted small">QQ 为腾讯官方 Linux 版，创建后点「下载并安装」从腾讯官方下载（约 180MB）。腾讯只对中国大陆网络开放下载，境外网络会被拒绝。</div>
+          <div className="muted small">QQ 为腾讯官方 Linux 版，创建后点「下载并安装」从腾讯官方下载（约 180MB）。</div>
         )}
         <div className="field-label">允许访问的子账号（管理员默认可访问全部）</div>
         <ChipMultiSelect
