@@ -26,12 +26,12 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-OUT="${1:-/vol02/1000-1-13b246aa/download/hyatlas-4.6.0-1-x86.fpk}"
+OUT="${1:-/vol2/1000/download/hyatlas-4.7.0-1-x86.fpk}"
 REF_FPK="/vol2/1000/workspace/hy450-sync/out/hyatlas-4.5.0-2-x86.fpk"   # 242,218,811B 实测存在；其内层模型三件套 sha 与 SHA_ONNX/SHA_ORT/SHA_TOK 逐件相同
 
-# SHA_BIN must be recomputed against the freshly built bin/hyatlas-go-linux-amd64 for 4.6.0-1 (fork-src @ hyatlas-v460-sync).
+# SHA_BIN must be recomputed against the freshly built bin/hyatlas-go-linux-amd64 for 4.7.0-1 (fork-src @ hyatlas-v470-sync, merge commit cdcbcf9).
 # Do NOT ship fpk with the placeholder below; run sha256sum on the binary and replace.
-SHA_BIN="b94a26f055d85310987c0dfcd412d3cd33e7eef663bf527b1a2a793556b9e3a8"   # 实测：v4.6.0 合并树(-trimpath,无 -s -w)两次重编逐字节一致；14,923,200B；同步上游 v4.6.0
+SHA_BIN="6e002f578e9e87a08089a71f6c661452de635883d3ac3c85df6995fa7a8c469f"   # 实测：v4.7.0 合并树(-trimpath,无 -s -w)；15,443,432B；同步上游 v4.7.0 (merge cdcbcf9)
 SHA_ONNX="8a3f371a7e535e25d3d5a0ff0c0501a605ef0b62577800d2bf4b1fc76d6cbcf1"
 SHA_ORT="99458e9d185dfa1a9b5f6510790ede3bedc25dea378adb904ce292b517eeaecf"
 SHA_TOK="7dfbf1966ebf99d471c3796e9b457329d2b2182b817e144f1e904b957745c839"
@@ -230,8 +230,8 @@ fi
 # 2) manifest 版本/appname
 GOT_VER=$(tar -xOf "$OUT" manifest | awk -F'= *' '$1 ~ /^version/ {print $2}' | tr -d ' ')
 GOT_APP=$(tar -xOf "$OUT" manifest | awk -F'= *' '$1 ~ /^appname/ {print $2}' | tr -d ' ')
-if [ "$GOT_VER" != "4.6.0-1" ] || [ "$GOT_APP" != "hyatlas" ]; then
-  echo "FAIL: manifest appname=$GOT_APP version=$GOT_VER (expected hyatlas 4.6.0-1)" >&2; FAIL=1
+if [ "$GOT_VER" != "4.7.0-1" ] || [ "$GOT_APP" != "hyatlas" ]; then
+  echo "FAIL: manifest appname=$GOT_APP version=$GOT_VER (expected hyatlas 4.7.0-1)" >&2; FAIL=1
 fi
 
 # 3) shares 自愈回调在位（install/upgrade 双回调都含特征串）
@@ -259,5 +259,5 @@ if [ "$FAIL" != "0" ]; then
   echo "STRUCTURE CHECK FAILED" >&2
   exit 1
 fi
-echo "PASS: structure ok (manifest 4.6.0-1, shares-heal callbacks present, app payload complete incl env.example)"
+echo "PASS: structure ok (manifest 4.7.0-1, shares-heal callbacks present, app payload complete incl env.example)"
 echo "$OUT  $((GOT_SIZE/1024/1024))MB  sha256=$GOT_SHA"

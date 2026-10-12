@@ -15,7 +15,12 @@ import (
 // Embedder produces normalized vectors (chromem requires normalized).
 type Embedder interface {
 	Embed(ctx context.Context, text string) ([]float32, error)
-	// Dim returns the embed dimension the implementation produces.
+	// Dim reports the embedding dimension this embedder produces. Fork (fnos):
+	// the fork ships bge-large-zh (1024d), so /api/v1/status must report what
+	// the store actually indexes rather than the historical 384 default. The
+	// store captures this at open time and reports it via embedDims; tests that
+	// wrap another embedder (flakyEmbedder, blockingEmbedder) forward Dim()
+	// so the interface stays uniform.
 	Dim() int
 }
 
@@ -32,9 +37,6 @@ func NewOpenAIEmbedder(baseURL, key, model string) *OpenAIEmbedder {
 	return &OpenAIEmbedder{BaseURL: baseURL, APIKey: key, Model: model,
 		Client: &http.Client{Timeout: 60 * time.Second}}
 }
-
-// Dim returns 0 (unknown without a probe); the caller keeps its configured dims.
-func (e *OpenAIEmbedder) Dim() int { return 0 }
 
 func (e *OpenAIEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
 	body, _ := json.Marshal(map[string]any{"model": e.Model, "input": []string{text}})
@@ -69,12 +71,16 @@ func (e *OpenAIEmbedder) Embed(ctx context.Context, text string) ([]float32, err
 	return normalize(out.Data[0].Embedding), nil
 }
 
+// Dim returns the embedder's own default dimension (384). Fork (fnos): the
+// embedDims in /api/v1/status is only populated from this method when the
+// active embedder is the bge path; remote/OpenAI endpoints leave it at 384
+// (upstream default), so this satisfies the interface without probing.
+func (e *OpenAIEmbedder) Dim() int { return 384 }
+
 // LocalEmbedder is a deterministic fallback (BGE-ONNX wired later). Normalized.
 type LocalEmbedder struct{ dim int }
 
 func NewLocalEmbedder(dim int) *LocalEmbedder { return &LocalEmbedder{dim: dim} }
-
-func (e *LocalEmbedder) Dim() int { return e.dim }
 
 func (e *LocalEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
 	v := make([]float32, e.dim)
@@ -83,6 +89,8 @@ func (e *LocalEmbedder) Embed(ctx context.Context, text string) ([]float32, erro
 	}
 	return normalize(v), nil
 }
+
+func (e *LocalEmbedder) Dim() int { return e.dim }
 
 func normalize(v []float32) []float32 {
 	var n float64
@@ -127,8 +135,15 @@ func (e *BGEGoEmbedder) Embed(ctx context.Context, text string) ([]float32, erro
 	return e.bge.Embed(ctx, text)
 }
 
-// Dim returns the model embed dimension (384 for en, 1024 for zh).
-func (e *BGEGoEmbedder) Dim() int { return e.bge.HiddenDim() }
+// Dim reports the embedding dimension the wrapped BGE model produces. Fork
+// (fnos): the fork ships bge-large-zh (1024d), so /api/v1/status must report
+// what the store actually indexes rather than the historical 384 default.
+func (e *BGEGoEmbedder) Dim() int {
+	if e.bge == nil {
+		return 0
+	}
+	return e.bge.HiddenDim()
+}
 
 func (e *BGEGoEmbedder) Destroy() {
 	if e.bge != nil {

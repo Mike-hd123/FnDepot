@@ -158,11 +158,8 @@ func sqLive(t *testing.T, srv *Server, layer memory.Layer, all bool) (live, old 
 	return live, old
 }
 
-// TestPromoteDedupeSupersedesRestatement checks that a restated fact replaces
-// the old one, the old row keeps a superseded_by pointer, and — under the
-// fork (plan v2 §3④') — that the fast path does NOT mirror into L1. The L1
-// assertion was inverted from upstream (want 1 → want 0); L3 dedupe is
-// unchanged. See hy450-sync/DECISION-twin-removal.md.
+// TestPromoteDedupeSupersedesRestatement checks that a restated fact replaces the old
+// one and its L1 mirror, and that the old row keeps a superseded_by pointer.
 func TestPromoteDedupeSupersedesRestatement(t *testing.T) {
 	srv := newTestServer(t, "m", "http://127.0.0.1:1/v1")
 	ex := func() *Extraction {
@@ -175,14 +172,9 @@ func TestPromoteDedupeSupersedesRestatement(t *testing.T) {
 	if len(liveL3) != 1 {
 		t.Fatalf("live L3 facts: want 1, got %d", len(liveL3))
 	}
-	// fork (plan v2 §3④'): the fast-path extractor must not write L1 profile.
-	// Upstream asserts the mirror this fork removes — see
-	// hy450-sync/DECISION-twin-removal.md and the promoteExtractionCtx comment
-	// in server.go. L1 stays empty here; the real subject of this test is the
-	// L3 supersede behaviour checked below (liveL3==1, allL3==2, superseded_by).
 	liveL1, _ := sqLive(t, srv, memory.L1Profile, false)
-	if len(liveL1) != 0 {
-		t.Fatalf("live L1 profile rows: want 0 (fast path must not mirror), got %d", len(liveL1))
+	if len(liveL1) != 1 {
+		t.Fatalf("live L1 profile rows: want 1, got %d", len(liveL1))
 	}
 	allL3, _ := srv.store.ListAll(memory.L3Fact, "alice", "a1", 50, 0, false)
 	if len(allL3) != 2 {
