@@ -1,10 +1,10 @@
-![HyAtlas Memory — three-gear extraction across a seven-layer memory](https://raw.githubusercontent.com/tuancookiez-hub/HyAtlas-Memory/main/assets/hyatlas-v4.3.0-banner.png)
+![HyAtlas Memory — three-gear extraction across an eight-layer memory](https://raw.githubusercontent.com/tuancookiez-hub/HyAtlas-Memory/main/assets/hyatlas-v4.3.0-banner.png)
 
 # HyAtlas Memory — Pure-Go Memory Core
 
-> **One binary. Seven layers. Three extraction modes.** One Go binary (the embedded release build is about 160 MB because it carries the BGE model), no Python at runtime, in-process BGE embeddings. Release binaries: **Linux amd64 · macOS arm64 · Windows amd64**. Other platforms build from source.
+> **One binary. Eight layers. Three extraction modes.** One Go binary (the embedded release build is about 160 MB because it carries the BGE model), no Python at runtime, in-process BGE embeddings. Release binaries: **Linux amd64 · macOS arm64 · Windows amd64**. Other platforms build from source.
 
-HyAtlas v4.0 is a complete rewrite of the HyAtlas memory system in pure Go. It replaces the Python floor (venv, zvec, Kuzu, FastAPI, HTTP embed subprocess) with a single binary: an embedded Chromem vector store, in-process BGE-small embeddings via onnxruntime-go, and LLM fact extraction, where `HYATLAS_MODE` sets how much the server reasons and `HYATLAS_SYNC_EXTRACT` sets whether a write waits for extraction. The 7-layer memory model (Profile · Raw · Fact · Summary · Knowledge · Schema · Intention) is implemented, including L4 Summary extraction, which was dormant in v3.5.
+HyAtlas v4.0 is a complete rewrite of the HyAtlas memory system in pure Go. It replaces the Python floor (venv, zvec, Kuzu, FastAPI, HTTP embed subprocess) with a single binary: an embedded Chromem vector store, in-process BGE-small embeddings via onnxruntime-go, and LLM fact extraction, where `HYATLAS_MODE` sets how much the server reasons and `HYATLAS_SYNC_EXTRACT` sets whether a write waits for extraction. The 8-layer memory model (Profile · Raw · Fact · Summary · Knowledge · Schema · Intention · Entity) is implemented, including L4 Summary extraction, which was dormant in v3.5.
 
 **Previous floor:** [HyAtlas v3.5.0](https://github.com/tuancookiez-hub/HyAtlas-Memory/releases/tag/v3.5.0) — Python/Zvec/Kuzu. See [V3_V4_COMPARISON.md](V3_V4_COMPARISON.md) for the full side-by-side and [CHANGELOG.md](CHANGELOG.md) for the migration history.
 
@@ -183,9 +183,9 @@ The three modes form a ladder of reasoning scope, not of latency:
 
 | Mode | LLM calls | Reasoning scope | Layers | Consolidation |
 |---|---|---|---|---|
-| `lite` | none | — | **1 / 7** — L2 Raw only | no |
-| `pro` | one per write | within one turn | **5 / 7** — L1, L2, L3, L4, L7 | no |
-| `ultra` *(default)* | one per write **+** periodic batch | **across memories and time** | **7 / 7** at steady state (6 / 7 with `HYATLAS_CONSOLIDATE_GRAPH=off`) | **yes** |
+| `lite` | none | — | **1 / 8** — L2 Raw only | no |
+| `pro` | one per write | within one turn | **6 / 8** — L1, L2, L3, L4, L7, L8 | no |
+| `ultra` *(default)* | one per write **+** periodic batch | **across memories and time** | **8 / 8** at steady state (7 / 8 with `HYATLAS_CONSOLIDATE_GRAPH=off`) | **yes** |
 
 The two systems own disjoint layers:
 
@@ -235,8 +235,8 @@ Facts that the ultra pass merges or drops are superseded, not deleted: they keep
 `invalid_at` and `superseded_by`, and `GET /api/v1/list` returns them only with
 `include_superseded=true`.
 
-The `7 / 7` above is steady state, not the first minute. A fresh ultra install
-sits at 5/7 until the slow path first runs, which is up to `6h` away by default. L5
+The `8 / 8` above is steady state, not the first minute. A fresh ultra install
+sits at 6/8 until the slow path first runs, which is up to `6h` away by default. L5
 is filled only when a pass finds relations corroborated by at least two turns, and L6 only when a pass finds recurring patterns. To run a pass now, instead of waiting for the tick:
 
 ```bash
@@ -695,7 +695,7 @@ The full v3.5 → v4 side-by-side (architecture, performance, reliability, API c
 
 ## Known gaps (honest)
 
-- The slow path runs on a timer, not at startup: a fresh ultra server shows 5/7 layers until the first pass (7/7 after a pass that finds relations and patterns) (up to `HYATLAS_CONSOLIDATE_EVERY` later). `POST /api/v1/digest` runs one on demand.
+- The slow path runs on a timer, not at startup: a fresh ultra server shows 6/8 layers until the first pass (8/8 after a pass that finds relations and patterns) (up to `HYATLAS_CONSOLIDATE_EVERY` later). `POST /api/v1/digest` runs one on demand.
 - `/api/quality-metrics` returns `{available: false}` (v3.5-only feature; the dashboard adapter's quality endpoint, not a `/api/v1/` route)
 - Upscaling and codemode are not implemented (those were v3.5 features)
 - The coding layer is not in v4; the `/api/coding-*` endpoints return empty results
