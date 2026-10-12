@@ -1215,6 +1215,20 @@ func (s *MemoryStore) indexFlushInterval() time.Duration {
 	return time.Second
 }
 
+// WaitIndexFlushForTest forces the debounced index write to disk now. The
+// production snapshot task (snapshot.go runSnapshots) runs on a timer, so the
+// index has long since flushed by the time it archives; tests that snapshot
+// immediately after Add need this to see the same on-disk state.
+func (s *MemoryStore) WaitIndexFlushForTest() {
+	s.indexFlushMu.Lock()
+	if s.indexTimer != nil {
+		s.indexTimer.Stop()
+		s.indexTimer = nil
+	}
+	s.indexFlushMu.Unlock()
+	s.flushIndex()
+}
+
 // flushIndex performs the actual disk write if dirty, then clears the dirty flag.
 func (s *MemoryStore) flushIndex() {
 	s.indexFlushMu.Lock()

@@ -168,8 +168,8 @@ func TestPromoteDedupeSupersedesRestatement(t *testing.T) {
 	ex := func() *Extraction {
 		return &Extraction{Facts: []Fact{{Data: "alice prefers dark mode", Layer: "user_preferences"}}}
 	}
-	promoteExtractionDedupe(srv.store, ex(), "alice", "a1", "r1", 0.999)
-	promoteExtractionDedupe(srv.store, ex(), "alice", "a1", "r2", 0.999)
+	promoteExtractionCtx(srv.store, ex(), ExtractContext{}, "alice", "a1", "r1", 0.999)
+	promoteExtractionCtx(srv.store, ex(), ExtractContext{}, "alice", "a1", "r2", 0.999)
 
 	liveL3, _ := sqLive(t, srv, memory.L3Fact, false)
 	if len(liveL3) != 1 {
@@ -177,7 +177,7 @@ func TestPromoteDedupeSupersedesRestatement(t *testing.T) {
 	}
 	// fork (plan v2 §3④'): the fast-path extractor must not write L1 profile.
 	// Upstream asserts the mirror this fork removes — see
-	// hy450-sync/DECISION-twin-removal.md and the promoteExtractionDedupe comment
+	// hy450-sync/DECISION-twin-removal.md and the promoteExtractionCtx comment
 	// in server.go. L1 stays empty here; the real subject of this test is the
 	// L3 supersede behaviour checked below (liveL3==1, allL3==2, superseded_by).
 	liveL1, _ := sqLive(t, srv, memory.L1Profile, false)
@@ -204,8 +204,8 @@ func TestPromoteDedupeOffKeepsBoth(t *testing.T) {
 	ex := func() *Extraction {
 		return &Extraction{Facts: []Fact{{Data: "alice prefers dark mode", Layer: "user_preferences"}}}
 	}
-	promoteExtractionDedupe(srv.store, ex(), "alice", "a1", "r1", 0)
-	promoteExtractionDedupe(srv.store, ex(), "alice", "a1", "r2", 0)
+	promoteExtractionCtx(srv.store, ex(), ExtractContext{}, "alice", "a1", "r1", 0)
+	promoteExtractionCtx(srv.store, ex(), ExtractContext{}, "alice", "a1", "r2", 0)
 
 	live, _ := sqLive(t, srv, memory.L3Fact, false)
 	if len(live) != 2 {
@@ -217,10 +217,10 @@ func TestPromoteDedupeOffKeepsBoth(t *testing.T) {
 // different text alone.
 func TestPromoteDedupeKeepsDifferentFacts(t *testing.T) {
 	srv := newTestServer(t, "m", "http://127.0.0.1:1/v1")
-	promoteExtractionDedupe(srv.store, &Extraction{Facts: []Fact{{Data: "alice prefers dark mode", Layer: "user_preferences"}}},
-		"alice", "a1", "r1", 0.999)
-	promoteExtractionDedupe(srv.store, &Extraction{Facts: []Fact{{Data: "bob builds rockets in ohio", Layer: "user_preferences"}}},
-		"alice", "a1", "r2", 0.999)
+	promoteExtractionCtx(srv.store, &Extraction{Facts: []Fact{{Data: "alice prefers dark mode", Layer: "user_preferences"}}},
+		ExtractContext{}, "alice", "a1", "r1", 0.999)
+	promoteExtractionCtx(srv.store, &Extraction{Facts: []Fact{{Data: "bob builds rockets in ohio", Layer: "user_preferences"}}},
+		ExtractContext{}, "alice", "a1", "r2", 0.999)
 
 	live, _ := sqLive(t, srv, memory.L3Fact, false)
 	if len(live) != 2 {

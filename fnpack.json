@@ -100,6 +100,17 @@
               "size": 242218811
             }
           }
+        },
+        "4.6.0-1": {
+          "changelog": "4.6.0-1：同步上游 v4.6.0（v4.5.0→v4.6.0 共 11 commits、40 files，含 v4.5.1 的 identifier 查询修复）。①检索：召回条目带日期戳、identifier 查询只认真正提及它的记忆且关键词候选加深 3→10 倍（修「20 条提到却只回 2 条」）、新增时效权重 HYATLAS_RECENCY（默认开）；L7 意图在结果里默认只留 7 天（HYATLAS_INTENTION_TTL），不再永存。②抽取：新增 extract_context.go 让模型看到库里相关事实与未完成意图，写时可语义替换旧事实/关闭已完成意图（只认上下文出现过的 id，防模型编造）；固化器 prompt 带 date= 判新旧；L1/L5/L6 三处降噪。③新增自动快照 snapshot.go（HYATLAS_SNAPSHOT_EVERY/KEEP/DIR，整包 go-data zip，默认 24h/保留 7）。④新增 cli.go：hyatlas-go --version/--help。⑤dedupe_facts 扩到 l6_schema。本地定制全保留：delete_all 防误删加固、touch/patch 双时态边闭合、include_expired、bge-large-zh 1024d、retryWorker、L7 dedup+硬顶、System1 不写 L1、dashboard 汉化+移动端、shares 自愈、端口 19528 网关入口。二进制 sha256 b94a26f0（go1.26.5，CGO_ENABLED=1，-trimpath，GOAMD64=v1，两次重编逐字节一致）。",
+          "updated_at": "2026-10-12T14:00:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.10.12/hyatlas-4.6.0-1-x86.fpk",
+              "sha256": "054384c06bb028cafb196a60d95d3cd0272ad10c960f028de3f3e6c47c3b310e",
+              "size": 242306571
+            }
+          }
         }
       }
     },

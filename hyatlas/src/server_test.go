@@ -124,7 +124,7 @@ func TestPromoteExtractionThreadsSource(t *testing.T) {
 // single turn inflated to two "distinct" ones; (b) it defeated write-time
 // dedupe, which supersedes only one nearest fact, so a twin survived every
 // restatement as a permanent near-duplicate — the noise 4.5.0 was built to
-// remove. See server.go promoteExtractionDedupe for the full rationale, and
+// remove. See server.go promoteExtractionCtx for the full rationale, and
 // hy450-sync/merge-execution.md for the historical-twin cleanup path.
 //
 // L1 is writable only through explicit /add or /patch, so it stays an
