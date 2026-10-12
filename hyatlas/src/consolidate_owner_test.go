@@ -434,12 +434,8 @@ func TestSchemaDedupeAndRefinement(t *testing.T) {
 	}
 }
 
-// A merged user_preferences fact is mirrored into L1 by the slow path
-// (consolidate.go merge), and the merged L1 row is the only live profile view
-// afterwards. Upstream also asserted two superseded fast-path mirrors here;
-// under the fork (plan v2 §3④') the fast path does not seed L1 at all, so
-// L1 history holds exactly the one merged mirror slow path wrote. See
-// hy450-sync/DECISION-twin-removal.md.
+// A preference fact mirrored to L1 is superseded in L1 when a merge absorbs it,
+// and the merged preference is mirrored under its new text.
 func TestMergedPreferenceReplacesItsL1Mirror(t *testing.T) {
 	srv := newTestServer(t, "m", "http://127.0.0.1:1/v1")
 	promoteExtraction(srv.store, &Extraction{
@@ -473,13 +469,18 @@ func TestMergedPreferenceReplacesItsL1Mirror(t *testing.T) {
 	if len(live) != 1 || live[0].Content != "prefers tabs everywhere" {
 		t.Errorf("live L1 profile = %+v, want only the merged preference", live)
 	}
-	// fork (plan v2 §3④'): the fast path does not seed L1 mirrors, so there are
-	// no "prefers tabs" / "prefers tabs in go" rows in L1 history to retire. Upstream
-	// asserted two superseded mirrors here; under the fork contract L1 history holds
-	// exactly one row — the merged mirror slow path wrote above (asserted live==1).
-	// See hy450-sync/DECISION-twin-removal.md.
-	if _, total := srv.store.ListAll(memory.L1Profile, "alice", "a1", 100, 0, false); total != 1 {
-		t.Errorf("L1 history rows = %d, want 1 (only the slow-path merged mirror; fast path writes none)", total)
+	all, _ := srv.store.ListAll(memory.L1Profile, "alice", "a1", 100, 0, false)
+	old := 0
+	for _, d := range all {
+		if d.Content == "prefers tabs" || d.Content == "prefers tabs in go" {
+			old++
+			if d.Meta["superseded_by"] == "" {
+				t.Errorf("old L1 mirror %q was not superseded", d.Content)
+			}
+		}
+	}
+	if old != 2 {
+		t.Errorf("old L1 mirrors in history = %d, want 2", old)
 	}
 }
 

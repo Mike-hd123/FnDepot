@@ -78,8 +78,8 @@ func TestResolveModelDirMissingStillAbsolute(t *testing.T) {
 
 func TestDescribeEmbedNamesTheRealEmbedder(t *testing.T) {
 	cases := []struct{ base, model, want string }{
-		{"bge", "text-embedding-3-small", "bge-large-zh (in-process, 1024d)"},
-		{"BGE", "text-embedding-3-small", "bge-large-zh (in-process, 1024d)"},
+		{"bge", "text-embedding-3-small", "bge-small (in-process)"},
+		{"BGE", "text-embedding-3-small", "bge-small (in-process)"},
 		{"local", "text-embedding-3-small", "local-stub (deterministic, 384-d)"},
 		{"https://api.example.com/v1", "text-embedding-3-small",
 			"https://api.example.com/v1 (text-embedding-3-small)"},
@@ -283,7 +283,7 @@ func TestListeningLineReportsTheRealEmbedder(t *testing.T) {
 	rt := resolveRuntime()
 	line := listeningLine(rt)
 
-	if !strings.Contains(line, "bge-large-zh (in-process, 1024d)") {
+	if !strings.Contains(line, "bge-small (in-process)") {
 		t.Errorf("default banner does not name the local embedder: %q", line)
 	}
 	if strings.Contains(line, "text-embedding-3-small") {
