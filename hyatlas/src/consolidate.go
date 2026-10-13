@@ -32,7 +32,7 @@ const (
 	// defaultBatch caps facts per consolidation call so the prompt cannot grow
 	// without bound as memory accumulates. 50, not 200: a free reasoning model took
 	// 4 to 10+ minutes on 200 facts and often missed consolidateTimeout, while 50
-	// came back in about two and a half. A larger owner is walked in more windows.
+	// came back in about two and a half. A larger owner is cut into more clusters.
 	defaultBatch = 50
 
 	// maxPromptSchemas caps how many of an owner's existing schemas are shown to
@@ -43,10 +43,25 @@ const (
 	// canonical spellings for knowledge endpoints.
 	maxPromptPageNames = 40
 
-	// consolidateStateFile holds the per-owner watermarks and the rotation cursor.
+	// consolidateStateFile holds the per-owner clusters and the rotation cursor.
 	// It sits next to doc_index.json, in the data dir.
 	consolidateStateFile = "consolidate_state.json"
+
+	// defaultCatchup is how soon the next pass starts when one left due clusters
+	// unreached (HYATLAS_CONSOLIDATE_CATCHUP).
+	defaultCatchup = 20 * time.Minute
+
+	// defaultParallel and maxParallel bound how many clusters one pass sends to the
+	// model at once (HYATLAS_CONSOLIDATE_PARALLEL). A free model rate-limits hard, so
+	// the ceiling is low.
+	defaultParallel = 2
+	maxParallel     = 4
 )
+
+// minCallBudget is the floor of callBudget: the least time that must remain before
+// a pass's deadline for a new call to start, before any call time has been measured.
+// A variable so tests can shorten it.
+var minCallBudget = 3 * time.Minute
 
 // Consolidation is the slow path. Extraction reasons about ONE turn; this
 // reasons ACROSS many turns and many sessions, which is the only way a memory
@@ -123,13 +138,18 @@ type Consolidation struct {
 // assumed — the previous digest handler returned a hardcoded success.
 type Report struct {
 	FactsIn int `json:"facts_in"`
-	// OwnersRun counts owners that were sent to the model this pass.
+	// OwnersRun counts owners that had at least one cluster sent to the model this pass.
 	OwnersRun int `json:"owners_run"`
-	// OwnersUnchanged counts owners whose facts had not changed since their last
-	// successful pass, so they were not sent again.
+	// OwnersUnchanged counts owners with no due cluster: nothing had changed since
+	// their clusters last ran, so nothing was sent.
 	OwnersUnchanged int `json:"owners_unchanged"`
-	// SkippedOwners names owners that still had work but were not reached because
-	// the pass's context ended first. The next pass starts from them.
+	// ClustersRun counts clusters whose call finished this pass, successful or not.
+	ClustersRun int `json:"clusters_run"`
+	// ClustersPending counts due clusters the pass did not reach, because its context
+	// or time budget ran out. Run schedules the next pass early while this is above zero.
+	ClustersPending int `json:"clusters_pending"`
+	// SkippedOwners names owners that still had a due cluster that was not reached.
+	// The next pass starts from them.
 	SkippedOwners []string `json:"skipped_owners,omitempty"`
 	Merged        int      `json:"merged"`
 	// Edges counts distinct L5 edges this pass created. Re-citing an edge that
@@ -149,45 +169,94 @@ type Report struct {
 	Errors     []string `json:"errors,omitempty"`
 }
 
-// consolidateState is what survives a restart. Owners holds, per owner, the
-// fingerprint of its live facts as of its last watermark; Windows holds where that
-// owner's window walk stands. Both are keyed by scopeKey.String().
+// consolidateState is what survives a restart: the stable topic clusters of each
+// owner (keyed by scopeKey.String()) and the rotation cursor. A state file from
+// before clusters were stored has only the old watermark keys, which are ignored;
+// its owners simply get their clusters built on the next pass.
 type consolidateState struct {
-	Cursor  int                     `json:"cursor"`
-	Owners  map[string]string       `json:"owners"`
-	Windows map[string]windowCursor `json:"windows,omitempty"`
+	Cursor   int                       `json:"cursor"`
+	Clusters map[string]*ownerClusters `json:"clusters,omitempty"`
 }
 
-// windowCursor is an owner's position in its window walk. Next is the window the
-// next walk pass sends. Covered counts windows sent since the owner's facts last
-// changed; a change resets it (but not Next), so new facts are reconciled against
-// every older window before an unchanged owner stops being due. LastFresh records
-// whether the last pass sent the newest window because the owner changed, so
-// changed passes alternate between that window and the walk. Fails counts
-// consecutive failed passes on window FailWin.
-type windowCursor struct {
-	Next      int  `json:"next"`
-	Covered   int  `json:"covered"`
-	LastFresh bool `json:"last_fresh,omitempty"`
-	Fails     int  `json:"fails,omitempty"`
-	FailWin   int  `json:"fail_win,omitempty"`
-	// Count is how many windows the owner was cut into on its last pass. Topic
-	// clustering makes the count depend on a search, so due reads it from here
-	// rather than clustering again just to decide whether to run. Zero (a state file
-	// from before clustering) falls back to the time-ordered count.
-	Count int `json:"count,omitempty"`
+// ownerClusters is one owner's stored clustering. Built is when the clusters were
+// last cut from scratch (RFC 3339), which HYATLAS_CONSOLIDATE_RECLUSTER measures
+// against; NextID numbers new clusters so an ID is never reused.
+type ownerClusters struct {
+	Built    string          `json:"built,omitempty"`
+	NextID   int             `json:"next_id"`
+	Clusters []*clusterState `json:"clusters"`
 }
 
-// maxWindowFails is how many consecutive failed passes on one window are tolerated
-// before the walk moves past it, so one bad window cannot re-spend an LLM call on
-// every pass and hold back the rest of the owner's facts.
+// clusterState is one stable cluster: a set of fact IDs that is sent to the model
+// as one call. Membership only changes when facts die (superseded or deleted) or
+// new facts are assigned to it, so one new fact dirties one cluster instead of
+// reshuffling the owner. DoneFP is the fingerprint of FactIDs after the cluster's
+// last successful call; the cluster is due when the two differ. Fails counts
+// consecutive failed calls on the membership FailFP.
+type clusterState struct {
+	ID      string   `json:"id"`
+	Topic   bool     `json:"topic,omitempty"`
+	FactIDs []string `json:"fact_ids"`
+	DoneFP  string   `json:"done_fp,omitempty"`
+	Fails   int      `json:"fails,omitempty"`
+	FailFP  string   `json:"fail_fp,omitempty"`
+	// FailedAt is when the last counted failure happened (RFC 3339). A cluster left
+	// alone after maxWindowFails is tried again once failCooldown has passed.
+	FailedAt string `json:"failed_at,omitempty"`
+}
+
+// fp is the fingerprint of the cluster's current membership.
+func (cs *clusterState) fp() string { return idsFingerprint(cs.FactIDs) }
+
+// due reports whether the cluster needs a call: it holds at least two facts (one
+// fact has nothing to be reconciled against), its membership differs from the last
+// successful call, and it has not failed maxWindowFails times on this membership
+// within the last failCooldown.
+func (cs *clusterState) due() bool {
+	if len(cs.FactIDs) < 2 {
+		return false
+	}
+	fp := cs.fp()
+	if fp == cs.DoneFP {
+		return false
+	}
+	if cs.Fails >= maxWindowFails && cs.FailFP == fp {
+		// Left alone, but not forever: a quiet cluster's membership may never change,
+		// and the failures may have been the model's bad day rather than the cluster.
+		at, err := time.Parse(time.RFC3339, cs.FailedAt)
+		return err == nil && time.Since(at) >= failCooldown
+	}
+	return true
+}
+
+// maxWindowFails is how many consecutive failed calls on one unchanged cluster are
+// tolerated before it is left alone (until its membership changes, or failCooldown
+// passes), so one bad cluster cannot re-spend an LLM call on every pass.
 const maxWindowFails = 3
+
+// failCooldown is how long a cluster left alone after maxWindowFails waits before
+// it is tried again with the same members.
+const failCooldown = 24 * time.Hour
 
 // Consolidator owns the slow path.
 type Consolidator struct {
 	store *MemoryStore
 	llm   *LLMClient
 	every time.Duration
+
+	// catchup is the delay before the next pass when a pass left due clusters
+	// unreached, so a backlog drains in hours instead of waiting a full every.
+	catchup time.Duration
+
+	// recluster, when positive, is how long an owner's clusters live before they
+	// are cut again from scratch. Zero keeps them until facts change them.
+	recluster time.Duration
+
+	// parallel is how many clusters one pass sends to the model at once.
+	parallel int
+
+	// timeout bounds one pass; zero means consolidateTimeout.
+	timeout time.Duration
 
 	// retention is how long an unreferenced L2 raw memory survives before the
 	// decay pass removes it. Zero means never delete raw history.
@@ -207,15 +276,28 @@ type Consolidator struct {
 	// LLM spend and race each other's merges and edge writes.
 	gate sync.Mutex
 
-	// done maps an owner (scopeKey.String) to the fingerprint of its live facts
-	// after its last successful pass. cursor is where the next pass starts in
-	// the owner order. Both are read and written only under gate, and are
-	// persisted to statePath.
-	done map[string]string
-	// windows is each owner's position in its window walk, persisted with done.
-	windows   map[string]windowCursor
+	// clusters holds each owner's stable clusters, and cursor is where the next
+	// pass starts in the owner order. They are changed by the pass that holds gate;
+	// while its calls run in parallel, stateMu guards them. Both are persisted to
+	// statePath.
+	clusters  map[string]*ownerClusters
 	cursor    int
+	stateMu   sync.Mutex
 	statePath string
+
+	// writeMu serialises the schema and arc writes of concurrent calls, so two
+	// calls for one owner cannot both write the same schema or leave two live arcs.
+	writeMu sync.Mutex
+
+	// aliases maps a user ID to every ID of the same person (HYATLAS_USER_ALIASES),
+	// as the server's search does. A person's facts are consolidated as one owner,
+	// so a contradiction between facts written under two of their IDs meets in one
+	// call. Set once with SetAliases before the first pass; nil means no aliases.
+	aliases map[string][]string
+
+	// durations holds the most recent successful call times (guarded by stateMu),
+	// so callBudget can tell how long a call really takes on this model.
+	durations []time.Duration
 
 	mu     sync.Mutex
 	last   *Report
@@ -228,19 +310,101 @@ type Consolidator struct {
 var errBusy = errors.New("a consolidation pass is already running")
 
 // NewConsolidator wires the slow path. retention <= 0 disables raw decay. The
-// per-owner watermarks are loaded from the data dir, so a restart does not
-// re-run owners whose facts have not changed.
+// clusters are loaded from the data dir, so a restart does not re-run clusters
+// whose facts have not changed. HYATLAS_CONSOLIDATE_PARALLEL, _CATCHUP and
+// _RECLUSTER are read here so the server needs no wiring for them.
 func NewConsolidator(store *MemoryStore, llm *LLMClient, every, retention time.Duration, batch int) *Consolidator {
 	if batch <= 0 {
 		batch = defaultBatch
 	}
+	catchup := parseDuration("HYATLAS_CONSOLIDATE_CATCHUP", defaultCatchup)
+	if catchup <= 0 {
+		log.Printf("HYATLAS_CONSOLIDATE_CATCHUP must be positive; using %s", defaultCatchup)
+		catchup = defaultCatchup
+	}
+	recluster := parseDuration("HYATLAS_CONSOLIDATE_RECLUSTER", 0)
+	if recluster < 0 {
+		recluster = 0
+	}
+	parallel := envInt("HYATLAS_CONSOLIDATE_PARALLEL", defaultParallel)
+	if parallel > maxParallel {
+		parallel = maxParallel
+	}
 	c := &Consolidator{store: store, llm: llm, every: every, retention: retention, batch: batch,
-		graph: true, done: map[string]string{}, windows: map[string]windowCursor{}}
+		graph: true, clusters: map[string]*ownerClusters{},
+		catchup: catchup, recluster: recluster, parallel: parallel}
 	if store != nil && store.indexPath != "" {
 		c.statePath = filepath.Join(filepath.Dir(store.indexPath), consolidateStateFile)
 	}
 	c.loadState()
 	return c
+}
+
+// SetAliases gives the consolidator the server's alias groups (see aliases). Call
+// it before Run starts.
+func (c *Consolidator) SetAliases(m map[string][]string) { c.aliases = m }
+
+// groupOf is every user ID of the person behind user, user first when there are no
+// aliases.
+func (c *Consolidator) groupOf(user string) []string {
+	if g := c.aliases[user]; len(g) > 0 {
+		return g
+	}
+	return []string{user}
+}
+
+// canonical is the ID a person's facts are consolidated under: the first ID of
+// their alias group, the same for every ID in it.
+func (c *Consolidator) canonical(user string) string { return c.groupOf(user)[0] }
+
+// groupOwners groups facts by owner like groupByOwner, with each user ID replaced
+// by its canonical alias, so one person's IDs form one owner.
+func (c *Consolidator) groupOwners(facts []DocIndex) (map[scopeKey][]DocIndex, []scopeKey) {
+	return groupByOwnerWith(facts, c.canonical)
+}
+
+// recentDurationsMax is how many successful call times callBudget looks at.
+const recentDurationsMax = 8
+
+// callBudget is how much time must remain before a pass's deadline for a call to be
+// worth starting: 1.25 times the median of recent successful calls, never less than
+// minCallBudget, and never more than 80% of a pass so its first calls always start.
+// A fixed budget below the model's real call time started calls the deadline then
+// cut, spending free-tier quota for nothing.
+func (c *Consolidator) callBudget() time.Duration {
+	c.stateMu.Lock()
+	ds := append([]time.Duration(nil), c.durations...)
+	c.stateMu.Unlock()
+	budget := minCallBudget
+	if len(ds) > 0 {
+		sort.Slice(ds, func(i, j int) bool { return ds[i] < ds[j] })
+		if m := ds[len(ds)/2] * 5 / 4; m > budget {
+			budget = m
+		}
+	}
+	if limit := c.passTimeout() * 4 / 5; budget > limit {
+		budget = limit
+	}
+	return budget
+}
+
+// pendingAtStart reports whether the stored state already holds work: no clusters
+// yet (they still have to be built and run) or a cluster that is due. Run then
+// starts with a catch-up pass instead of waiting a full every after a restart.
+func (c *Consolidator) pendingAtStart() bool {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	if len(c.clusters) == 0 {
+		return true
+	}
+	for _, oc := range c.clusters {
+		for _, cs := range oc.Clusters {
+			if cs.due() {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Stats is the /api/v1/status view of the slow path.
@@ -250,34 +414,59 @@ func (c *Consolidator) Stats() (runs int, last *Report, at time.Time) {
 	return c.ran, c.last, c.lastAt
 }
 
-// Run drives the ticker until ctx is cancelled. Called as a goroutine only in
+// Run drives the passes until ctx is cancelled. Called as a goroutine only in
 // ultra mode; pro and lite never start it, so they make no background calls.
+//
+// The first pass comes c.every after start, or c.catchup when the stored state
+// already holds work, so a restart during a backlog does not stall it. After a pass
+// that left due clusters unreached, the next comes after c.catchup, so a backlog is
+// worked off at the pace the model allows rather than one pass per c.every. A tick
+// that finds a manual pass running retries after c.catchup, since that pass may
+// itself leave work for later.
 func (c *Consolidator) Run(ctx context.Context) {
 	if c.every <= 0 {
 		return
 	}
-	t := time.NewTicker(c.every)
+	first := c.every
+	if c.pendingAtStart() && c.catchup < first {
+		first = c.catchup
+	}
+	t := time.NewTimer(first)
 	defer t.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			// A bounded context so one stuck call cannot wedge every later tick.
-			run, cancel := context.WithTimeout(ctx, consolidateTimeout)
-			rep, err := c.Once(run)
-			cancel()
-			if errors.Is(err, errBusy) {
-				// A manual pass is in flight; it covers this tick's work.
-				continue
-			}
-			if err != nil {
-				log.Printf("consolidate: %v", err)
-				continue
-			}
-			log.Printf("consolidate: %+v", rep)
 		}
+		next := c.every
+		// A bounded context so one stuck call cannot wedge every later tick.
+		run, cancel := context.WithTimeout(ctx, c.passTimeout())
+		rep, err := c.Once(run)
+		cancel()
+		switch {
+		case errors.Is(err, errBusy):
+			// A manual pass is in flight and covers this tick's work, but it may leave
+			// clusters pending, so check back at the catch-up pace, not after c.every.
+			next = c.catchup
+		case err != nil:
+			log.Printf("consolidate: %v", err)
+		default:
+			log.Printf("consolidate: %+v", rep)
+			if rep.ClustersPending > 0 {
+				next = c.catchup
+			}
+		}
+		t.Reset(next)
 	}
+}
+
+// passTimeout is how long one pass may run.
+func (c *Consolidator) passTimeout() time.Duration {
+	if c.timeout > 0 {
+		return c.timeout
+	}
+	return consolidateTimeout
 }
 
 // scopeKey is the owner a consolidation pass works within. Facts from different
@@ -286,20 +475,40 @@ type scopeKey struct{ user, agent string }
 
 func (k scopeKey) String() string { return fmt.Sprintf("user_id=%q agent_id=%q", k.user, k.agent) }
 
+// clusterJob is one due cluster of one owner, queued for a pass.
+type clusterJob struct {
+	owner  scopeKey
+	pos    int // the owner's index in the pass's work list
+	cs     *clusterState
+	fp     string   // the membership fingerprint the call is for
+	ids    []string // the stored members, used to keep overlapping clusters apart
+	facts  []DocIndex
+	late   bool // started after an earlier call finished; a deadline cut is then not its fault
+	done   bool // finished, or had nothing left to send; not pending
+	ran    bool // a call was made and finished
+	failed bool // the call finished without success (counted in Once, see countFailures)
+}
+
 // Once runs a single consolidation pass and reports exactly what it changed.
 //
 // Live facts are grouped by owner (user_id, agent_id), and each owner with at
 // least two facts is consolidated on its own. The model never sees two people's
 // memories in one prompt, so no merge, L5 edge, schema or arc can mix them.
 //
-// An owner with more facts than the batch cap is walked in windows (see
-// windowAt): each pass sends the next window, newest facts first and then older
-// ones, wrapping at the end, so every fact is reached in turn rather than only the
-// newest batch. An owner is due again when its live facts differ from its
-// watermark, or when not every window has been covered since the watermark was set.
+// An owner's facts are held in stable topic clusters (see syncClusters). Only the
+// clusters whose membership changed since their last successful call are due, so a
+// quiet owner costs nothing and a new fact costs one call. The due clusters of all
+// owners are interleaved owner by owner, starting from a cursor that moves between
+// passes so no owner starves, and run up to c.parallel at a time. A call is not
+// started when less than callBudget remains before the pass's deadline; the
+// clusters not reached are counted in ClustersPending and the next pass, which Run
+// schedules after c.catchup, starts from them.
 //
-// Owners are visited from a cursor that moves between passes, so a pass cut
-// short by its deadline does not always stop at the same owners.
+// How long the first coverage takes depends on the model: calls per pass are
+// roughly c.parallel × (pass budget ÷ call time). Measured on a free model with
+// 25-fact clusters, a pass ran 7 clusters in 9 minutes, so ~150 clusters took about
+// half a day of catch-up passes, where one window per owner every six hours took
+// weeks. Afterwards only clusters that received new facts run.
 func (c *Consolidator) Once(ctx context.Context) (*Report, error) {
 	// Single flight: the loser is told so rather than queued, because the work
 	// it would have done is covered by the pass already in flight.
@@ -317,7 +526,7 @@ func (c *Consolidator) Once(ctx context.Context) (*Report, error) {
 	facts := c.listAllLive(memory.L3Fact)
 	rep.FactsIn = len(facts)
 
-	byOwner, owners := groupByOwner(facts)
+	byOwner, owners := c.groupOwners(facts)
 	for _, k := range owners {
 		sortNewestFirst(byOwner[k])
 	}
@@ -328,153 +537,87 @@ func (c *Consolidator) Once(ctx context.Context) (*Report, error) {
 			work = append(work, k)
 		}
 	}
+	present := map[string]bool{}
+	for _, k := range owners {
+		present[k.String()] = true
+	}
+	for key := range c.clusters {
+		if !present[key] {
+			delete(c.clusters, key)
+		}
+	}
 
 	n := len(work)
 	first := 0
 	if n > 0 {
 		first = c.cursor % n
 	}
-	next := first + 1 // a pass that reaches every owner starts one owner later next time
-	ran := map[scopeKey]cycleStep{}
-	called := false // whether an earlier owner in this pass has made an LLM call
-	// stopAt ends the pass at owner i: the next pass starts there, and every owner
-	// from i on that still has work is reported as skipped.
-	stopAt := func(i int, err error) {
-		next = first + i
-		var skipped []string
-		for j := i; j < n; j++ {
-			sk := work[(first+j)%n]
-			if c.due(sk, byOwner[sk]) {
-				skipped = append(skipped, sk.String())
-			}
-		}
-		if len(skipped) > 0 {
-			rep.SkippedOwners = skipped
-			rep.Errors = append(rep.Errors, fmt.Sprintf(
-				"pass stopped (%v) before %d owner(s) were consolidated; they run next pass", err, len(skipped)))
-		}
-	}
-	for i := 0; i < n; i++ {
-		k := work[(first+i)%n]
-		if err := ctx.Err(); err != nil {
-			stopAt(i, err)
-			break
-		}
-		facts := byOwner[k]
-		if !c.due(k, facts) {
+	queues := make([][]*clusterJob, n)
+	for i, k := range work {
+		oc := c.syncClusters(k, byOwner[k])
+		queues[i] = c.dueJobs(k, i, oc, byOwner[k])
+		if len(queues[i]) == 0 {
 			rep.OwnersUnchanged++
-			continue
 		}
-		key := k.String()
-		fp := factsFingerprint(facts)
-		w := c.windows[key]
-		// The windows are topic clusters, so contradictions about one subject meet in
-		// one call however far apart in time they were said; kinds names each window's
-		// kind for the log.
-		clusters, kinds := c.clusterPlan(facts)
-		count := len(clusters)
-		w.Count = count
-		// A changed owner sends the newest window, but only every other changed pass;
-		// the other passes continue the walk. Otherwise an owner that changes between
-		// every pass would never get past its newest window.
-		changed := c.done[key] != fp
-		if changed {
-			// New facts must meet every older window again, so coverage restarts.
-			// Next is kept: the walk resumes where it was rather than at the newest
-			// window, which is what keeps a busy owner from starving its history.
-			w.Covered = 0
+	}
+	// One cluster per owner in turn, so a big owner's backlog cannot hold back the
+	// others for the hours it takes to drain.
+	var jobs []*clusterJob
+	for round := 0; ; round++ {
+		added := false
+		for i := 0; i < n; i++ {
+			if q := queues[(first+i)%n]; round < len(q) {
+				jobs = append(jobs, q[round])
+				added = true
+			}
 		}
-		fresh := changed && !w.LastFresh
-		idx := w.Next % count
-		if fresh {
-			idx = 0
-		}
-		rep.OwnersRun++
-		window := clusters[idx]
-		late := called
-		called = true
-		callStart := time.Now()
-		ok, created := c.consolidateScope(ctx, k, window, rep)
-		kind := "time"
-		if kinds[idx] {
-			kind = "topic"
-		}
-		log.Printf("consolidate: %s window %d/%d (%s, %d facts) ok=%v in %s",
-			k, idx+1, count, kind, len(window), ok, time.Since(callStart).Round(time.Second))
-		if !ok && late && ctx.Err() != nil {
-			// The pass deadline cut this owner off after earlier owners' calls had
-			// spent the time. The window is not at fault, so its walk state is left
-			// as it was (the cut does not count toward maxWindowFails) and the next
-			// pass starts here, with the full budget. An owner cut while it had the
-			// whole budget still counts the cut as a failure below.
-			stopAt(i, ctx.Err())
+		if !added {
 			break
 		}
-		w.LastFresh = fresh
-		if ok {
-			w.Fails, w.FailWin = 0, 0
-			w.Covered++
-			if idx == w.Next%count {
-				w.Next = (idx + 1) % count
-			}
-			ran[k] = cycleStep{considered: idsOf(facts), created: created}
-		} else {
-			if w.Fails > 0 && w.FailWin == idx {
-				w.Fails++
-			} else {
-				w.Fails, w.FailWin = 1, idx
-			}
-			// A window that keeps failing is given up on, so the walk moves past it.
-			if w.Fails >= maxWindowFails && idx == w.Next%count {
-				rep.Errors = append(rep.Errors, fmt.Sprintf(
-					"%s: window %d failed %d passes in a row; skipped", k, idx, w.Fails))
-				log.Printf("consolidate: %s window %d failed %d passes; skipping it", k, idx, w.Fails)
-				w.Next = (idx + 1) % count
-				w.Covered++
-				w.Fails, w.FailWin = 0, 0
-			}
-		}
-		c.windows[key] = w
 	}
-	if n > 0 {
-		c.cursor = next % n
+	// The layout is saved before any call, so a restart mid-backlog keeps the
+	// clusters (and what they have finished) instead of cutting them again.
+	if err := c.saveState(); err != nil {
+		rep.Errors = append(rep.Errors, "state: "+err.Error())
 	}
 
-	// Record each owner that completed. The new watermark is built only from what
-	// the pass considered (the owner's rows at the start of the pass) and what the
-	// pass itself created, each kept only if it is still live. A fact that arrived
-	// mid-pass is in neither, so the owner stays due for the next pass. Owners whose
-	// pass failed keep their old watermark and are retried.
-	if len(ran) > 0 {
-		live := idSetOf(c.listAllLive(memory.L3Fact))
-		for k, st := range ran {
-			key := k.String()
-			var keep []string
-			for _, id := range st.considered {
-				if live[id] {
-					keep = append(keep, id)
-				}
-			}
-			for _, id := range st.created {
-				if live[id] {
-					keep = append(keep, id)
-				}
-			}
-			c.done[key] = idsFingerprint(keep)
+	c.runJobs(ctx, jobs, rep)
+	c.countFailures(jobs, rep)
+
+	var pending []*clusterJob
+	ranOwner := map[int]bool{}
+	for _, j := range jobs {
+		switch {
+		case !j.done:
+			pending = append(pending, j)
+		case j.ran:
+			rep.ClustersRun++
+			ranOwner[j.pos] = true
 		}
 	}
-	present := map[string]bool{}
-	for _, k := range owners {
-		present[k.String()] = true
-	}
-	for key := range c.done {
-		if !present[key] {
-			delete(c.done, key)
+	rep.OwnersRun = len(ranOwner)
+	rep.ClustersPending = len(pending)
+	if len(pending) > 0 {
+		seen := map[int]bool{}
+		for _, j := range pending {
+			if !seen[j.pos] {
+				seen[j.pos] = true
+				rep.SkippedOwners = append(rep.SkippedOwners, j.owner.String())
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			rep.Errors = append(rep.Errors, fmt.Sprintf(
+				"pass stopped (%v) before %d cluster(s) of %d owner(s) were consolidated; they run next pass",
+				err, len(pending), len(rep.SkippedOwners)))
 		}
 	}
-	for key := range c.windows {
-		if !present[key] {
-			delete(c.windows, key)
+	// A pass that reached every cluster starts one owner later next time; a cut one
+	// resumes at the first owner it did not finish.
+	if n > 0 {
+		if len(pending) > 0 {
+			c.cursor = pending[0].pos
+		} else {
+			c.cursor = (first + 1) % n
 		}
 	}
 	if err := c.saveState(); err != nil {
@@ -488,45 +631,247 @@ func (c *Consolidator) Once(ctx context.Context) (*Report, error) {
 	return c.finish(rep, start), nil
 }
 
-// cycleStep is what a successful window pass hands back so Once can record it.
-type cycleStep struct {
-	considered []string // the owner's live fact ids at the start of the pass
-	created    []string // ids of facts this pass wrote
+// countFailures charges this pass's failed calls to their clusters, unless two or
+// more calls failed and none succeeded. Then the model or provider was down (an
+// outage, an expired key, a WAF block), not the clusters; with catch-up passes every
+// few minutes, counting those would let one bad hour use up every cluster's
+// maxWindowFails and leave the backlog untouched. A pass with a single call cannot
+// tell the two apart, so a lone failure is charged; failCooldown bounds the cost if
+// it was an outage after all.
+func (c *Consolidator) countFailures(jobs []*clusterJob, rep *Report) {
+	var failed []*clusterJob
+	succeeded := 0
+	for _, j := range jobs {
+		switch {
+		case j.ran && j.failed:
+			failed = append(failed, j)
+		case j.ran:
+			succeeded++
+		}
+	}
+	if len(failed) == 0 {
+		return
+	}
+	if succeeded == 0 && len(failed) > 1 {
+		rep.Errors = append(rep.Errors, fmt.Sprintf(
+			"all %d call(s) of this pass failed; not counted against their clusters (the model or provider looks down)", len(failed)))
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	for _, j := range failed {
+		cs := j.cs
+		if cs.FailFP == j.fp {
+			cs.Fails++
+		} else {
+			cs.Fails, cs.FailFP = 1, j.fp
+		}
+		cs.FailedAt = now
+		if cs.Fails >= maxWindowFails {
+			rep.Errors = append(rep.Errors, fmt.Sprintf(
+				"%s: cluster %s failed %d passes in a row; skipped until its facts change or %s passes",
+				j.owner, cs.ID, cs.Fails, failCooldown))
+			log.Printf("consolidate: %s cluster %s failed %d passes; leaving it for %s or until its facts change",
+				j.owner, cs.ID, cs.Fails, failCooldown)
+		}
+	}
+	if err := c.saveState(); err != nil {
+		rep.Errors = append(rep.Errors, "state: "+err.Error())
+	}
 }
 
-// windowsOf is how many windows of batch facts cover n facts.
-func windowsOf(n, batch int) int {
-	return (n + batch - 1) / batch
+// dueJobs lists an owner's due clusters, the one holding the newest fact first.
+func (c *Consolidator) dueJobs(k scopeKey, pos int, oc *ownerClusters, facts []DocIndex) []*clusterJob {
+	ts := make(map[string]string, len(facts))
+	for _, f := range facts {
+		ts[f.ID] = f.Ts
+	}
+	newest := func(cs *clusterState) string {
+		var m string
+		for _, id := range cs.FactIDs {
+			if ts[id] > m {
+				m = ts[id]
+			}
+		}
+		return m
+	}
+	var due []*clusterState
+	for _, cs := range oc.Clusters {
+		if cs.due() {
+			due = append(due, cs)
+		}
+	}
+	sort.SliceStable(due, func(i, j int) bool {
+		a, b := newest(due[i]), newest(due[j])
+		if a != b {
+			return a > b
+		}
+		return due[i].ID < due[j].ID
+	})
+	jobs := make([]*clusterJob, len(due))
+	for i, cs := range due {
+		jobs[i] = &clusterJob{owner: k, pos: pos, cs: cs, fp: cs.fp(), ids: append([]string(nil), cs.FactIDs...)}
+	}
+	return jobs
 }
 
-// windowAt returns window i of an owner's facts, which are newest first. Window i
-// starts at i*batch, except that the last window is pulled back to end at the
-// final fact, so every window is full when there are at least batch facts and the
-// last one never holds a single fact on its own. Facts facts are not copied.
-func (c *Consolidator) windowAt(facts []DocIndex, i int) []DocIndex {
-	n := len(facts)
-	if n <= c.batch {
-		return facts
+// runJobs sends the jobs to the model, up to c.parallel at a time, in order. A job
+// waits while it shares a fact with a running one (time clusters can overlap), and
+// none starts once the pass context has ended or less than callBudget remains
+// before its deadline. Jobs not started are left not done, which Once reports as
+// pending.
+func (c *Consolidator) runJobs(ctx context.Context, jobs []*clusterJob, rep *Report) {
+	parallel := c.parallel
+	if parallel < 1 {
+		parallel = 1
 	}
-	lo := i * c.batch
-	if lo+c.batch > n {
-		lo = n - c.batch
+	busy := map[string]bool{}
+	running := 0
+	idle := make(chan struct{}, len(jobs)+1)
+	var wg sync.WaitGroup
+	started := 0
+	budget := c.callBudget()
+
+	blocked := func(j *clusterJob) bool {
+		c.stateMu.Lock()
+		defer c.stateMu.Unlock()
+		if running >= parallel {
+			return true
+		}
+		for _, id := range j.ids {
+			if busy[id] {
+				return true
+			}
+		}
+		return false
 	}
-	return facts[lo : lo+c.batch]
+
+dispatch:
+	for _, j := range jobs {
+		for blocked(j) {
+			if ctx.Err() != nil {
+				break dispatch
+			}
+			select {
+			case <-idle:
+			case <-ctx.Done():
+			}
+		}
+		if ctx.Err() != nil {
+			break
+		}
+		if dl, ok := ctx.Deadline(); ok && time.Until(dl) < budget {
+			break
+		}
+		// Re-read the members: an earlier cluster may have merged some of them away.
+		j.facts = c.liveMembers(j.ids)
+		if len(j.facts) < 2 {
+			j.done = true // nothing left to reconcile; the next sync drops the dead ids
+			continue
+		}
+		j.late = started >= parallel
+		started++
+		c.stateMu.Lock()
+		running++
+		for _, id := range j.ids {
+			busy[id] = true
+		}
+		c.stateMu.Unlock()
+		wg.Add(1)
+		go func(j *clusterJob) {
+			defer wg.Done()
+			c.runCluster(ctx, j, rep, func() {
+				running--
+				for _, id := range j.ids {
+					delete(busy, id)
+				}
+			})
+			idle <- struct{}{}
+		}(j)
+	}
+	wg.Wait()
 }
 
-// due reports whether an owner needs a pass: its live facts differ from its
-// watermark, or not every window has been covered since the watermark was set.
-func (c *Consolidator) due(k scopeKey, facts []DocIndex) bool {
-	key := k.String()
-	if c.done[key] != factsFingerprint(facts) {
-		return true
+// liveMembers returns the live facts among ids, newest first.
+func (c *Consolidator) liveMembers(ids []string) []DocIndex {
+	var out []DocIndex
+	for _, d := range c.store.GetMany(ids) {
+		if !isSuperseded(d) {
+			out = append(out, d)
+		}
 	}
-	count := c.windows[key].Count
-	if count == 0 {
-		count = windowsOf(len(facts), c.batch)
+	sortNewestFirst(out)
+	return out
+}
+
+// runCluster makes one cluster's call and records the outcome. release frees the
+// job's slot and facts; it runs under stateMu with the rest of the bookkeeping.
+//
+// On success the cluster's members become the facts it was shown that are still
+// live plus the facts the call wrote, and DoneFP follows. A fact that arrived
+// during the call is in neither, so it is assigned on the next sync and the
+// cluster is due again. On failure Fails counts up on the same membership; at
+// maxWindowFails the cluster is left until its membership changes. A call the
+// deadline cut off after earlier calls had spent the pass is not the cluster's
+// fault, so it counts as nothing and the cluster stays pending.
+func (c *Consolidator) runCluster(ctx context.Context, j *clusterJob, rep *Report, release func()) {
+	sub := &Report{}
+	callStart := time.Now()
+	ok, created := c.consolidateScope(ctx, j.owner, j.facts, sub)
+	kind := "time"
+	if j.cs.Topic {
+		kind = "topic"
 	}
-	return c.windows[key].Covered < count
+	log.Printf("consolidate: %s cluster %s (%s, %d facts) ok=%v in %s",
+		j.owner, j.cs.ID, kind, len(j.facts), ok, time.Since(callStart).Round(time.Second))
+
+	took := time.Since(callStart)
+	cut := !ok && j.late && ctx.Err() != nil
+	var keep []string
+	if ok {
+		// Only the call's own facts and what it wrote are checked, not the owner's
+		// whole store; and liveness is by ID, so members written under another of
+		// the owner's alias IDs are kept.
+		keep = idsOf(c.liveMembers(append(idsOf(j.facts), created...)))
+	}
+
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	release()
+	rep.absorb(sub)
+	cs := j.cs
+	switch {
+	case cut:
+		return
+	case ok:
+		cs.FactIDs = keep
+		cs.DoneFP = cs.fp()
+		cs.Fails, cs.FailFP, cs.FailedAt = 0, "", ""
+		c.durations = append(c.durations, took)
+		if len(c.durations) > recentDurationsMax {
+			c.durations = c.durations[len(c.durations)-recentDurationsMax:]
+		}
+	default:
+		// Charged to the cluster by countFailures once the pass shows whether the
+		// model was working at all.
+		j.failed = true
+	}
+	j.done, j.ran = true, true
+	if err := c.saveState(); err != nil {
+		rep.Errors = append(rep.Errors, "state: "+err.Error())
+	}
+}
+
+// absorb adds a call's own report to the pass's.
+func (r *Report) absorb(s *Report) {
+	r.Merged += s.Merged
+	r.Edges += s.Edges
+	r.Absorbed += s.Absorbed
+	r.Dropped += s.Dropped
+	r.Schemas += s.Schemas
+	r.Arc = r.Arc || s.Arc
+	r.Errors = append(r.Errors, s.Errors...)
 }
 
 // consolidateScope is one LLM pass over a window of a single owner's facts. It
@@ -697,6 +1042,13 @@ func (c *Consolidator) consolidateScope(ctx context.Context, owner scopeKey, fac
 			soft("edge index: " + err.Error())
 		}
 	}
+
+	// Schemas and the arc are written one call at a time, and the owner's schemas are
+	// read again under the lock: a call running beside this one may have just written
+	// the same pattern or retired the schema this one refines.
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	schemas = c.liveOf(memory.L6Schema, owner)
 
 	// Generalised schemas: patterns that only become visible across many turns.
 	// A pattern whose normalised text matches a live schema of this owner is
@@ -904,8 +1256,9 @@ func (c *Consolidator) finish(rep *Report, start time.Time) *Report {
 	return rep
 }
 
-// loadState restores the watermarks. A missing or unreadable file starts clean:
-// the cost is one extra pass over each owner, not lost data.
+// loadState restores the clusters. A missing or unreadable file starts clean: the
+// cost is one extra pass over each owner, not lost data. A file from before stable
+// clusters has no clusters key, so it loads as empty and the clusters are built.
 func (c *Consolidator) loadState() {
 	if c.statePath == "" {
 		return
@@ -919,21 +1272,21 @@ func (c *Consolidator) loadState() {
 		log.Printf("consolidate: ignoring unreadable %s: %v", c.statePath, err)
 		return
 	}
-	if st.Owners != nil {
-		c.done = st.Owners
-	}
 	c.cursor = st.Cursor
-	if st.Windows != nil {
-		c.windows = st.Windows
+	for key, oc := range st.Clusters {
+		if oc != nil {
+			c.clusters[key] = oc
+		}
 	}
 }
 
-// saveState persists the watermarks with a write-then-rename, as the doc index does.
+// saveState persists the clusters with a write-then-rename, as the doc index does.
+// Callers hold stateMu while calls are running in parallel.
 func (c *Consolidator) saveState() error {
 	if c.statePath == "" {
 		return nil
 	}
-	b, err := json.MarshalIndent(consolidateState{Cursor: c.cursor, Owners: c.done, Windows: c.windows}, "", "  ")
+	b, err := json.MarshalIndent(consolidateState{Cursor: c.cursor, Clusters: c.clusters}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -1117,10 +1470,16 @@ func parseConsolidation(content string) (*Consolidation, error) {
 // groupByOwner splits facts by owner. The owners come back in a fixed sorted
 // order, so the pass order is reproducible before the cursor rotates it.
 func groupByOwner(facts []DocIndex) (map[scopeKey][]DocIndex, []scopeKey) {
+	return groupByOwnerWith(facts, func(user string) string { return user })
+}
+
+// groupByOwnerWith is groupByOwner with each user ID mapped through user first, so
+// alias IDs of one person can be grouped as one owner.
+func groupByOwnerWith(facts []DocIndex, user func(string) string) (map[scopeKey][]DocIndex, []scopeKey) {
 	byOwner := map[scopeKey][]DocIndex{}
 	var owners []scopeKey
 	for _, f := range facts {
-		k := scopeKey{user: f.UserID, agent: f.AgentID}
+		k := scopeKey{user: user(f.UserID), agent: f.AgentID}
 		if _, seen := byOwner[k]; !seen {
 			owners = append(owners, k)
 		}

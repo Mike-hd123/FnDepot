@@ -1,5 +1,201 @@
 # Changelog
 
+## [4.7.2] — 2026-10-13
+
+Fixes from a code review of 4.7.1.
+
+### Fixed
+
+- **An outage no longer abandons the backlog.** With catch-up passes every 20
+  minutes, an hour of provider errors could use up every pending cluster's three
+  strikes, and a skipped cluster was only retried when its facts changed — for a
+  quiet cluster, never. Now a pass where two or more calls fail and none succeeds is
+  taken as the provider being down and charges no cluster, and a skipped cluster is
+  tried again after 24 hours.
+- **Consolidation follows `HYATLAS_USER_ALIASES`.** One person's facts written under
+  different IDs (a messaging gateway ID and the CLI's `default`) were consolidated
+  as separate owners, so contradictions between them never met. They are now one
+  owner: clustered, consolidated and backlog-planned together.
+- **The primary key is never sent to another host.** With a fallback endpoint on a
+  different host and no `HYATLAS_LLM_FALLBACK_KEY`, the fallback call carried the
+  primary's key (here a live Nous Portal token). It now gets no key.
+- **Catch-up survives restarts and manual passes.** A server started with work
+  pending begins with a catch-up pass instead of waiting `HYATLAS_CONSOLIDATE_EVERY`
+  (6h), and a scheduled pass that finds a manual one running checks back after the
+  catch-up interval instead of 6h.
+
+### Changed
+
+- **A call starts only when there is time for it.** The minimum time left in a pass
+  for a new call follows the model: 1.25 times the median of recent successful
+  calls, at least 3 minutes and at most 80% of a pass. A fixed 3 minutes started
+  calls on a slow free model that the deadline then cut, spending quota for nothing.
+- The backlog pass uses the consolidator's stored topic clusters instead of cutting
+  its own, so both group facts the same way.
+- After a call, the cluster's members are checked by ID instead of listing every
+  live fact of the owner.
+- Coverage estimates in the docs now state what was measured (about half a day for
+  ~150 clusters on a free model) instead of a fixed nine hours.
+
+## [4.7.1] — 2026-10-12
+
+Consolidation that finishes in hours, not weeks, and calls that survive a slow model.
+
+### Changed
+
+- **Consolidation covers a store in hours instead of weeks.** A pass handled one
+  window per owner every 6 hours, and any new fact restarted the owner's walk, so a
+  store of ~100 topic windows took about 22 days to cover and, with daily writes,
+  might never finish. Topic clusters are now built once and kept in
+  `consolidate_state.json`; a new fact joins its nearest neighbour's cluster, so it
+  dirties only that one. A pass runs only clusters whose members changed, up to
+  `HYATLAS_CONSOLIDATE_PARALLEL` (2) at once, within its 10-minute budget, and while
+  clusters are still due the next pass runs after `HYATLAS_CONSOLIDATE_CATCHUP`
+  (20m). Progress is saved after every cluster. The report gains `clusters_run` and
+  `clusters_pending`. `HYATLAS_CONSOLIDATE_RECLUSTER` optionally rebuilds clusters.
+- **Extraction may take 300 s** (`HYATLAS_EXTRACT_TIMEOUT`); free models sometimes
+  took more than the old 180 s.
+
+### Added
+
+- **Fallback model.** `HYATLAS_LLM_FALLBACK_MODEL` (with optional `_BASE` and
+  `_KEY`) is tried when a call to the primary fails; the primary then gets two thirds
+  of the call's time. Applies to extraction, consolidation, the Now page and the
+  backlog pass.
+- **Backlog retry.** The dry run records the topic groups whose call failed;
+  after an apply, `{"dry_run": true, "only_failed": true}` retries only those.
+
+### Fixed
+
+- An entity page whose search document was removed (e.g. by `delete_all`) is
+  re-indexed on its next update and at startup.
+- `usage.json` is capped at 20,000 entries (never-used, rarely shown ones go first).
+- CHANGELOG.md had stray carriage returns on every line in 4.7.0; it is plain LF again.
+
+## [4.7.0] — 2026-10-12
+
+From a pile of facts to a living memory: recall is built around what is going on now
+and around one page per thing, not only around similar snippets.
+
+### Added
+
+- **Now page (working memory).** One short page per owner — active work, open
+  threads, what is blocked, recent decisions, at most 12 lines — rebuilt in the
+  background from open intentions and recent summaries at most every
+  `HYATLAS_NOW_EVERY` (15m) after writes. Served at `GET /api/v1/now` and as `now`
+  in every search that names an owner; the plugin shows it first in recall.
+- **Entity pages (new layer L8).** One page per thing that matters, holding its
+  current state and a dated, append-only history. Extraction sees the owner's 3
+  most related pages and sets attributes or adds events in the same single call; a
+  changed value moves the old one into history, so contradicting statements cannot
+  both be current. Pages are matched by name with version labels ignored, re-indexed
+  on change (the previous version is superseded), and returned in a `pages` channel
+  (at most 2). Modes now fill 1 / 6 / 8 layers (lite / pro / ultra).
+- **Usage learning.** The plugin reports what it recalled, the query and the reply
+  (`POST /api/v1/feedback`). A recalled memory whose distinctive words or
+  identifiers appear in the reply, beyond the query's own words, counts as used; after 3 recalls its ranking weight
+  moves within ±6% by how often it was used. `HYATLAS_USAGE_LEARNING=off` turns it off.
+- **Backlog pass** (admin, `POST /api/v1/admin/backlog`). A one-time job over facts
+  stored before this release: per topic group, one LLM call finds facts that a newer
+  fact contradicts and proposes entity pages. The dry run (default) only writes a
+  plan; applying it makes no LLM calls, re-checks every fact, supersedes (reversibly)
+  and writes the pages.
+
+### Changed
+
+- **Consolidation groups facts by topic.** Each window is a fact plus its nearest
+  neighbours (similarity 0.55 and up) instead of a slice of time, so statements about
+  the same thing written weeks apart meet in one call. Facts without close
+  neighbours fall back to time-ordered windows. The prompt lists the owner's entity
+  page names as the spellings to use for graph endpoints.
+- **Graph edges between the same entities are not indexed twice.** A new edge is
+  skipped when the nearest one connects the same entities (one endpoint equal, the
+  other the same name with extra words, version labels ignored), scores 0.80 or more
+  and carries the same numbers — e.g. "hyatlas server runs on 127.0.0.1:19528"
+  beside "HyAtlas v4 has server 127.0.0.1:19528". The edge itself stays in the graph.
+- The plugin's recall block now reads `[NOW]`, `[PAGES]`, `[PROFILE]`,
+  `[PROACTIVE]`, `[NORMAL]`; pages get 600 characters.
+
+## [4.6.0] — 2026-10-12
+
+Recall that knows what is current, and a server that looks after itself.
+
+### Fixed
+
+- **Finished intentions stop coming back as current.** L7 intentions were never
+  closed: a live store held 435, and "what am I working on right now" returned goals
+  finished days earlier. Extraction is now shown the owner's open intentions (up to
+  5, from the last 7 days) and can mark one continued or done; those are
+  superseded. Search leaves out intentions older than `HYATLAS_INTENTION_TTL`
+  (default 7 days); the rows are kept.
+- **Fewer, real intentions.** Extraction wrote an intention for nearly every turn
+  (436 accumulated, 272 from one week). A question, a status check or a one-off
+  request is no longer an intention, and a turn that only continues an open
+  intention writes nothing new.
+- **Recalled memories carry their dates.** The plugin's recall block now reads
+  `- (l3_fact, 2026-10-09, score 0.80) …`, so the agent can tell what was true then
+  from what is true now.
+- **A changed value replaces the old fact.** Write-time dedupe caught only
+  restatements (similarity 0.92 and the same numbers), so "the extraction model is
+  poolside and returns 403" stayed live beside "extraction now uses stepfun".
+  Extraction is now shown the owner's nearest existing facts (up to 5, similarity
+  0.70 and above) and can name the ones a new fact replaces; only ids it was shown
+  are accepted. Still one LLM call per write.
+- **Search knows time.** Ranking ignored age. Newer memories now win close calls:
+  a hit keeps at least 92% of its weight (age can move it about five places), fading on a half-life per kind of memory
+  (3 days for intentions, 30 for project state and summaries, 180 for preferences
+  and decisions, none for profile and schemas). `HYATLAS_RECENCY=off` turns it off.
+- **Consolidation sees dates.** The prompt told the model to keep the newer of two
+  contradicting facts but sent no dates; each fact now carries its date.
+- **Less noise in L1, L5 and L6.** Extraction labels only statements about the user
+  as `user_preferences` (which are mirrored to L1 Profile), not project settings.
+  Consolidation no longer turns events, amounts or statuses into L5 knowledge, and
+  writes schemas as full sentences. `POST /api/v1/admin/dedupe_facts` accepts
+  `"layer": "l6_schema"` to merge schemas that restate each other.
+
+### Added
+
+- **The server backs itself up.** Every `HYATLAS_SNAPSHOT_EVERY` (default 24h, first
+  one a minute after start) it zips the data directory into `HYATLAS_SNAPSHOT_DIR`
+  (default: `<data>-snapshots` next to it), pausing writes while it copies, and keeps
+  the newest `HYATLAS_SNAPSHOT_KEEP` (7).
+- **Opt-in: the plugin can start the server when Hermes loads it.** With
+  `auto_start: true` (off by default), the server is started as soon as Hermes loads
+  the plugin, not only when a session begins, so a gateway that starts at logon
+  brings it up after a reboot. With the default, nothing is started for you.
+- `hyatlas-go --version` and `--help`. Any other argument is refused; it used to be
+  ignored and start a second server. The launcher's `status` prints the version.
+
+### Removed
+
+- `scripts/hyatlas-v4-start.bat`, a developer script with one machine's paths,
+  replaced by `hyatlas-go.ps1`.
+
+## [4.5.1] — 2026-10-11
+
+### Fixed
+
+- **Identifier queries return only memories that mention the identifier.** A short
+  query (up to three words) holding a word such as `RSI(2)`, `Reg-T`, `19528` or
+  `HYATLAS_SYNC_EXTRACT` came back with the keyword matches plus one or two embedding
+  look-alikes ("hy_memory renamed to hyatlas" for `HYATLAS_SYNC_EXTRACT`). In hybrid
+  and keyword search such a query now keeps only hits containing the identifier's
+  terms. Vector-only search (`reader: legacy`) is unchanged. (`fusion.go`
+  `identifierTerms`, `requireTerms`)
+- **An identifier query fills its result slots.** Keyword candidates were fetched three
+  deep per slot; BM25 favours short documents, so an identifier's top ranks could all
+  be terse L5 relations, which the L5 cap then thinned to two, leaving nothing to fill
+  the rest (`19528` returned 2 hits though 20 facts mention it). They are now fetched
+  ten deep.
+
+### Changed
+
+- **The sample launcher keeps personal settings out of the repository.** `hyatlas-go.ps1`
+  now finds its folder itself (it had one machine's path hard-coded) and, on `start`,
+  runs `hyatlas-go.local.ps1` beside it if present, before its defaults. That file is
+  git-ignored; `hyatlas-go.local.ps1.example` lists the usual settings (model, batch
+  size, owner aliases).
+
 ## [4.5.0] — 2026-10-09
 
 Fixes found by running 4.4.0 against a real store. The largest: the Hermes plugin

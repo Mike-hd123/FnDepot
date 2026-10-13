@@ -27,7 +27,7 @@ import (
 // It is exposed on /api/v1/status and /api/info so every client (Desktop pane,
 // web dashboard, CLI) reports the real running version instead of hardcoding
 // a "v4" badge that silently goes stale on each release. Bump in one place.
-const Version = "4.7.0"
+const Version = "4.7.2"
 
 // Server mirrors the HyAtlas REST contract for drop-in parity.
 type Server struct {
@@ -1722,6 +1722,7 @@ func (s *Server) attachSlowPath(ctx context.Context, rt runtimeCfg) bool {
 	}
 	s.cons = NewConsolidator(s.store, s.llm, rt.Consolidate, rt.Retention, rt.Batch)
 	s.cons.graph = rt.Graph
+	s.cons.SetAliases(s.ownerAliases)
 	go s.cons.Run(ctx)
 	return true
 }
@@ -1869,12 +1870,34 @@ func main() {
 			log.Printf("l5 backfill: indexed %d graph edge(s) as L5 search documents", n)
 		}
 	}()
+	// An entity page whose search document went missing (e.g. removed by
+	// delete_all) would never be found again; re-index any such page.
+	go func() {
+		if store.pages == nil {
+			return
+		}
+		if n, err := store.pages.Repair(); err != nil {
+			log.Printf("pages repair: re-indexed %d page(s), error: %v", n, err)
+		} else if n > 0 {
+			log.Printf("pages repair: re-indexed %d page(s)", n)
+		}
+	}()
 	llm := NewLLMClient(llmBase, llmKey, llmModel)
+	// Optional second model, tried only when the primary call fails: free tiers
+	// sometimes stall for minutes, and a write or pass should not be lost to that.
+	if fb := os.Getenv("HYATLAS_LLM_FALLBACK_MODEL"); strings.TrimSpace(fb) != "" {
+		llm.SetFallback(os.Getenv("HYATLAS_LLM_FALLBACK_BASE"), fb, os.Getenv("HYATLAS_LLM_FALLBACK_KEY"))
+		log.Printf("llm: fallback model %s configured", strings.TrimSpace(fb))
+	}
+	extractTimeout = resolveExtractTimeout()
 	llm.KeyFile = llmKeyFile
 	srv := &Server{store: store, llm: llm, llmModel: llmModel, llmBase: llmBase,
 		mode: rt.Mode, sync: rt.Sync, start: time.Now(), dataDir: dir,
 		embedDims: embedDims}
 
+	// Before attachSlowPath: the consolidator groups one person's IDs as one owner,
+	// so it needs the alias groups before its loop starts.
+	srv.ownerAliases = aliasMap(rt.UserAliases)
 	srv.attachSlowPath(ctx, rt)
 
 	if w := startupWarning(rt, llm); w != "" {
@@ -1882,7 +1905,6 @@ func main() {
 	}
 	log.Print(listeningLine(rt))
 	srv.allowedHosts = rt.AllowedHosts
-	srv.ownerAliases = aliasMap(rt.UserAliases)
 	srv.minScore = rt.MinScore
 	srv.dedupeScore = rt.DedupeScore
 	srv.admin = rt.Admin
@@ -1904,6 +1926,7 @@ func main() {
 	backlogCons := srv.cons
 	if backlogCons == nil {
 		backlogCons = NewConsolidator(store, llm, rt.Consolidate, rt.Retention, rt.Batch)
+		backlogCons.SetAliases(srv.ownerAliases)
 	}
 	srv.backlog = NewBacklogJob(dir, store, backlogCons, nowLLM, func() bool { return srv.admin })
 	snap := resolveSnapshot(dir)
