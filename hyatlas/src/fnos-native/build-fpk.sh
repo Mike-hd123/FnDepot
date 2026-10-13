@@ -26,12 +26,12 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-OUT="${1:-/vol2/1000/download/hyatlas-4.7.2-1-x86.fpk}"
+OUT="${1:-/vol2/1000/download/hyatlas-4.7.3-1-x86.fpk}"
 REF_FPK="/vol2/1000/workspace/hy450-sync/out/hyatlas-4.5.0-2-x86.fpk"   # 242,218,811B 实测存在；其内层模型三件套 sha 与 SHA_ONNX/SHA_ORT/SHA_TOK 逐件相同
 
-# SHA_BIN must be recomputed against the freshly built bin/hyatlas-go-linux-amd64 for 4.7.2-1 (fork-src @ hyatlas-v472-sync).
+# SHA_BIN must be recomputed against the freshly built bin/hyatlas-go-linux-amd64 for 4.7.3-1 (fork-src @ hyatlas/src).
 # Do NOT ship fpk with the placeholder below; run sha256sum on the binary and replace.
-SHA_BIN="510b83cc2f9d7b9d670c0b523df3a343cd81077a0e70a514618b13133c159b34"   # 实测：v4.7.2 合并树(-trimpath,无 -s -w)；15,520,000B；同步上游 v4.7.1+v4.7.2 (branch hyatlas-v472-sync)
+SHA_BIN="1bc38015c4e5fd1e5e4e9159c75cae94d2afd8c494f3a40d7d8a9bdc6a5c098c"   # 实测：v4.7.3 合并树(-trimpath,无 -s -w)；15,661,048B；同步上游 v4.7.3 (fork src @ hyatlas/src)
 SHA_ONNX="8a3f371a7e535e25d3d5a0ff0c0501a605ef0b62577800d2bf4b1fc76d6cbcf1"
 SHA_ORT="99458e9d185dfa1a9b5f6510790ede3bedc25dea378adb904ce292b517eeaecf"
 SHA_TOK="7dfbf1966ebf99d471c3796e9b457329d2b2182b817e144f1e904b957745c839"
@@ -57,6 +57,8 @@ case "$ACTUAL_BIN_SHA" in
     echo "FATAL: bin/ 仍是 4.3.0-1 出货二进制（83740365），不能以 4.6.0-1 名义打包" >&2; exit 1;;
   f9acdf9f4917df1f73a609ce975d4651684a6d0ccdd533f071a7ee66a8c47c2d)
     echo "WARN: bin/ 是 dashboard 汉化修复前的 f9acdf9f —— 若 i18n 补全已合入则本值应已变化" >&2;;
+  510b83cc2f9d7b9d670c0b523df3a343cd81077a0e70a514618b13133c159b34)
+    echo "FATAL: bin/ 仍是 4.7.2-1 出货二进制（510b83cc），不能以 4.7.3-1 名义打包" >&2; exit 1;;
 esac
 echo "SHA_BIN 自检通过: $ACTUAL_BIN_SHA ($(stat -c '%s' "$HERE/bin/hyatlas-go-linux-amd64") B)"
 
@@ -230,8 +232,8 @@ fi
 # 2) manifest 版本/appname
 GOT_VER=$(tar -xOf "$OUT" manifest | awk -F'= *' '$1 ~ /^version/ {print $2}' | tr -d ' ')
 GOT_APP=$(tar -xOf "$OUT" manifest | awk -F'= *' '$1 ~ /^appname/ {print $2}' | tr -d ' ')
-if [ "$GOT_VER" != "4.7.2-1" ] || [ "$GOT_APP" != "hyatlas" ]; then
-  echo "FAIL: manifest appname=$GOT_APP version=$GOT_VER (expected hyatlas 4.7.2-1)" >&2; FAIL=1
+if [ "$GOT_VER" != "4.7.3-1" ] || [ "$GOT_APP" != "hyatlas" ]; then
+  echo "FAIL: manifest appname=$GOT_APP version=$GOT_VER (expected hyatlas 4.7.3-1)" >&2; FAIL=1
 fi
 
 # 3) shares 自愈回调在位（install/upgrade 双回调都含特征串）
@@ -259,5 +261,5 @@ if [ "$FAIL" != "0" ]; then
   echo "STRUCTURE CHECK FAILED" >&2
   exit 1
 fi
-echo "PASS: structure ok (manifest 4.7.2-1, shares-heal callbacks present, app payload complete incl env.example)"
+echo "PASS: structure ok (manifest 4.7.3-1, shares-heal callbacks present, app payload complete incl env.example)"
 echo "$OUT  $((GOT_SIZE/1024/1024))MB  sha256=$GOT_SHA"

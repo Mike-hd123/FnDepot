@@ -122,6 +122,17 @@
               "size": 242603900
             }
           }
+        },
+        "4.7.3-1": {
+          "changelog": "4.7.3-1（2026-10-13 出包）：同步上游 v4.7.3（v4.7.2→v4.7.3，3 commits / 16 files / +865 −22，纯 Go 后端 + dashboard L8）。①合并质量守卫：cosine<0.65 的 fact 不折进合并、合并后不足 2 条不合并、报表新增 kept_off_topic。②schema 相关性：给模型的 schema 取与 cluster 最近的而非 owner 最新 20 个；与已存 ≥0.92 不重复写。③history 追踪（新增 history.go）：supersede 链可追溯，删除时把被替换者指向后继，补记 dropped without a recorded reason。④/api/v1/list 分页：同时间戳按 id tie-break（修漏行/重复）。⑤POST /api/v1/admin/restore：需 HYATLAS_ADMIN=on，默认 dry run，恢复错合/错删行。⑥前端修复：dashboard/dist/app.js LAYERS 补 l8_entity（实体页 #c0715b）、totalLayers 7→8；L5-L7 图谱标签保留（L8 非图谱节点，与上游 v4.7.3 一致）——修界面显示不全（status 返回 l8_entity:917 但前端无 LAYERS 条目致整层不渲染）。本地定制全保留：delete_all 加固、touch/patch 双时态、include_expired、bge-large-zh 1024d、L7 dedup+硬顶、System1 不写 L1、dashboard 汉化+移动端、shares 自愈、端口 19528 网关 socket 入口。fork 合并：consolidate.go 与上游 v4.7.2 零差异→全量取 v4.7.3，仅补 searchWhere includeExpired=false 第 5 参（2 处）；server.go 叠 3 处保留全部定制；store.go 叠 5 处（relinkHistory 启动/list tie-break/Delete 拆 deleteRows 保留 deleteTargets 护栏/vectors()）保留全部定制；新增 3 测试补 NewMemoryStore dims 参。二进制 sha256 1bc38015（15,661,048B，go1.26.9，CGO_ENABLED=1 + -trimpath + GOAMD64=v1）。",
+          "updated_at": "2026-10-13T16:50:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/hyatlas-v4.7.3-1/hyatlas-4.7.3-1-x86.fpk",
+              "sha256": "7a8fcc6a9d0c8f772eecbbb25ec037adb0a0bad936c48b579dd4d15769a953d3",
+              "size": 242648812
+            }
+          }
         }
       }
     },

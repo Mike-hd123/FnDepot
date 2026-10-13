@@ -59,7 +59,8 @@ const LAYERS = {
   'l4_summary': { name: '摘要', desc: '多条事实、事件与观察的综合', color: '#4a6fa5' },
   'l5_knowledge': { name: '知识', desc: '沉淀的理解与专业知识', color: '#3d8b8b' },
   'l6_schema': { name: '图式', desc: '结构性模式与组织框架', color: '#6b4c9a' },
-  'l7_intention': { name: '意图', desc: '前瞻性目标与承诺 (L7)', color: '#d4af37' }
+  'l7_intention': { name: '意图', desc: '前瞻性目标与承诺 (L7)', color: '#d4af37' },
+  'l8_entity': { name: '实体页', desc: '每件事一页：当前状态 + 带日期的历史', color: '#c0715b' }
 };
 
 // Navigation
@@ -635,10 +636,10 @@ function renderOverview() {
   // reads = searches counter; writes = write counter — from layer-counts endpoint
   const reads    = layerCountsData?.searches ?? statusData?.searches ?? 0;
   const memWrites = layerCountsData?.writes   ?? statusData?.writes   ?? 0;
-  // 7-layer model (L1-L7); skip any stray legacy l4_identity key defensively.
+  // 8-layer model (L1-L8); skip any stray legacy l4_identity key defensively.
   const coverageKeys = Object.keys(lc).filter(k => k !== 'l4_identity');
   const activeLayers = coverageKeys.filter(k => Number(lc[k]) > 0).length;
-  const totalLayers = 7;
+  const totalLayers = 8;
 
   // Stat cards
   const statsHtml = `
