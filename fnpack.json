@@ -111,6 +111,17 @@
               "size": 242306571
             }
           }
+        },
+        "4.7.2-1": {
+          "changelog": "4.7.2-1（2026-10-13 出包，本机 09:14 起实测在跑）：同步上游 v4.7.0→v4.7.2（3 个 tag / 25 files / +3769 −1768）。① v4.7.0：L8 Entity pages（每件事一页 + 带日期的追加历史）、Now page（当前工作记忆，12 行内）、使用学习（usage.json 反馈召回有效性）、积压处理（一次性 backlog 作业）。② v4.7.1：consolidation 从周级降到小时级——topic cluster 持久化进 consolidate_state.json，新 fact 并入最近邻 cluster，只跑变化的 cluster，2 并行（HYATLAS_CONSOLIDATE_PARALLEL，上限 4），20 分钟 catch-up（HYATLAS_CONSOLIDATE_CATCHUP），单 pass 10 分钟预算；提取超时 180s→300s（HYATLAS_EXTRACT_TIMEOUT）；新增 fallback model（HYATLAS_LLM_FALLBACK_MODEL/_BASE/_KEY），主模型失败试备胎，主模型拿 2/3 调用时长；backlog 只重试失败 {\"dry_run\":true,\"only_failed\":true}；entity page 文档被 delete_all 移除后在启动与更新时重新索引；usage.json 上限 20000 条。③ v4.7.2：provider 故障不再弃 backlog（2+ 次失败且零成功视为 provider 挂了，不计入 cluster strikes，跳过的 cluster 24h 后按 failCooldown 重试）；consolidation 跟随 HYATLAS_USER_ALIASES（同一人不同 ID 归为一个 owner）；fallback endpoint 跨 host 时不带主 key。本地定制全保留：delete_all 防误删加固、touch/patch 双时态、include_expired、bge-large-zh 1024d、L7 dedup+硬顶、System1 不写 L1、dashboard 汉化+移动端、shares 自愈、端口 19528 网关 socket 入口。二进制 sha256 510b83cc（15,520,000B，CGO_ENABLED=1 + -trimpath + GOAMD64=v1，同步分支 hyatlas-v472-sync）。注：4.7.0-1 未单独发 Release，由本包覆盖。",
+          "updated_at": "2026-10-13T09:31:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/hyatlas-v4.7.2-1/hyatlas-4.7.2-1-x86.fpk",
+              "sha256": "85e12ce736241e3763eb6a1b5c2ae3e0d9100ebc51634717cc50a5206d0e6f29",
+              "size": 242603900
+            }
+          }
         }
       }
     },
