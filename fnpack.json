@@ -296,14 +296,14 @@
       "is_docker": false,
       "service_port": "18096",
       "releases": {
-        "1.4.4-4": {
-          "changelog": "1.4.4-4（2026-09-28）：sidecar 管理员自动重登——后端服务重启致 admin token(纯内存态)失效时，/admin/api 请求 401 自动用 admin/admin 重登拿新 token 重放(≤2发/30s失败退避)，浏览器无感；旧→新 token 映射落盘 gateway_state.json 跨重启；TV/客户端路径零干预；e2e 5 场景全过，用户实测通过。manifest micro_app=true 固化进打包源(4-3 装机侧双写补救的根修)。",
-          "updated_at": "2026-09-28T10:30:00+08:00",
+        "1.4.4-9": {
+          "changelog": "1.4.4-9（2026-10-14）：①数据与配置全面落 data-share（纠正 dirname $TRIM_DATA_SHARE_PATHS 写法——安装阶段那是未落卷占位路径 /vol0/…，数据其实没进 share；改为 /var/apps/<app>/shares/<name> 软链优先）；②config.yaml 真身移到 share，不再被 @appcenter 重装抹掉，缺失时自动从 @appdata/@appcenter 抢救；③锁死监听端口：启动副本注入 server.port=$TRIM_SERVICE_PORT(18096)，Go 不读 env PORT，实测 -8 被配置里的 8096 盖掉致 sidecar/电视端连不上；④dataDir 追加文件末尾且幂等（不再插进 server: 块，那份其实是坏 YAML，PyYAML 现已可正常解析）；⑤安装/升级新增包体二进制体检（防 38KB 空包）；⑥卸载双选，清除走 find -mindepth 1 含隐藏文件；⑦失败信息写 TRIM_TEMP_LOGFILE，应用中心可见。装机实测通过：1.4.4-8->1.4.4-9 升级后 18096 在听、8096 释放、mappings.db/tokens.json 落 @appshare、.bak 污染 0。",
+          "updated_at": "2026-10-14T21:55:00+08:00",
           "packages": {
             "x86": {
-              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.23/emby-in-one-1.4.4-4-x86.fpk",
-              "sha256": "09490bfd54a7c24474e9f36bdca6de9034a7692d1cd2b548920c55370c003725",
-              "size": 4476032
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/emby-in-one-v1.4.4-9/emby-in-one-1.4.4-9-x86.fpk",
+              "sha256": "a7f02dca065b0a2cd32c11925e8d155697ed214c75fc07f34688f30159eef9c2",
+              "size": 4011815
             }
           }
         },
@@ -315,6 +315,17 @@
               "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.23/emby-in-one-1.4.4-5-x86.fpk",
               "sha256": "8a22d7bd3c475f932280f1874ddb9246f4fec987273833186b071d71d3a1bb08",
               "size": 4566796
+            }
+          }
+        },
+        "1.4.4-4": {
+          "changelog": "1.4.4-4（2026-09-28）：sidecar 管理员自动重登——后端服务重启致 admin token(纯内存态)失效时，/admin/api 请求 401 自动用 admin/admin 重登拿新 token 重放(≤2发/30s失败退避)，浏览器无感；旧→新 token 映射落盘 gateway_state.json 跨重启；TV/客户端路径零干预；e2e 5 场景全过，用户实测通过。manifest micro_app=true 固化进打包源(4-3 装机侧双写补救的根修)。",
+          "updated_at": "2026-09-28T10:30:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.23/emby-in-one-1.4.4-4-x86.fpk",
+              "sha256": "09490bfd54a7c24474e9f36bdca6de9034a7692d1cd2b548920c55370c003725",
+              "size": 4476032
             }
           }
         }
