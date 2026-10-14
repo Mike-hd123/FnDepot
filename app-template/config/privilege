@@ -1,5 +1,5 @@
 {
   "defaults": {
-    "run-as": "user"
+    "run-as": "package"
   }
 }

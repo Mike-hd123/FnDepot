@@ -1,3 +1,26 @@
 #!/bin/bash
+# cmd/config_callback — 配置流程收尾
+# 本应用的配置真身在 share 的 config.yaml（用户经文件管理器编辑），安装向导不收集字段，
+# 所以这里只做一次「share → 运行目录」的同步，让改完配置直接点重启就生效。重启本身交给用户。
 set -u
+APP_DIR="${TRIM_APPDEST:-/vol1/@appcenter/emby-in-one}"
+
+resolve_share_root() {
+  local _app="$1" _name="$2" _paths="$3" _c
+  for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+    [ -n "${_c}" ] || continue
+    case "${_c}" in /vol0/*) continue ;; esac
+    if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+      printf '%s\n' "${_c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+SHARE_ROOT="$(resolve_share_root emby-in-one emby-in-one "${TRIM_DATA_SHARE_PATHS:-}")"
+if [ -n "${SHARE_ROOT}" ] && [ -f "${SHARE_ROOT}/config.yaml" ]; then
+  mkdir -p "${APP_DIR}/config" 2>/dev/null || true
+  cp "${SHARE_ROOT}/config.yaml" "${APP_DIR}/config/config.yaml" 2>/dev/null || true
+fi
 exit 0

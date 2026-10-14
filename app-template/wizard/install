@@ -1,11 +1,36 @@
 [
   {
-    "stepTitle": "<显示名> 安装说明",
+    "stepTitle": "<显示名> 安装配置",
     "items": [
       {
         "type": "tips",
         "label": "",
-        "helpText": "<显示名> <版本>\nupstream: <org>/<repo>\n\n• 端口 <PORT>，桌面图标经 fnOS 网关打开。\n• 数据目录独立持久，升级/重装不清数据。\n• <其它安装须知>"
+        "helpText": "<显示名> <版本>\nupstream: <org>/<repo>\n\n• 填写的端口/地址/密钥安装后自动生效，无需手动改配置。\n• 敏感项安装后也可在「应用设置」里修改（wizard/config）。\n• 应用数据保存在共享目录，文件管理器可见，升级与重装不清数据。\n• <其它安装须知>"
+      },
+      {
+        "type": "text",
+        "field": "wizard_port",
+        "label": "服务端口",
+        "initValue": "<PORT>",
+        "rules": [
+          { "required": true, "message": "请输入端口" },
+          { "pattern": "^[0-9]+$", "message": "端口只能是数字" }
+        ]
+      },
+      {
+        "type": "text",
+        "field": "wizard_upstream_base",
+        "label": "上游 / 后端地址",
+        "initValue": "http://127.0.0.1:<PORT>",
+        "rules": [
+          { "pattern": "^https?://.+|^/\\S+$", "message": "请填写 http(s):// 地址或本地路径" }
+        ]
+      },
+      {
+        "type": "password",
+        "field": "wizard_api_key",
+        "label": "API Key（可选）",
+        "initValue": ""
       }
     ]
   }

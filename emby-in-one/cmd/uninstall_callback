@@ -1,18 +1,54 @@
 #!/bin/bash
+# cmd/uninstall_callback — 卸载双选：wizard_delete_data=false 保留 / true 清除
+# 清除只清 share 目录内容 + @appdata；保留时二者都不动，可直接重装复用。
 set -u
 DATA="${wizard_delete_data:-false}"
 echo "数据删除选项: ${DATA:-<unset>}"
+
+# share 解析规则与 cmd/main 完全一致（本脚本自带一份：卸载阶段不能依赖 source 别的文件）
+resolve_share_root() {
+  local _app="$1" _name="$2" _paths="$3" _c
+  for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+    [ -n "${_c}" ] || continue
+    case "${_c}" in /vol0/*) continue ;; esac
+    if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+      printf '%s\n' "${_c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+SHARE_ROOT="$(resolve_share_root emby-in-one emby-in-one "${TRIM_DATA_SHARE_PATHS:-}")"
+SHARE_ROOT="${SHARE_ROOT:-/var/apps/emby-in-one/shares/emby-in-one}"
+
+# 先停进程，避免删数据时进程还在写。
+# main 脚本与本脚本同目录（/var/apps/<app>/cmd/），卸载阶段 TRIM_APPDEST 可能已被清空
+MAIN_SELF="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/main"
+if [ -f "$MAIN_SELF" ]; then
+  "$MAIN_SELF" stop >/dev/null 2>&1 || true
+elif [ -f "${TRIM_APPDEST}/cmd/main" ]; then
+  "${TRIM_APPDEST}/cmd/main" stop >/dev/null 2>&1 || true
+fi
+
 case "$DATA" in
     "true")
-        echo "卸载前删除数据目录：$TRIM_PKGVAR"
-        if [ -n "${TRIM_PKGVAR:-}" ] && [ -d "$TRIM_PKGVAR" ]; then
-            rm -rf "$TRIM_PKGVAR" && echo "删除成功" || echo "删除失败" >&2
+        # 只清内容，保留目录本体与属主，便于将来重装复用（含 . 开头的隐藏文件）
+        echo "清除 share 数据内容：${SHARE_ROOT}"
+        if [ -n "${SHARE_ROOT}" ] && [ -d "${SHARE_ROOT}" ]; then
+            find "${SHARE_ROOT}" -mindepth 1 -maxdepth 1 -exec rm -rf {} + \
+              && echo "share 内容清除成功" || echo "清除失败" >&2
         else
-            echo "目录不存在或 TRIM_PKGVAR 未设置，无需删除"
+            echo "share 数据目录不存在，无需清除"
+        fi
+        # 日志/PID 属 @appdata，一并清除（配置真身在 share，不受这里影响）
+        echo "清除 @appdata 日志：${TRIM_PKGVAR}"
+        if [ -n "${TRIM_PKGVAR}" ] && [ -d "${TRIM_PKGVAR}" ]; then
+            rm -rf "${TRIM_PKGVAR}"
         fi
         ;;
     "false"|*)
-        echo "保留数据文件"
+        echo "保留数据文件（share 配置与数据、@appdata 日志均不动，可随时重装恢复）"
         ;;
 esac
 exit 0

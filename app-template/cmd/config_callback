@@ -1,3 +1,21 @@
 #!/bin/bash
-# config_callback — 配置修改后。**缺此文件 → 10111**。
+# config_callback — 用户从「应用设置」改完配置后触发。
+# 触发时机：config_init →（更新配置变量）→ config_callback
+# 关键：wizard/config 里 field 收集到的值，会以**同名环境变量**注入本脚本
+#（与 install 向导同一套规则），所以这里直接读 $wizard_* 即可。
+#
+# 典型职责：把新值落盘到 $TRIM_PKGVAR 下的 env / ini 文件，然后重启服务进程。
+# ⚠️ 官方规定：不要把密钥打印到日志。
+set -u
+
+LOG="${TRIM_PKGVAR}/config.log"
+echo "===== config_callback $(date) =====" >> "$LOG"
+
+# 示例：落盘后让配置生效（按需启用）
+# ENV_FILE="${TRIM_PKGVAR}/env"
+# printf 'PORT=%s\nUPSTREAM=%s\n' "${wizard_port:-}" "${wizard_upstream_base:-}" >> "$ENV_FILE"
+# "${TRIM_APPDEST}/cmd/main" stop >> "$LOG" 2>&1 || true
+# "${TRIM_APPDEST}/cmd/main" start >> "$LOG" 2>&1 || true
+
+echo "===== done =====" >> "$LOG"
 exit 0

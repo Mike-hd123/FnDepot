@@ -5,7 +5,7 @@
       {
         "type": "tips",
         "label": "",
-        "helpText": "Emby 聚合代理 1.4.4-1\nupstream: ArizeSky/Emby-In-One\n\n• 端口 18096，桌面图标经 fnOS 网关打开。\n• 数据目录独立持久，升级/重装不清数据。\n• 已预配上游 entertang 服务器，redirect 播放模式。\n• 管理面板: http://NAS:18096/admin/"
+        "helpText": "Emby 聚合代理 1.4.4-9\nupstream: ArizeSky/Emby-In-One\n\n• 监听端口固定用 18096（以 manifest 为准，脚本自动写进配置，不用手改）。\n• 配置与数据都在共享目录 emby-in-one 里：文件管理器可见，升级/重装不丢。\n• 首次安装若共享目录没有 config.yaml，会从旧位置自动搬过来；完全没有则启动报错，需自行放置配置。\n• 改完 config.yaml 在应用中心点「重启」生效（dataDir 与 port 由脚本自动注入，不用手写）。\n• 管理面板: http://NAS:18096/admin/"
       }
     ]
   }

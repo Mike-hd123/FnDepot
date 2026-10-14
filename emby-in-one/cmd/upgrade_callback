@@ -1,3 +1,55 @@
 #!/bin/bash
+# cmd/upgrade_callback — 升级后收尾：数据/配置归位到 share + 二进制体检
+# fnOS 升级会整体替换 @appcenter（TRIM_APPDEST），所以任何留在 @appcenter 里的东西都会丢。
 set -u
+mkdir -p "${TRIM_PKGVAR}" 2>/dev/null || true
+LOG="${TRIM_PKGVAR}/upgrade.log"
+echo "===== upgrade_callback $(date) from ${TRIM_OLD_APPVER:-?} -> ${TRIM_APPVER:-?} =====" >> "$LOG"
+
+resolve_share_root() {
+  local _app="$1" _name="$2" _paths="$3" _c
+  for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+    [ -n "${_c}" ] || continue
+    case "${_c}" in /vol0/*) continue ;; esac
+    if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+      printf '%s\n' "${_c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+SHARE_ROOT="$(resolve_share_root emby-in-one emby-in-one "${TRIM_DATA_SHARE_PATHS:-}")"
+if [ -z "${SHARE_ROOT}" ]; then
+  echo "FAIL: 没有可用 data-share" >> "$LOG"
+  echo "FATAL: data-share 目录不可用" > "${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+  exit 1
+fi
+DATA_DIR="${SHARE_ROOT}/data"
+mkdir -p "${DATA_DIR}"
+
+# 老版本把配置/数据放在 @appdata（甚至 @appcenter），逐项搬进 share（幂等，只在目标缺失时拷）
+if [ ! -f "${SHARE_ROOT}/config.yaml" ]; then
+  for OLD in "${TRIM_PKGVAR}/config.yaml" "${TRIM_APPDEST}/config/config.yaml"; do
+    if [ -f "$OLD" ]; then
+      cp "$OLD" "${SHARE_ROOT}/config.yaml" && { echo "config salvaged: $OLD" >> "$LOG"; break; }
+    fi
+  done
+fi
+for OLD in "${TRIM_PKGVAR}/data" "${TRIM_APPDEST}/data"; do
+  if [ -d "$OLD" ] && [ -n "$(ls -A "$OLD" 2>/dev/null)" ]; then
+    cp -a "$OLD/." "${DATA_DIR}/" 2>/dev/null && echo "data migrated: $OLD" >> "$LOG"
+  fi
+done
+
+# 二进制体检：升级成空包 = 应用直接瘫痪（实测踩过）
+if [ ! -f "${TRIM_APPDEST}/emby-in-one" ]; then
+  echo "FAIL: ${TRIM_APPDEST}/emby-in-one 不存在" >> "$LOG"
+  echo "FATAL: 升级包缺二进制 emby-in-one" > "${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+  exit 1
+fi
+echo "binary ok: $(du -h "${TRIM_APPDEST}/emby-in-one" | cut -f1)" >> "$LOG"
+
+chmod -R a+rX "${TRIM_APPDEST}" 2>/dev/null || true
+echo "===== done =====" >> "$LOG"
 exit 0

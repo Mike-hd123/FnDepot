@@ -1,8 +1,42 @@
 #!/bin/bash
+# cmd/install_callback — 首装：建 share 数据骨架 + 校验包内二进制
+# share 解析规则必须与 cmd/main 完全一致（每个脚本自带一份，卸载阶段 cmd/ 可能已被清，不能 source）
 set -u
+mkdir -p "${TRIM_PKGVAR}" 2>/dev/null || true
 LOG="${TRIM_PKGVAR}/install.log"
 echo "===== install_callback $(date) =====" >> "$LOG"
-mkdir -p "${TRIM_PKGVAR}" 2>/dev/null || true
+
+resolve_share_root() {
+  local _app="$1" _name="$2" _paths="$3" _c
+  for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+    [ -n "${_c}" ] || continue
+    case "${_c}" in /vol0/*) continue ;; esac
+    if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+      printf '%s\n' "${_c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+SHARE_ROOT="$(resolve_share_root emby-in-one emby-in-one "${TRIM_DATA_SHARE_PATHS:-}")"
+if [ -z "${SHARE_ROOT}" ]; then
+  echo "FAIL: 没有可用 data-share（TRIM_DATA_SHARE_PATHS=${TRIM_DATA_SHARE_PATHS:-<unset>}）" >> "$LOG"
+  echo "FATAL: data-share 目录不可用，请检查 config/resource" \
+    > "${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+  exit 1
+fi
+mkdir -p "${SHARE_ROOT}/data"
+echo "data dir ready: ${SHARE_ROOT}" >> "$LOG"
+
+# 二进制没打进包 = 装了个空壳（实测 38KB fpk 就是这个坑），装阶段就拦住
+if [ ! -f "${TRIM_APPDEST}/emby-in-one" ]; then
+  echo "FAIL: ${TRIM_APPDEST}/emby-in-one 不存在" >> "$LOG"
+  echo "FATAL: 安装包内缺二进制 emby-in-one，请重新打包" > "${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+  exit 1
+fi
+echo "binary ok: $(du -h "${TRIM_APPDEST}/emby-in-one" | cut -f1)" >> "$LOG"
+
 chmod -R a+rX "${TRIM_APPDEST}" 2>/dev/null || true
 echo "===== done =====" >> "$LOG"
 exit 0

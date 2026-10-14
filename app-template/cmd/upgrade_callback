@@ -1,5 +1,48 @@
 #!/bin/bash
-# upgrade_callback — 升级后 hook。**铁律：只覆盖程序，绝不动数据目录**（数据在 TRIM_PKGVAR/@appdata/@appshare）。
-# systemd 应用：升级后 daemon-reload + restart 服务。
+# upgrade_callback — 升级后 hook。**铁律：只覆盖程序，绝不动数据**（数据在 share，见 cmd/main）。
+# ⚠️ fnOS 升级会整体替换 @appcenter（TRIM_APPDEST），留在 @appcenter 里的东西一律丢——
+#    配置、sqlite、用户上传的文件都算。实测：Emby 的 config.yaml 就是这样被升级抹掉的。
+# 所以升级阶段的活是：把老版本遗留在 @appdata / @appcenter 的配置与数据搬进 share。
+# systemd 应用：升级后 systemctl daemon-reload && systemctl restart <appname>。
 set -u
+mkdir -p "${TRIM_PKGVAR}" 2>/dev/null || true
+LOG="${TRIM_PKGVAR}/upgrade.log"
+echo "===== upgrade_callback $(date) ${TRIM_OLD_APPVER:-?} -> ${TRIM_APPVER:-?} =====" >> "$LOG"
+
+resolve_share_root() {
+  local _app="$1" _name="$2" _paths="$3" _c
+  for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+    [ -n "${_c}" ] || continue
+    case "${_c}" in /vol0/*) continue ;; esac
+    if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+      printf '%s\n' "${_c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+SHARE_ROOT="$(resolve_share_root "<appname>" "<share名>" "${TRIM_DATA_SHARE_PATHS:-}")"
+if [ -z "${SHARE_ROOT}" ]; then
+  echo "FAIL: 没有可用 data-share" >> "$LOG"
+  echo "FATAL: data-share 目录不可用" > "${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+  exit 1
+fi
+mkdir -p "${SHARE_ROOT}/data"
+
+# 一次性搬迁旧数据（幂等：只在 share 里还没有时才拷，绝不覆盖已有数据）
+if [ ! -f "${SHARE_ROOT}/config.yaml" ]; then
+  for OLD in "${TRIM_PKGVAR}/config.yaml" "${TRIM_APPDEST}/config/config.yaml"; do
+    [ -f "$OLD" ] || continue
+    cp "$OLD" "${SHARE_ROOT}/config.yaml" && { echo "config salvaged: $OLD" >> "$LOG"; break; }
+  done
+fi
+for OLD in "${TRIM_PKGVAR}/data" "${TRIM_APPDEST}/data"; do
+  if [ -d "$OLD" ] && [ -n "$(ls -A "$OLD" 2>/dev/null)" ]; then
+    cp -a "$OLD/." "${SHARE_ROOT}/data/" 2>/dev/null && echo "data migrated: $OLD" >> "$LOG"
+  fi
+done
+
+chmod -R a+rX "${TRIM_APPDEST}" 2>/dev/null || true
+echo "===== done =====" >> "$LOG"
 exit 0

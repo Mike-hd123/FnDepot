@@ -8,8 +8,37 @@ LOG_FILE="${VAR_DIR}/app.log"
 PID_FILE="${VAR_DIR}/app.pid"
 export PORT="${TRIM_SERVICE_PORT:-<PORT>}"   # manifest service_port 可被部署 env 覆盖
 
-SHARE_DIR="${APP_DIR}/shares"
-mkdir -p "${VAR_DIR}" "${SHARE_DIR}"
+# 数据目录: 必须落在 share（config/resource 声明 → fnOS 自动创建并授 Windows ACL）。
+# ⚠️ 不要用 "${APP_DIR}/shares"—— APP_DIR=@appcenter 是程序本体，卸载时整体删除，数据必丢。
+# ⚠️ 官方文档写 /var/apps/<app>/share/（单数），实测系统是 shares/（复数），以实测为准。
+# ⚠️ 不要 `dirname "$TRIM_DATA_SHARE_PATHS"` 再拼 share 名：安装阶段 fnOS 给的是还没落卷的占位
+#    路径（实测 /vol0/@appshare/<appname>），拼出来的目录不存在、也建不动（权限拒绝被 || true 吞掉），
+#    结果是"日志里看着落 share 了，实际数据在别处"。正解：优先用 fnOS 自己维护的软链
+#    /var/apps/<app>/shares/<name>（永远指向真实卷），退化再用 TRIM_DATA_SHARE_PATHS 首段
+#    （官方写法 ${VAR%%:*} 取首段，不是 dirname）。
+die() {
+  echo "FATAL: $1" >&2
+  [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "FATAL: $1" > "${TRIM_TEMP_LOGFILE}"
+  exit 1
+}
+
+resolve_share_root() {
+  local _app="$1" _name="$2" _paths="$3" _c
+  for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+    [ -n "${_c}" ] || continue
+    case "${_c}" in /vol0/*) continue ;; esac
+    if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+      printf '%s\n' "${_c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+SHARE_ROOT="$(resolve_share_root "<appname>" "<share名>" "${TRIM_DATA_SHARE_PATHS:-}")" \
+  || die "找不到 data-share 目录，请检查 config/resource 的 data-share 声明"
+DATA_DIR="${SHARE_ROOT}/data"
+mkdir -p "${VAR_DIR}" "${DATA_DIR}" || die "无法创建数据目录 ${DATA_DIR}（share 权限不足）"
 
 is_running() {
   [ -f "$PID_FILE" ] || return 1

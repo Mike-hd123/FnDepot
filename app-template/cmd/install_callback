@@ -1,14 +1,48 @@
 #!/bin/bash
-# install_callback — 安装后 hook。systemd 应用在此写 unit + env；非 systemd 用途示例：
-#   建数据目录、迁移旧数据、修复权限（chmod a+rX，fpk 打包源是 hermes-studio 751，服务用户读不了）。
+# install_callback — 安装后 hook：share 数据骨架就绪 + 权限自愈。
+# systemd 应用还在这里写 unit + env（写之前先 rm 旧 unit，防 app_id 冲突）。
+# ⚠️ 顺序坑：先 mkdir -p TRIM_PKGVAR 再写日志——首装时 @appdata 还不存在，
+#    直接 `echo ... >> "${TRIM_PKGVAR}/install.log"` 会失败，日志一片空白，问题查不到。
+# ⚠️ chmod -R a+rX "${TRIM_APPDEST}" 常有：fpk 打包源目录若是 751，服务用户读不了包内文件
+#    （踩过：hermes-studio 的 751 目录让 CGI 403）。
 set -u
+mkdir -p "${TRIM_PKGVAR}" 2>/dev/null || true
 LOG="${TRIM_PKGVAR}/install.log"
 echo "===== install_callback $(date) =====" >> "$LOG"
 
-# 示例：数据目录就绪 + 权限自愈（按需启用）
-# DATA="${TRIM_APPDEST}/data"
-# mkdir -p "$DATA"
-# chmod -R a+rX "$DATA"
+# 与 cmd/main 完全相同的 share 解析规则。本脚本自带一份：卸载/升级阶段 cmd/ 目录可能被清，
+# 不能依赖 source 同目录的兄弟文件。
+resolve_share_root() {
+  local _app="$1" _name="$2" _paths="$3" _c
+  for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+    [ -n "${_c}" ] || continue
+    case "${_c}" in /vol0/*) continue ;; esac
+    if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+      printf '%s\n' "${_c}"
+      return 0
+    fi
+  done
+  return 1
+}
 
+SHARE_ROOT="$(resolve_share_root "<appname>" "<share名>" "${TRIM_DATA_SHARE_PATHS:-}")"
+if [ -z "${SHARE_ROOT}" ]; then
+  echo "FAIL: 没有可用 data-share（TRIM_DATA_SHARE_PATHS=${TRIM_DATA_SHARE_PATHS:-<unset>}）" >> "$LOG"
+  echo "FATAL: data-share 目录不可用，请检查 config/resource 的 data-share 声明" \
+    > "${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+  exit 1
+fi
+mkdir -p "${SHARE_ROOT}/data" || {
+  echo "FAIL: 无法创建 ${SHARE_ROOT}/data" >> "$LOG"
+  echo "FATAL: share 数据目录创建失败（权限不足）" > "${TRIM_TEMP_LOGFILE:-/dev/stderr}"
+  exit 1
+}
+echo "data dir ready: ${SHARE_ROOT}" >> "$LOG"
+
+# 配置真身也放 share（@appcenter 每次升级整体删除，配置放这儿必丢）。
+# 若包内带了默认配置，按需启用：
+# [ -f "${SHARE_ROOT}/config.yaml" ] || cp "${TRIM_APPDEST}/config.yaml.default" "${SHARE_ROOT}/config.yaml"
+
+chmod -R a+rX "${TRIM_APPDEST}" 2>/dev/null || true
 echo "===== done =====" >> "$LOG"
 exit 0

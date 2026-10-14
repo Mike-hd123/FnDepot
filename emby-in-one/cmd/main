@@ -13,7 +13,41 @@ PID_FILE="${VAR_DIR}/emby-in-one.pid"
 GW_PID_FILE="${VAR_DIR}/gateway.pid"
 export PORT="${TRIM_SERVICE_PORT:-18096}"
 
-mkdir -p "${VAR_DIR}" "${APP_DIR}/config" "${APP_DIR}/data"
+# 数据目录: 必须落 share（config/resource 声明 → fnOS 自动建目录 + 授 Windows ACL）。
+# ⚠️ 之前数据落在 ${APP_DIR}/data（@appcenter），升级/卸载时整体删除 = 数据必丢。
+#    也不放 ${VAR_DIR}（@appdata）：那是配置/日志区，且用户不可见。
+# 官方文档写 /var/apps/<app>/share/（单数），实测系统是 shares/（复数），以实测为准。
+# ⚠️ 别用 dirname "${TRIM_DATA_SHARE_PATHS}" 再拼 share 名：安装阶段 fnOS 给的是还没落卷的
+#    占位路径（实测 /vol0/@appshare/emby-in-one），拼出来的目录不存在也建不出来（权限拒绝，
+#    静默失败 → 数据其实没落 share）。正解：优先用 fnOS 自己维护的软链
+#    /var/apps/<app>/shares/<name>（永远指向真实卷），退化再用 TRIM_DATA_SHARE_PATHS 首段
+#    （官方写法 ${VAR%%:*}，取首段，不是 dirname）。
+die() {
+  echo "FATAL: $1" >&2
+  [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "FATAL: $1" > "${TRIM_TEMP_LOGFILE}"
+  exit 1
+}
+
+resolve_share_root() {
+  local _app="$1" _name="$2" _paths="$3" _c
+  for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+    [ -n "${_c}" ] || continue
+    case "${_c}" in /vol0/*) continue ;; esac
+    if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+      printf '%s\n' "${_c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+SHARE_ROOT="$(resolve_share_root emby-in-one emby-in-one "${TRIM_DATA_SHARE_PATHS:-}")" \
+  || die "找不到 data-share 目录，请检查 config/resource 的 data-share 声明"
+DATA_DIR="${SHARE_ROOT}/data"
+# 持久配置也放 share：@appcenter 会被每次升级整体删除（实测 1.4.4-6 就这样把 config.yaml 抹了）
+CONFIG_PERSIST="${SHARE_ROOT}/config.yaml"
+mkdir -p "${VAR_DIR}" "${APP_DIR}/config" "${DATA_DIR}" \
+  || die "无法创建数据目录 ${DATA_DIR}（share 权限不足）"
 
 # 二进制以相对路径找 config/config.yaml 与 data/，必须先切到安装目录
 cd "${APP_DIR}" || { echo "FATAL: cannot cd to ${APP_DIR}" >&2; exit 1; }
@@ -21,7 +55,7 @@ cd "${APP_DIR}" || { echo "FATAL: cannot cd to ${APP_DIR}" >&2; exit 1; }
 # 从持久化 config.yaml 读 admin.username/password（sidecar 自动重登凭据），读不到回退 admin/admin
 read_admin_creds() {
   local user="admin" pass="admin" out u p
-  if [ -f "${VAR_DIR}/config.yaml" ]; then
+  if [ -f "${CONFIG_PERSIST}" ]; then
     out=$(python3 -c '
 import sys
 u = p = ""
@@ -40,7 +74,7 @@ for ln in open(sys.argv[1], encoding="utf-8"):
             p = s.split(":", 1)[1].strip().strip("\u0027\"")
 print(u)
 print(p)
-' "${VAR_DIR}/config.yaml" 2>/dev/null || true)
+' "${CONFIG_PERSIST}" 2>/dev/null || true)
     u=$(printf '%s\n' "$out" | sed -n '1p')
     p=$(printf '%s\n' "$out" | sed -n '2p')
     [ -n "$u" ] && user="$u"
@@ -117,21 +151,71 @@ case "${1:-}" in
   start)
     is_running && gw_running && exit 0
 
-    # Config file: prefer persistent copy in VAR_DIR, fallback to bundled default
-    CONFIG_SRC="${VAR_DIR}/config.yaml"
+    # 配置真身在 share（@appcenter 每次升级都被整体删除，1.4.4-6 实测就把 config.yaml 抹了）
     CONFIG_DST="${APP_DIR}/config/config.yaml"
-    if [ -f "$CONFIG_SRC" ]; then
-      cp "$CONFIG_SRC" "$CONFIG_DST"
-    elif [ -f "$CONFIG_DST" ]; then
-      : # use bundled
-    else
-      echo "FATAL: no config.yaml found" >&2
-      exit 1
+    if [ ! -f "${CONFIG_PERSIST}" ]; then
+      # 从历史位置抢救一份进 share：@appdata 优先，其次包内/上一次遗留的 @appcenter
+      for OLD in "${VAR_DIR}/config.yaml" "${APP_DIR}/config/config.yaml"; do
+        if [ -f "$OLD" ]; then
+          cp "$OLD" "${CONFIG_PERSIST}" 2>/dev/null \
+            && echo "salvaged config.yaml from ${OLD} -> ${CONFIG_PERSIST}" \
+                 >> "${VAR_DIR}/migrate.log" 2>/dev/null || true
+          break
+        fi
+      done
     fi
+    [ -f "${CONFIG_PERSIST}" ] || die "缺少配置文件 ${CONFIG_PERSIST}，请在文件管理器里放到 share 目录 ${SHARE_ROOT}/ 下再启动"
+    cp "${CONFIG_PERSIST}" "$CONFIG_DST" || die "无法写入 ${CONFIG_DST}"
 
-    # Data dir: persistent in VAR_DIR, symlink into app dir
-    ln -sfn "${VAR_DIR}" "${APP_DIR}/data-persist" 2>/dev/null || true
-    mkdir -p "${VAR_DIR}/data"
+    # 二进制必须存在：@appcenter 缺二进制 = 装包时 app/ 里没打进去（实测踩过 38KB 空包）
+    [ -x "${APP_DIR}/emby-in-one" ] || die "缺可执行文件 ${APP_DIR}/emby-in-one，fpk 内 app/ 未包含二进制，请重新打包"
+
+    # 启动副本注入两项：dataDir + server.port（share 里的真身不动，换卷/改端口后自动修正）
+    # Go 侧: cfg.DataDir=="" 时走 defaultDataDir()，非容器环境返回相对 "data" → 落 @appcenter，升级即丢；
+    #        cfg.Server.Port 只从 config.yaml 读（env PORT 它不认，config.go:112 只在 port==0 兜底 8096）。
+    # ⚠️ 端口不锁死的后果实测过：manifest 声明 18096、配置写 8096 → 应用听 8096，
+    #    sidecar(→18096) 与电视端全连不上，桌面面板 502。
+    python3 - "$CONFIG_DST" "$DATA_DIR" "$PORT" <<'PY' 2>/dev/null || true
+import sys
+path, data_dir, port = sys.argv[1], sys.argv[2], sys.argv[3]
+lines = open(path, encoding="utf-8").read().split("\n")
+
+# 1) server 块内锁端口。Go 的自制行解析器：0 缩进行切 section，缩进行归当前 section，
+#    所以只在 server: 之后、下一个 0 缩进键之前动 port；proxies/upstream 里的 port 一概不碰。
+res, in_server, done = [], False, False
+for l in lines:
+    res.append(l)
+    if l.startswith("server:"):
+        in_server, done = True, False
+        continue
+    if not l.strip():
+        continue
+    if len(l) - len(l.lstrip(" ")) == 0:
+        if in_server and not done:
+            res.insert(len(res) - 1, "  port: %s" % port)   # server 块没写 port 就补一行
+            done = True
+        in_server = False
+    elif in_server and not done and l.lstrip().startswith("port:"):
+        res[-1] = "  port: %s" % port
+        done = True
+
+# 2) dataDir 只认 0 缩进：先删所有旧的 0 缩进 dataDir 行，再追加到文件末尾。
+#    ⚠️ 别插在 server: 后面 —— 那样 dataDir 落在 section 之间，人读着像坏文件，
+#       哪天换成真 YAML 解析器就直接炸（1.4.4-8 原写法如此，已纠正）。
+res = [l for l in res if not l.startswith("dataDir:")]
+while res and res[-1] == "":
+    res.pop()
+res.append('dataDir: "%s"' % data_dir)
+open(path, "w", encoding="utf-8").write("\n".join(res) + "\n")
+PY
+
+    # 旧数据从 @appdata 或 @appcenter 一次性迁到 share（幂等：只有旧位置有文件才拷）
+    for OLD in "${VAR_DIR}/data" "${APP_DIR}/data"; do
+      if [ -d "$OLD" ] && [ -n "$(ls -A "$OLD" 2>/dev/null)" ]; then
+        cp -a "$OLD/." "${DATA_DIR}/" 2>/dev/null || true
+        echo "migrated data from ${OLD} -> ${DATA_DIR}" >> "${VAR_DIR}/migrate.log" 2>/dev/null || true
+      fi
+    done
 
     if ! is_running; then
       nohup "${APP_DIR}/emby-in-one" \

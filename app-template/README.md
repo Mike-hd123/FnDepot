@@ -2,15 +2,15 @@
 
 > **归属**：本模板住在 FnDepot 仓库根（与全部应用源码同家），**不在 fnpack.json 商店索引、不打包**；用法知识索引在 Hermes 技能 `fnos-app-package/SKILL.md`。
 > 从 hyatlas / octopus / wechat-on-cloud 现役结构提炼的开箱即用模板。
-> 复制本目录 → 全局替换占位符 `<appname>` / `<上游版本>-<本地版本号>` / `<PORT>` / `<显示名>` / `<上游org>/<上游repo>` → 按 build.sh 注释填应用内容 → 打包。
+> 复制本目录 → 全局替换占位符 `<appname>` / `<share名>`（= `config/resource` 里 `data-share.shares[].name`，四个脚本与 resource 必须一致）/ `<上游版本>-<本地版本号>` / `<PORT>` / `<显示名>` / `<上游org>/<上游repo>` → 按 build.sh 注释填应用内容 → 打包。
 
 ## 目录结构
 ```
 app-template/
 ├── manifest              # INI 元信息（改 build.sh 会替换 version 占位符）
 ├── config/
-│   ├── privilege         # run-as: user（默认非root运行）
-│   └── resource          # 空 {}（原生无 docker）
+│   ├── privilege         # run-as: package（官方唯一推荐值；user 官方零命中）
+│   └── resource          # data-share 声明 ← 数据落 share 的唯一入口
 ├── ui/
 │   └── config            # 桌面入口 .url iframe（TAG 协议自适应，禁硬编码 http）
 ├── wizard/
@@ -42,7 +42,13 @@ fnOS 官方机制，用户点卸载时会弹向导选「保留数据 / 清除数
 1. `wizard/uninstall` — JSON 声明 UI（字段名**必须是** `wizard_delete_data`，fnOS 系统约定）
 2. `cmd/uninstall_callback` — 读 `$wizard_delete_data`（环境变量，"true"/"false"）；`true` 时删数据目录
 
-`@appdata` 用 `$TRIM_PKGVAR`，`@appshare` 用 `${TRIM_APPDEST_VOL}/@appshare/${TRIM_APPNAME}`，按应用数据落点选。
+`@appdata` 用 `$TRIM_PKGVAR`；**应用数据用 share 两跳解析**（`/var/apps/<app>/shares/<share名>` 软链优先 → `${TRIM_DATA_SHARE_PATHS%%:*}` 首段退化），模板 `cmd/main` 里的 `resolve_share_root` 就是这套，四个脚本各带一份（卸载阶段 `cmd/` 可能已被清，不能 `source`）。
+
+> ⚠️ **不要**用 `dirname "$TRIM_DATA_SHARE_PATHS"` 再拼 share 名：安装阶段 fnOS 给的是**还没落卷的占位路径**（实测 `/vol0/@appshare/<appname>`），拼出来的目录不存在也建不动，`|| true` 一吞就静默 —— 日志写着"落 share 了"，数据实际在别处。
+> ⚠️ 官方文档写 `share/` 单数，实测是 `shares/` 复数，以实测为准。
+> ⚠️ **配置真身也放 share**：`@appcenter` 每次升级被整体替换，实测 Emby 的 `config.yaml` 就是这样被抹掉的。
+
+清除数据时**只删 share 内容**，且要带上隐藏文件：`find "${DATA_ROOT}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +`（`rm -rf "$D"/*` 的通配不匹配 `.` 开头，会留垃圾）。删数据前先 `main stop`，否则进程还在写。
 
 systemd 应用还须清单元（残留旧 unit 与新 app_id 冲突）：
 
@@ -101,7 +107,29 @@ systemctl daemon-reload 2>/dev/null || true
 - [ ] 数据落点实查 `/proc/<pid>/fd` 或逐卷 `ls`，**别信卡 body / worker 自报路径**
 
 ---
+
+## 装 / 升级通道（实测，别再试错）
+
+| 通道 | 首装 | 升级已装应用 | 备注 |
+|---|---|---|---|
+| 应用中心 Web「手动安装」 | ✅ | ✅ **唯一原位升级正道** | 浏览器上传，无路径权限问题 |
+| `appcenter-cli install-fpk <fpk>`（需 sudo） | ✅ | ❌ **空操作**，只回 `is installed`，版本不动 | 官方文档说支持升级，实测不升 |
+| `trim-cli app install-fpk --remote-path` | ✅ | ❌ `code 10236` | `--dry-run` 却显示 `canUpgrade: true`，别信 |
+| `trim-cli app update` | — | ❌ 只给商店（cloud 源）应用用 | 第三方本地 fpk 无 sourceID |
+
+两条硬坑：
+1. **fpk 所在路径必须 app-center 服务可读**。`/vol2/1000/download` 是 `drwx------ mike:Users`，CLI 走服务端读文件会失败 → 先 `cp` 到可读的 `/volN/...` 路径（trim-cli 还硬性要求 `/vol{v}/` 开头，`/tmp` 不给用）。
+2. **生命周期脚本里的失败要说出来**：写 `${TRIM_TEMP_LOGFILE}` 才会显示在应用中心界面（`echo "FATAL: ..." > "$TRIM_TEMP_LOGFILE"`），只 `>&2` 用户在面板上看不见，只会看到"启动又自停"。
+
+## 打包脚本的三条硬闸门（模板 build.sh 已内置）
+1. `find . -name '*.bak*'` 非空 → FATAL。备份文件会被 fnpack 整份塞进 app.tgz 上了机（实测装机后 `cmd/*.bak_20261014_*` 3 个）。备份请放仓库外，别放 `<app>/` 目录内。
+2. `app/<主程序>` 必须存在且 > 1MB。漏编译 → 几十 KB 空包，装上就是瘫的（实测 38KB fpk）。
+3. 包内 `manifest` 的 version 必须等于 build.sh 的 `VERSION`；`app.tgz` 内必须能列出主程序名。
+   ⚠️ 写自检时**别用 `tar | grep -q`**：`grep -q` 命中即退管道，`tar` 收 SIGPIPE(141)，`set -o pipefail` 下整条被判失败 → 误报"缺文件"。先把列表取进变量再 `printf '%s\n' "$VAR" | grep -q`。
+
+---
 ## 上游对齐（每个 fpk 都要标注）
+
 - manifest `maintainer`+`maintainer_url` = **上游作者**（Mike 不是开发者）
 - manifest `distributor`+`distributor_url` = Mike（`https://github.com/Mike-hd123`）
 - version = 上游最新 release tag（`curl -s https://api.github.com/repos/<org>/<repo>/tags?per_page=3` 自查）
