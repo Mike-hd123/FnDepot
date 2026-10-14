@@ -15,7 +15,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-OUT="${1:-/vol2/1000/download/octopus-0.13.10-1-x86.fpk}"
+OUT="${1:-/vol2/1000/download/octopus-0.13.12-1-x86.fpk}"
 SKEL="${2:-}"
 STAGING="$(mktemp -d)"
 trap 'rm -rf "$STAGING"' EXIT
@@ -50,6 +50,25 @@ sed -i -E '/^checksum[[:space:]]*=/d' manifest
 grep -E '^version' manifest
 test "$(grep -cE '^checksum' manifest)" -eq 0
 
+echo "=== 3b/5 同步 fnOS 打包层 cmd/ui/wizard（关键：漏了就静默沿用骨架旧脚本） ==="
+# ⚠️ 2026-10-14 踩坑：本脚本原先只换二进制+sidecar+manifest，**不复制 fnos/cmd**，
+#    于是 cmd/main 里的改动被骨架里的旧版本静默顶掉 —— 新功能「根本没打进包」而构建全绿，
+#    自检也只查 cmd/main 存在与否、不查内容。故此处显式同步整层并用 diff 复核内容。
+for d in cmd ui wizard; do
+  [ -d "$HERE/fnos/$d" ] || continue
+  rm -rf "./$d"
+  cp -a "$HERE/fnos/$d" "./$d"
+  echo "synced $d/ <- fnos/$d/"
+done
+# 逐文件内容复核（存在性检查挡不住旧内容，必须比内容）
+for f in cmd/main cmd/install_callback cmd/upgrade_callback cmd/uninstall_callback \
+         cmd/config_init cmd/config_callback cmd/install_init cmd/upgrade_init cmd/uninstall_init \
+         ui/config; do
+  [ -f "$HERE/fnos/$f" ] || continue
+  cmp -s "$HERE/fnos/$f" "./$f" || { echo "FAIL: $f 与 fnos/$f 内容不一致" >&2; exit 1; }
+done
+echo "cmd/ui 内容复核通过"
+
 echo "=== 4/5 fnpack build（必须显式成功；stdout/stderr 不吞，防失败沿用旧包）==="
 rm -f octopus.fpk
 LOG="$STAGING/fnpack.log"
@@ -80,6 +99,25 @@ CONF_C=$(grep -cxE 'config' <<<"$INNER_LIST")
 [ "$CONF_C" -eq 1 ] || { echo "FAIL: app.tgz 内 config 应为 1 份，实际 $CONF_C" >&2; FAIL=1; }
 tar -xzf inner.tgz -O octopus > bin.tmp
 [ "$(sha256sum bin.tmp | cut -d' ' -f1)" = "$BIN_SHA" ] || { echo "FAIL: 内层二进制 sha 不符" >&2; FAIL=1; }
+
+# —— 内容级自检：包里 cmd/main 必须与源文件逐字节一致 ——
+# （只查「存在」挡不住骨架旧脚本被沿用，2026-10-14 实测翻车。必须比内容。）
+tar -xzf octopus.fpk cmd/main -O > cmdmain.tmp 2>/dev/null || true
+if [ ! -s cmdmain.tmp ]; then
+  echo "FAIL: 包内取不到 cmd/main" >&2; FAIL=1
+elif ! cmp -s cmdmain.tmp "$HERE/fnos/cmd/main"; then
+  echo "FAIL: 包内 cmd/main 与 fnos/cmd/main 不一致（骨架旧脚本被沿用？）" >&2; FAIL=1
+else
+  echo "cmd/main 内容核对通过 ($(stat -c '%s' cmdmain.tmp) B)"
+fi
+
+# 监听开关必须真的在包里（回归护栏：这个功能曾被静默丢弃过一次）
+if ! grep -q 'OCTOPUS_LISTEN_HOST' cmdmain.tmp; then
+  echo "FAIL: 包内 cmd/main 缺 OCTOPUS_LISTEN_HOST 监听开关逻辑" >&2; FAIL=1
+else
+  echo "监听开关存在性校验通过"
+fi
+
 [ "$FAIL" = 0 ] || { echo "STRUCTURE CHECK FAILED" >&2; exit 1; }
 
 mkdir -p "$(dirname "$OUT")"

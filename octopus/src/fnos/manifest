@@ -1,6 +1,6 @@
 appname                    = octopus
-version                    = 0.13.10-1
-desc                       = One Hub All LLMs For You —— LLM API 聚合网关，Go 单二进制，SQLite 存储，原生宿主机运行。上游 v0.13.10（数据库迁移修复 + 新增 passwd 改密命令）+ 本地 gateway sidecar 剥前缀 HTTP 反代（SSE 流式透传 + 动态 cache-bust：版本参数取 entry chunk 文件名，前端升级缓存必失效），手机端 /app/octopus 全链路可路由。
+version                    = 0.13.12-1
+desc                       = One Hub All LLMs For You —— LLM API 聚合网关，Go 单二进制，SQLite 存储，原生宿主机运行。上游 v0.13.12（流式响应空启动事件暂存重试 + 请求头 UA 透传修复）+ 本地 gateway sidecar 剥前缀 HTTP 反代（SSE 流式透传 + 动态 cache-bust），手机端 /app/octopus 全链路可路由；新增监听地址开关，默认只听 127.0.0.1，可切 0.0.0.0 供局域网直连。
 display_name               = Octopus
 platform                   = x86
 source                     = thirdparty
@@ -16,4 +16,4 @@ service_port               = 8081
 desktop_uidir              = ui
 desktop_applaunchname      = octopus.panel
 disable_authorization_path = false
-changelog                  = v1（2026-10-08，本地修订号归零重开）：同步上游 v0.13.10 —— 数据库迁移修复(1cdb163) + 新增 passwd 改密命令(8cf04fb) + 分组编辑置顶置底(0538c3e) + 子路径反代支持(bdc9948)。二进制为上游官方 CI 产物原样（octopus-linux-amd64 sha256 fe85cec9，与 Release SHA256SUMS 一致；反解 Version=v0.13.10 / Commit d1a26bd / Built 2026-10-07 16:39:35 +0800）。本地 sidecar 补丁三处加固：(1) cache-bust 由写死 v8 改为运行时取 index.html 的 entry chunk 文件名（如 index-zLPdUAhw.js），上游前端一重建缓存 URL 必然失效，根治「旧标签页引用已不存在的 chunk → 404」；(2) 补齐 app.tgz 内 ui/config（fnOS 统一网关注册 micro_app 入口的必需文件，缺失会导致前端拿到裸 /api/v1/* 路径 404）；(3) 补齐 ui/images/icon-64.png + icon-256.png（商店/桌面图标，网关注册路径为 /app-center-static/serviceicon/octopus/ui/images/icon-{0}.png）。另新增 gw-debug.log 诊断（GATEWAY_DEBUG=0 关闭）。
+changelog                  = v1（2026-10-14，上游 minor 升级按规矩本地补丁号归零重开）：同步上游 v0.13.11 + v0.13.12 两版（本地跳过 0.13.11 直接并到 .12）—— v0.13.11 fd8b3b8 流式响应更严格检查（空启动事件暂存到输出开始或成功结束，期间失败仍可换目标重试，流式耗时口径改为「到启动事件可提交为止」；透传请求补 Cache-Control/Connection 头）；v0.13.12 baa5d65 请求头 UA 透传修复。二进制=上游官方 CI 产物原样（octopus-linux-amd64 sha256 96474a06…，与 Release SHA256SUMS 中 octopus-linux-amd64.zip 条目 fb48a40a… 解出件一致；反解 Version=v0.13.12 / Commit 3d1ff13 / Built 2026-10-14 11:22:42 +0800）。两版均为增量，internal/conf 与 main.go 逐字节未变（无 breaking change，无配置键变更），src 全量核对无残留差异。★新增监听地址开关：面对「fnOS 网关注入 host=127.0.0.1 导致只听回环、局域网客户端连不上（历史靠 socat 桥 8082 绕路）」，把监听地址交给用户显式选择 —— 默认 127.0.0.1（只服务本机 fnOS 网关 sidecar + DSH 本机模型出口，暴露面最小），可切 0.0.0.0（飞牛 app / 局域网客户端直连 8081）。开关直接复用上游原生键 OCTOPUS_SERVER_HOST（上游 internal/conf/config.go 用 viper.AutomaticEnv + SetEnvPrefix("octopus") + EnvKeyReplacer(".","_")，server.host → OCTOPUS_SERVER_HOST，优先级高于 data/config.json），不发明第二层配置。落点：数据目录 /vol1/@appdata/octopus/listen.conf（与 data.db 同级，升级/重装不丢，首次启动自动落带注释样例），白名单只认 127.0.0.1 / 0.0.0.0，非法值告警回落默认；亦可用环境变量 OCTOPUS_LISTEN_HOST 临时覆盖。实测（v0.13.12 二进制 + 真实 cmd/main）三态绑定与预期一致：默认→127.0.0.1:8081、开关 0.0.0.0→*:8081、改回→127.0.0.1:8081。保留本地 sidecar 补丁（API 前缀改写默认关、运行时 entry chunk cache-bust、gw-debug.log 诊断）。

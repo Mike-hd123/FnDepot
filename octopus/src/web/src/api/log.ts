@@ -64,7 +64,7 @@ export function useLogs() {
     const [error, setError] = useState<Error | null>(null);
 
     useEffect(() => {
-        const source = new EventSource('/api/v1/log/overview/stream', { withCredentials: true });
+        const source = new EventSource('./api/v1/log/overview/stream', { withCredentials: true });
 
         source.onopen = () => {
             setError(null);

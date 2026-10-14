@@ -19,8 +19,62 @@ VAR_DIR="${DATA_DIR}"
 LOG_FILE="${VAR_DIR}/panel.log"
 PID_FILE="${VAR_DIR}/panel.pid"
 GW_PID_FILE="${VAR_DIR}/gateway.pid"
+# 监听地址开关的持久配置文件（落 @appdata，与 data.db 同级 → 升级/重装不丢）
+HOST_CONF="${VAR_DIR}/listen.conf"
 
 mkdir -p "${VAR_DIR}"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 监听地址开关（v0.13.12-1 新增）
+#
+# 背景：fnOS 统一网关注入 host=127.0.0.1，若照搬会让 octopus 只听回环，
+#       局域网客户端（手机/电视/其它机器）连不上 8081，历史上只能用 socat
+#       桥到 8082 绕路。本开关把「听哪儿」交给用户显式选择。
+#
+# 默认 127.0.0.1：只服务本机消费方 —— fnOS 网关 sidecar（app.sock → 8081）
+#   与 DSH/Hermes 本机模型出口。暴露面最小，NAS 在公网/大内网也安全。
+# 切 0.0.0.0：局域网直连 8081，供飞牛 app / 局域网客户端 / 其它设备直连。
+#
+# 上游键就是 OCTOPUS_SERVER_HOST（本包不发明第二层配置）：
+#   upstream internal/conf/config.go 用 viper.AutomaticEnv() + SetEnvPrefix("octopus")
+#   + EnvKeyReplacer(".", "_")，故 server.host → OCTOPUS_SERVER_HOST，优先级高于
+#   data/config.json 里的 server.host。实测（v0.13.12 二进制）：
+#     不设        → LISTEN *:PORT          (上游默认 server.host=0.0.0.0)
+#     设 127.0.0.1→ LISTEN 127.0.0.1:PORT
+#     设 0.0.0.0  → LISTEN *:PORT
+#
+# 打开 0.0.0.0 的两种方式（任选其一，改完重启应用生效）：
+#   A) 持久开关（推荐，升级不丢）：编辑 ${VAR_DIR}/listen.conf
+#        改为 OCTOPUS_LISTEN_HOST=0.0.0.0
+#   B) 一次性环境变量：OCTOPUS_LISTEN_HOST=0.0.0.0（覆盖 config 文件，不落盘）
+# 取值只接受 127.0.0.1 / 0.0.0.0 两个白名单值，其它一律回落默认（防手滑写错致监听失败/暴露）。
+# ─────────────────────────────────────────────────────────────────────────────
+DEFAULT_LISTEN_HOST="127.0.0.1"
+
+resolve_listen_host() {
+  local host="${OCTOPUS_LISTEN_HOST:-}"
+  # 未由环境变量指定时读持久配置文件（格式：OCTOPUS_LISTEN_HOST=<值>，允许 # 注释与空白行）
+  if [ -z "${host}" ] && [ -f "${HOST_CONF}" ]; then
+    host="$(sed -n 's/^[[:space:]]*OCTOPUS_LISTEN_HOST[[:space:]]*=[[:space:]]*\([^[:space:]#]*\).*/\1/p' "${HOST_CONF}" | tail -1)"
+  fi
+  case "${host}" in
+    0.0.0.0|127.0.0.1) printf '%s' "${host}" ;;
+    "")                printf '%s' "${DEFAULT_LISTEN_HOST}" ;;
+    *)                 printf '%s' "${DEFAULT_LISTEN_HOST}"; \
+                       echo "WARN: OCTOPUS_LISTEN_HOST='${host}' 不在白名单(127.0.0.1/0.0.0.0)，回落 ${DEFAULT_LISTEN_HOST}" >&2 ;;
+  esac
+}
+
+# 首次启动落一份带注释的样例，用户照着改即可
+seed_listen_conf() {
+  [ -f "${HOST_CONF}" ] && return 0
+  cat > "${HOST_CONF}" <<'EOF'
+# octopus 监听地址开关（改完重启应用生效）
+# 127.0.0.1 = 只服务本机（fnOS 网关 sidecar + DSH 本机模型出口），默认，最安全
+# 0.0.0.0   = 同时监听局域网（飞牛 app / 手机 / 其它设备可直连 8081）
+OCTOPUS_LISTEN_HOST=127.0.0.1
+EOF
+}
 
 is_running() {
   if [ -f "$PID_FILE" ]; then
@@ -63,8 +117,11 @@ stop_gw() {
 case "${1:-}" in
   start)
     is_running && gw_running && exit 0
+    seed_listen_conf
+    LISTEN_HOST="$(resolve_listen_host)"
     export OCTOPUS_SERVER_PORT="8081"
-    export OCTOPUS_SERVER_HOST="127.0.0.1"
+    # 默认 127.0.0.1（只服务本机 sidecar/DSH），listen.conf 或 OCTOPUS_LISTEN_HOST 可切 0.0.0.0
+    export OCTOPUS_SERVER_HOST="${LISTEN_HOST}"
     export OCTOPUS_DATABASE_PATH="${DATA_DIR}/data.db"
     export OCTOPUS_LOG_LEVEL="info"
     mkdir -p "${DATA_DIR}"
@@ -99,7 +156,10 @@ case "${1:-}" in
       fi
     fi
 
-    echo "Octopus started on port 8081 (gateway socket: ${APP_DIR}/app.sock, data: ${DATA_DIR})"
+    echo "Octopus started on ${LISTEN_HOST}:8081 (gateway socket: ${APP_DIR}/app.sock, data: ${DATA_DIR}, listen.conf: ${HOST_CONF})"
+    if [ "${LISTEN_HOST}" != "0.0.0.0" ]; then
+      echo "提示：仅本机可连（${LISTEN_HOST}）。需局域网直连请把 ${HOST_CONF} 改为 OCTOPUS_LISTEN_HOST=0.0.0.0 后重启应用。"
+    fi
     ;;
   stop)
     stop_gw

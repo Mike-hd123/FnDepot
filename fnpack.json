@@ -138,7 +138,7 @@
     },
     "octopus": {
       "display_name": "Octopus 网关",
-      "desc": "LLM API 聚合网关：Go 单二进制 + 内嵌前端 + SQLite 存储，多渠道/多模型管理，支持单渠道多 Key，原生宿主机运行，端口 8081。上游项目：bestruirui/octopus（v0.13.9）。",
+      "desc": "LLM API 聚合网关：Go 单二进制 + 内嵌前端 + SQLite 存储，多渠道/多模型管理，支持单渠道多 Key，原生宿主机运行，端口 8081。默认只监听 127.0.0.1（可经 listen.conf 切 0.0.0.0 供局域网直连）。上游项目：bestruirui/octopus（v0.13.12）。",
       "platform": [
         "x86"
       ],
@@ -184,6 +184,17 @@
               "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.10.08/octopus-0.13.10-1-x86.fpk",
               "sha256": "dd001e4565ec17400f6dd05b68a0c7f99bea005fe8652fa150e7370cc7ae41fd",
               "size": 22666365
+            }
+          }
+        },
+        "0.13.12-1": {
+          "changelog": "v0.13.12-1（2026-10-14，上游 minor 升级按规矩本地补丁号归零重开）：同步上游 v0.13.11 + v0.13.12 两版（本地跳过 0.13.11 直接并到 .12）。v0.13.11 fd8b3b8 流式响应更严格检查——空启动事件暂存到输出开始或成功结束、期间失败仍可换目标重试，流式耗时口径改为「到启动事件可提交为止」，同协议透传补 Cache-Control/Connection 头；v0.13.12 baa5d65 请求头 UA 透传修复。二进制=上游官方 CI 产物原样（octopus-linux-amd64 sha256 96474a06…，与 Release SHA256SUMS 中 octopus-linux-amd64.zip 条目 fb48a40a… 解出件一致；反解 Version=v0.13.12 / Commit 3d1ff13 / Built 2026-10-14 11:22:42 +0800）。两版均为增量，internal/conf 与 main.go 逐字节未变（无 breaking change、无配置键变更），src 全量核对无残留差异。★新增监听地址开关：面对「fnOS 网关注入 host=127.0.0.1 导致只听回环、局域网客户端连不上（历史靠 socat 桥 8082 绕路）」，把监听地址交给用户显式选择——默认 127.0.0.1（只服务本机 fnOS 网关 sidecar + DSH 本机模型出口，暴露面最小），可切 0.0.0.0（飞牛 app / 局域网客户端直连 8081）。开关直接复用上游原生键 OCTOPUS_SERVER_HOST（上游 internal/conf/config.go 用 viper.AutomaticEnv + SetEnvPrefix(\"octopus\") + EnvKeyReplacer(\".\",\"_\")，server.host → OCTOPUS_SERVER_HOST，优先级高于 data/config.json），不发明第二层配置。落点 /vol1/@appdata/octopus/listen.conf（与 data.db 同级，升级/重装不丢，首次启动自动落带注释样例），白名单只认 127.0.0.1 / 0.0.0.0，非法值告警回落默认；亦可用环境变量 OCTOPUS_LISTEN_HOST 临时覆盖。实测（包内真实二进制 + 包内真实 cmd/main）四态全绿：默认→127.0.0.1:8081、listen.conf=0.0.0.0→*:8081、改回→127.0.0.1:8081、env 覆盖→*:8081。⚠️同时修复打包脚本严重 bug：build-fpk.sh 原先不复制 fnos/cmd/，骨架旧 cmd/main 被静默沿用导致新功能根本没打进包而构建全绿（本开关首包即因此丢失）；已新增整层同步 + 逐文件 cmp 内容复核 + 内容级自检与开关回归护栏。保留本地 sidecar 补丁（API 前缀改写默认关、运行时 entry chunk cache-bust、gw-debug.log 诊断）。",
+          "updated_at": "2026-10-14T22:20:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.10.14/octopus-0.13.12-1-x86.fpk",
+              "sha256": "96ad6c70c8656cf7ced719b821021de712c207a97ec989eefd95c9212aae39db",
+              "size": 22683210
             }
           }
         }

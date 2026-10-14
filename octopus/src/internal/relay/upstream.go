@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +19,7 @@ import (
 	"github.com/looplj/axonhub/llm/transformer/anthropic"
 	"github.com/looplj/axonhub/llm/transformer/openai"
 	"github.com/looplj/axonhub/llm/transformer/openai/responses"
+	"github.com/tidwall/gjson"
 )
 
 // upstreamResponse 是已验证但尚未写给客户端的上游成功响应; events 为 nil 表示非流式响应。
@@ -99,7 +101,7 @@ func sendPassthrough(ctx context.Context, format llm.APIFormat, raw *httpclient.
 	return &upstreamResponse{body: slices.Clone(response.Body), header: response.Headers.Clone(), usage: parsed.Usage}, nil
 }
 
-// sendPassthroughStream 发起同协议流式请求并预读首个有效事件, 首个事件通过验证才算本轮取得可提交响应。
+// sendPassthroughStream 发起同协议流式请求; 空启动事件暂存到输出开始或成功结束, 期间失败仍可重试。
 func sendPassthroughStream(ctx context.Context, format llm.APIFormat, request *httpclient.Request, client *http.Client) (*upstreamResponse, error) {
 	rawRequest, err := httpclient.BuildHttpRequest(ctx, request)
 	if err != nil {
@@ -107,6 +109,8 @@ func sendPassthroughStream(ctx context.Context, format llm.APIFormat, request *h
 	}
 	// 客户端的 Accept 属于库自管头不会透传, 需显式声明才能让上游按 SSE 返回。
 	rawRequest.Header.Set("Accept", "text/event-stream")
+	rawRequest.Header.Set("Cache-Control", "no-cache")
+	rawRequest.Header.Set("Connection", "keep-alive")
 
 	response, err := client.Do(rawRequest)
 	if err != nil {
@@ -122,6 +126,7 @@ func sendPassthroughStream(ctx context.Context, format llm.APIFormat, request *h
 	}
 
 	events := httpclient.NewDefaultSSEDecoder(ctx, response.Body)
+	var buffered []*httpclient.StreamEvent // 尚未提交的原始启动事件, 确认输出后按原顺序回放。
 	for events.Next() {
 		event := events.Current()
 		if event == nil || len(event.Data) == 0 {
@@ -132,6 +137,101 @@ func sendPassthroughStream(ctx context.Context, format llm.APIFormat, request *h
 			events.Close()
 			return nil, fmt.Errorf("%w: %s", err, event.Data)
 		}
+		startup := false // 仅确认不含输出的启动事件继续暂存, 其余事件保持透传。
+		if !last {
+			switch format {
+			case llm.APIFormatOpenAIChatCompletion:
+				parsed := gjson.ParseBytes(event.Data)
+				startup = parsed.Get("choices").IsArray() && len(parsed.Get("citations").Array()) == 0
+				for _, choice := range parsed.Get("choices").Array() {
+					if !startup || choice.Get("finish_reason").String() != "" || choice.Get("message").Type != gjson.Null ||
+						len(choice.Get("logprobs.content").Array()) > 0 || len(choice.Get("logprobs.refusal").Array()) > 0 {
+						startup = false
+						break
+					}
+					// role 仅为启动信息; 其他非空增量均提交, 保留工具, 音频及扩展字段的透传。
+					choice.Get("delta").ForEach(func(key, value gjson.Result) bool {
+						if key.Str == "role" {
+							return true
+						}
+						startup = value.Type == gjson.Null || (value.Type == gjson.String && value.Str == "") ||
+							(value.IsArray() && len(value.Array()) == 0)
+						return startup
+					})
+					if !startup {
+						break
+					}
+				}
+			case llm.APIFormatOpenAIResponse:
+				var parsed responses.StreamEvent
+				if err := json.Unmarshal(event.Data, &parsed); err != nil {
+					events.Close()
+					return nil, fmt.Errorf("decode responses stream event: %w", err)
+				}
+				switch parsed.Type {
+				case responses.StreamEventTypeResponseCreated, responses.StreamEventTypeResponseInProgress, responses.StreamEventTypeResponseQueued:
+					startup = parsed.Response == nil || len(parsed.Response.Output) == 0
+				case responses.StreamEventTypeOutputItemAdded:
+					// 工具调用从 item.added 起即属于输出; 这里只暂存空的消息和推理占位。
+					if parsed.Item != nil && (parsed.Item.Type == "message" || parsed.Item.Type == "reasoning") {
+						startup = (parsed.Item.Content == nil ||
+							((parsed.Item.Content.Text == nil || *parsed.Item.Content.Text == "") && len(parsed.Item.Content.Items) == 0)) &&
+							len(parsed.Item.Summary) == 0 && parsed.Item.ReasoningContent == nil &&
+							(parsed.Item.EncryptedContent == nil || *parsed.Item.EncryptedContent == "")
+					}
+				case responses.StreamEventTypeContentPartAdded:
+					startup = parsed.Part != nil &&
+						(parsed.Part.Type == "output_text" || parsed.Part.Type == "reasoning_text" || parsed.Part.Type == "refusal") &&
+						parsed.Part.Text == "" && (parsed.Part.Refusal == nil || *parsed.Part.Refusal == "")
+				case responses.StreamEventTypeReasoningSummaryPartAdded:
+					startup = parsed.Part != nil && parsed.Part.Text == ""
+				case responses.StreamEventTypeOutputTextDelta, responses.StreamEventTypeReasoningSummaryTextDelta, responses.StreamEventTypeReasoningTextDelta, "response.refusal.delta":
+					startup = parsed.Delta == ""
+				}
+			case llm.APIFormatAnthropicMessage:
+				var parsed anthropic.StreamEvent
+				if err := json.Unmarshal(event.Data, &parsed); err != nil {
+					events.Close()
+					return nil, fmt.Errorf("decode anthropic stream event: %w", err)
+				}
+				switch parsed.Type {
+				case "message_start":
+					startup = parsed.Message == nil || len(parsed.Message.Content) == 0
+				case "ping", "content_block_stop":
+					startup = true
+				case "content_block_start":
+					// 工具和其他内容块立即提交, 仅空文本或空思考块属于启动占位。
+					if parsed.ContentBlock != nil && (parsed.ContentBlock.Type == "text" || parsed.ContentBlock.Type == "thinking") {
+						startup = (parsed.ContentBlock.Text == nil || *parsed.ContentBlock.Text == "") &&
+							(parsed.ContentBlock.Thinking == nil || *parsed.ContentBlock.Thinking == "") &&
+							(parsed.ContentBlock.Signature == nil || *parsed.ContentBlock.Signature == "") && len(parsed.ContentBlock.Citations) == 0
+					}
+				case "content_block_delta":
+					if parsed.Delta != nil && parsed.Delta.Type != nil {
+						switch *parsed.Delta.Type {
+						case "text_delta":
+							startup = parsed.Delta.Text == nil || *parsed.Delta.Text == ""
+						case "thinking_delta":
+							startup = parsed.Delta.Thinking == nil || *parsed.Delta.Thinking == ""
+						case "signature_delta":
+							startup = parsed.Delta.Signature == nil || *parsed.Delta.Signature == ""
+						case "input_json_delta":
+							startup = parsed.Delta.PartialJSON == nil || *parsed.Delta.PartialJSON == ""
+						}
+					}
+				case "message_delta":
+					startup = parsed.Delta == nil || parsed.Delta.StopReason == nil || *parsed.Delta.StopReason == ""
+				}
+			}
+		}
+		if startup {
+			buffered = append(buffered, event)
+			continue
+		}
+		if len(buffered) > 0 {
+			buffered = append(buffered, event)
+			return &upstreamResponse{header: response.Header.Clone(), events: streams.PrependStream(events, buffered[1:]...), first: buffered[0]}, nil
+		}
 		return &upstreamResponse{header: response.Header.Clone(), events: events, first: event, last: last}, nil
 	}
 
@@ -139,21 +239,29 @@ func sendPassthroughStream(ctx context.Context, format llm.APIFormat, request *h
 	events.Close()
 	if err == nil {
 		err = errors.New("upstream stream ended before first event")
+		if len(buffered) > 0 {
+			err = llm.ErrStreamIncomplete
+		}
 	}
 	return nil, err
 }
 
 // conversionMiddleware 保存跨协议 pipeline 单次调用需要应用和取得的状态。
 type conversionMiddleware struct {
-	pipeline.DummyMiddleware // 提供本次无需处理的其余 pipeline 中间件方法。
-	channel model.Channel // 本轮上游请求使用的渠道配置。
-	format  llm.APIFormat // 上游渠道协议, 用于校验统一响应终态。
-	rawBody []byte        // 上游非流式响应或错误的原始正文。
-	usage   *llm.Usage    // 非流式统一响应中确认的用量。
+	pipeline.DummyMiddleware               // 提供本次无需处理的其余 pipeline 中间件方法。
+	channel                  model.Channel // 本轮上游请求使用的渠道配置。
+	format                   llm.APIFormat // 上游渠道协议, 用于校验统一响应终态。
+	userAgent                string        // 客户端原始 User-Agent, 转换后的请求不保留它, 需在出站请求上重建。
+	rawBody                  []byte        // 上游非流式响应或错误的原始正文。
+	usage                    *llm.Usage    // 非流式统一响应中确认的用量。
+	committed                bool          // 流式结果已移交消费方, 停止预读拦截并由消费方归还连接。
 }
 
-// OnOutboundRawRequest 在转换后的上游请求上应用渠道参数和自定义 Header。
+// OnOutboundRawRequest 在转换后的上游请求上重建客户端 User-Agent, 并应用渠道参数和自定义 Header。
 func (m *conversionMiddleware) OnOutboundRawRequest(_ context.Context, request *httpclient.Request) (*httpclient.Request, error) {
+	if m.userAgent != "" {
+		request.Headers.Set("User-Agent", m.userAgent)
+	}
 	return request, applyChannelConfig(m.channel, request)
 }
 
@@ -169,6 +277,25 @@ func (m *conversionMiddleware) OnOutboundRawError(_ context.Context, err error) 
 func (m *conversionMiddleware) OnOutboundRawResponse(_ context.Context, response *httpclient.Response) (*httpclient.Response, error) {
 	m.rawBody = slices.Clone(response.Body)
 	return response, nil
+}
+
+// OnOutboundRawStream 在预读期间拦截 Responses 的失败终态, 避免其被转换成普通结束原因。
+func (m *conversionMiddleware) OnOutboundRawStream(_ context.Context, stream streams.Stream[*httpclient.StreamEvent]) (streams.Stream[*httpclient.StreamEvent], error) {
+	if m.format != llm.APIFormatOpenAIResponse {
+		return stream, nil
+	}
+	return streams.MapErr(stream, func(event *httpclient.StreamEvent) (*httpclient.StreamEvent, error) {
+		if m.committed || event == nil {
+			return event, nil
+		}
+		switch responses.StreamEventType(gjson.GetBytes(event.Data, "type").String()) {
+		case responses.StreamEventTypeResponseCompleted, responses.StreamEventTypeResponseFailed, responses.StreamEventTypeResponseIncomplete, responses.StreamEventTypeResponseCancelled:
+			if _, err := inspectStreamEvent(m.format, event); err != nil {
+				return nil, fmt.Errorf("%w: %s", err, event.Data)
+			}
+		}
+		return event, nil
+	}), nil
 }
 
 // OnOutboundLlmResponse 取得非流式用量并在回转客户端协议前校验上游终态。
@@ -196,19 +323,20 @@ func sendConverted(ctx context.Context, format llm.APIFormat, raw *httpclient.Re
 	if err != nil {
 		return nil, err
 	}
+	middleware := &conversionMiddleware{channel: channel, format: outbound.APIFormat(), userAgent: raw.Headers.Get("User-Agent")}
 	// 流式响应要等消费方读完才能归还连接, 故只在提交流式结果那一处移交, 其余出口一律就地归还。
-	committed := false
 	if closeIdle != nil {
 		defer func() {
-			if !committed {
+			if !middleware.committed {
 				closeIdle()
 			}
 		}()
 	}
-	middleware := &conversionMiddleware{channel: channel, format: outbound.APIFormat()}
 	processor := pipeline.NewFactory(httpclient.NewHttpClientWithClient(httpClient)).Pipeline(
 		inbound,
 		outbound,
+		// 正重试预算启用库的输出前预读; 当前出站转换器未实现库的重试接口, 失败仍交回 Forward 重试。
+		pipeline.WithRetry(1, 0, 0),
 		pipeline.WithMiddlewares(middleware),
 	)
 	result, err := processor.Process(ctx, raw)
@@ -233,7 +361,7 @@ func sendConverted(ctx context.Context, format llm.APIFormat, raw *httpclient.Re
 			events.Close()
 			return nil, fmt.Errorf("%w: %s", err, event.Data)
 		}
-		committed = true
+		middleware.committed = true
 		return &upstreamResponse{events: events, first: event, last: last, closeIdle: closeIdle}, nil
 	}
 
