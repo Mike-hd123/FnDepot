@@ -1,7 +1,8 @@
 appname               = ezbookkeeping
-version               = 2.0.1-1
+version               = 2.0.1-2
 display_name          = 记账
-desc                  = 轻量自托管个人记账：多账本/报表洞察/账单批量导入(Excel·微信·支付宝·京东)/原生 MCP 与 API 接口。上游 v2.0.1（v2.0.x 系：Monaco 编辑器/洞察报表自定义图表/信用卡额度/S3 对象存储/全新仪表盘；2.0.1 收紧 API token 权限——不可再创建/吊销 token、清数据、改资料、配置 2FA/外部认证/同步，另有移动端加记账按钮与定时模板时区修复）；延续 v1.6.1-14 本地定制：index 纯跳转页(恢复上游原版 SPA 入口)、sidecar desktop/mobile.html 静态兜底 + 剥前缀反代 + gzip、端口 8580、数据目录钉死 @appdata/ezbookkeeping。
+desc                  = 轻量自托管个人记账：多账本/报表洞察/账单批量导入(Excel·微信·支付宝·京东)/原生 MCP 与 API 接口。上游 v2.0.1（v2.0.x 系：Monaco 编辑器/洞察报表自定义图表/信用卡额度/S3 对象存储/全新仪表盘；2.0.1 收紧 API token 权限——不可再创建/吊销 token、清数据、改资料、配置 2FA/外部认证/同步，另有移动端加记账按钮与定时模板时区修复）；延续 v1.6.1-14 本地定制：index 纯跳转页(恢复上游原版 SPA 入口)、sidecar desktop/mobile.html 静态兜底 + 剥前缀反代 + gzip、端口 8580；2.0.1-2 起数据与配置真身落 data-share「ezbookkeeping」（应用文件），@appdata 只留日志/PID/临时运行文件。
+changelog             = 2.0.1-2（2026-10-15）：share 合规修复。①数据与配置真身全面改落 data-share「ezbookkeeping」（文件管理器 → 应用文件），db/附件 storage/日志/ezbookkeeping.ini 都在共享目录里，升级/重装不丢；@appdata 只留 boot.log 与 PID 等运行态文件。②config/resource 声明 data-share（此前是空 {}），四个生命周期脚本各内联一份 resolve_share_root 两跳解析（先 /var/apps/<app>/shares/<name> 软链，退化 TRIM_DATA_SHARE_PATHS 首段），不再用 dirname 拼未落卷占位路径。③新增幂等不覆盖迁移：老 @appdata 的 data/log/storage 有东西且 share 目标为空时才 cp -a，源目录保留不删，日志写 migrate.log——已在 share 的数据不会被重复搬运；升级与首装两条通道都做，处理跨卷历史遗留（vol1/vol2 @appdata 并存）。④卸载新增双选向导 wizard/uninstall（字段 wizard_delete_data，默认保留），选清除时先停进程再 find -mindepth 1 清空 share 内容（含隐藏文件）并清 @appdata。⑤安装/升级失败信息写 TRIM_TEMP_LOGFILE，应用中心界面可见。2.0.1-1：上游 v2.0.1 对齐（API token 权限收紧、移动端加记账按钮、定时模板时区修复）。
 platform              = x86
 source                = thirdparty
 maintainer            = MaysWind

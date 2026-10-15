@@ -1,28 +1,49 @@
 #!/bin/bash
+# cmd/install_callback — 首装：建 share 数据骨架 + 幂等迁移历史数据 + 校验包内文件
+# share 解析规则必须与 cmd/main 完全一致（每个脚本自带一份，卸载阶段 cmd/ 可能已被清，不能 source）
+#
+# 0.13.12-2 合规修复：数据真身（data.db / config.json / listen.conf）落 data-share。
+#   @appdata（TRIM_PKGVAR）只留日志/临时文件；share 才是用户可见、升级不丢的位置。
 set -u
+mkdir -p "${TRIM_PKGVAR:-/var/apps/octopus/var}" 2>/dev/null || true
 LOG="${TRIM_PKGVAR:-/var/apps/octopus/var}/install.log"
-mkdir -p "${TRIM_PKGVAR:-/var/apps/octopus/var}"
-echo "===== install_callback $(date) =====" > "$LOG"
+echo "===== install_callback $(date) =====" >> "$LOG"
+
+die() {
+  echo "FATAL: $1" >&2
+  [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "FATAL: $1" > "${TRIM_TEMP_LOGFILE}"
+  exit 1
+}
+
+resolve_share_root() {
+  local _app="$1" _name="$2" _paths="$3" _c
+  for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+    [ -n "${_c}" ] || continue
+    case "${_c}" in /vol0/*) continue ;; esac
+    if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+      printf '%s\n' "${_c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+SHARE_ROOT="$(resolve_share_root octopus octopus "${TRIM_DATA_SHARE_PATHS:-}")"
+if [ -z "${SHARE_ROOT}" ]; then
+  echo "FAIL: 没有可用 data-share（TRIM_DATA_SHARE_PATHS=${TRIM_DATA_SHARE_PATHS:-<unset>}）" >> "$LOG"
+  die "data-share 目录不可用，请检查 config/resource 的 data-share 声明"
+fi
+DATA_DIR="${SHARE_ROOT}"
+mkdir -p "${DATA_DIR}" || die "无法创建数据目录 ${DATA_DIR}（share 权限不足）"
+echo "data dir ready: ${DATA_DIR}" >> "$LOG"
 
 APP_DIR="${TRIM_APPDEST:-/vol1/@appcenter/octopus}"
-# 数据目录: 与 cmd/main 同逻辑, 优先 TRIM_PKGVAR, 兜底按卷推导
-DATA_DIR="${TRIM_PKGVAR:-}"
-if [ -z "${DATA_DIR}" ]; then
-  APP_VOL="$(printf '%s' "${APP_DIR}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
-  if [ -n "${APP_VOL}" ]; then
-    DATA_DIR="${APP_VOL}/@appdata/octopus"
-  else
-    DATA_DIR="/var/apps/octopus/var"
-  fi
-fi
-
 RUN_USER="${TRIM_USERNAME:-octopus}"
 RUN_GROUP="${TRIM_GROUPNAME:-octopus}"
 
-# 1) 建数据目录 + 属主
-mkdir -p "${DATA_DIR}"
+# 1) 属主：share 由 fnOS 自动建目录 + 授 ACL，这里只兜底属主
 chown -R "${RUN_USER}:${RUN_GROUP}" "${DATA_DIR}" 2>/dev/null || true
-echo "data dir ready: ${DATA_DIR} (owner ${RUN_USER}:${RUN_GROUP})" >> "$LOG"
+echo "data dir owner ${RUN_USER}:${RUN_GROUP}: ${DATA_DIR}" >> "$LOG"
 
 # 2) 网关 sidecar 脚本可执行 + 可读（root 运行，权限兜底防降权场景）
 if [ -f "${APP_DIR}/gateway/gateway_proxy.py" ]; then
@@ -33,27 +54,39 @@ else
   echo "WARN: gateway_proxy.py missing in APPDEST" >> "$LOG"
 fi
 
-# 3) 迁移旧 root 安装数据 (系统目录 -> share, 幂等: 已有 data.db 不覆盖)
-OLD_DATA="/usr/local/apps/@appcenter/octopus/data"
-if [ -f "${OLD_DATA}/data.db" ] && [ ! -f "${DATA_DIR}/data.db" ]; then
-  echo "migrating legacy data from ${OLD_DATA}" >> "$LOG"
-  cp -n "${OLD_DATA}/data.db" "${DATA_DIR}/data.db" 2>/dev/null || true
-  [ -f "${OLD_DATA}/data.db-wal" ] && cp -n "${OLD_DATA}/data.db-wal" "${DATA_DIR}/" 2>/dev/null || true
-  [ -f "${OLD_DATA}/data.db-shm" ] && cp -n "${OLD_DATA}/data.db-shm" "${DATA_DIR}/" 2>/dev/null || true
-  cp -n "${OLD_DATA}/config.json" "${DATA_DIR}/config.json" 2>/dev/null || true
-  chown "${RUN_USER}:${RUN_GROUP}" "${DATA_DIR}"/data.db* "${DATA_DIR}"/config.json 2>/dev/null || true
-  echo "legacy data migrated" >> "$LOG"
-fi
+# ── 3) 幂等迁移历史数据 → share（配方 C：目标缺失才拷，源一律不删）
+#    两个历史来源：旧 root 安装（@appcenter）与 docker 版（@apphome/hermes-studio）。
+#    ⚠️ 迁移目标 0.13.12-2 起从 @appdata 改为 share。
+#    ⚠️ 只在 share 还没有同名文件时才拷 —— share 已有库时绝不覆盖（保数据优先）。
+migrate_file() {
+  # $1=源文件路径  $2=日志标签
+  local _src="$1" _tag="$2" _base
+  [ -f "${_src}" ] || return 0
+  _base="$(basename "${_src}")"
+  if [ -f "${DATA_DIR}/${_base}" ]; then
+    echo "skip (already in share): ${_base} [${_tag}]" >> "$LOG"
+    return 0
+  fi
+  if cp -a "${_src}" "${DATA_DIR}/${_base}" 2>/dev/null; then
+    chown "${RUN_USER}:${RUN_GROUP}" "${DATA_DIR}/${_base}" 2>/dev/null || true
+    echo "migrated: ${_src} -> ${DATA_DIR}/${_base} [${_tag}]" >> "$LOG"
+  else
+    echo "WARN: 迁移失败（源保留）：${_src}" >> "$LOG"
+  fi
+}
 
-# 4) 迁移 docker 版历史数据 (原逻辑保留)
-DOCKER_DATA="/vol1/@apphome/hermes-studio/data/octopus"
-if [ -d "$DOCKER_DATA" ] && [ -f "${DOCKER_DATA}/data.db" ] && [ ! -f "${DATA_DIR}/data.db" ]; then
-  echo "Found docker data, migrating..." >> "$LOG"
-  cp -n "${DOCKER_DATA}/data.db" "${DATA_DIR}/data.db" 2>/dev/null || true
-  cp -n "${DOCKER_DATA}/config.json" "${DATA_DIR}/config.json" 2>/dev/null || true
-  chown "${RUN_USER}:${RUN_GROUP}" "${DATA_DIR}/data.db" "${DATA_DIR}/config.json" 2>/dev/null || true
-  echo "Data migrated to ${DATA_DIR}" >> "$LOG"
-fi
+MIGRATED=0
+for SRC_DIR in "/usr/local/apps/@appcenter/octopus/data" "/vol1/@apphome/hermes-studio/data/octopus"; do
+  [ -d "${SRC_DIR}" ] || continue
+  if [ -f "${SRC_DIR}/data.db" ] || [ -f "${SRC_DIR}/config.json" ]; then
+    echo "checking legacy source: ${SRC_DIR}" >> "$LOG"
+    for f in data.db data.db-wal data.db-shm config.json listen.conf; do
+      migrate_file "${SRC_DIR}/${f}" "${SRC_DIR}"
+    done
+    MIGRATED=1
+  fi
+done
+[ "${MIGRATED}" = 1 ] || echo "no legacy data source found (skip migration)" >> "$LOG"
 
 echo "===== done =====" >> "$LOG"
 exit 0

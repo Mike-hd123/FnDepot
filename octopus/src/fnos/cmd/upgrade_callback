@@ -1,8 +1,74 @@
 #!/bin/bash
-# 升级后置：数据目录不动（升级只覆盖 APPDEST 内二进制，数据在 @appdata）
+# cmd/upgrade_callback — 升级后置：把存量数据/配置从 @appdata 幂等迁进 data-share
+#
+# 0.13.12-2 合规修复：这是存量用户把 data.db 搬进 share 的**主通道**，必须保住。
+# 铁律：只在 share 缺该文件时才拷，源目录一律不删（留待用户/卸载清理）。
+# 升级只覆盖 APPDEST 内二进制，share 与 @appdata 都不受升级影响。
 set -u
+mkdir -p "${TRIM_PKGVAR:-/var/apps/octopus/var}" 2>/dev/null || true
 LOG="${TRIM_PKGVAR:-/var/apps/octopus/var}/upgrade.log"
-echo "===== upgrade_callback $(date) =====" >> "$LOG"
-echo "data dir: ${TRIM_PKGVAR:-/var/apps/octopus/var} (volume install), binary overwritten in APPDEST" >> "$LOG"
+echo "===== upgrade_callback $(date) from ${TRIM_OLD_APPVER:-?} -> ${TRIM_APPVER:-?} =====" >> "$LOG"
+
+die() {
+  echo "FATAL: $1" >&2
+  [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "FATAL: $1" > "${TRIM_TEMP_LOGFILE}"
+  exit 1
+}
+
+resolve_share_root() {
+  local _app="$1" _name="$2" _paths="$3" _c
+  for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+    [ -n "${_c}" ] || continue
+    case "${_c}" in /vol0/*) continue ;; esac
+    if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+      printf '%s\n' "${_c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+SHARE_ROOT="$(resolve_share_root octopus octopus "${TRIM_DATA_SHARE_PATHS:-}")"
+if [ -z "${SHARE_ROOT}" ]; then
+  echo "FAIL: 没有可用 data-share（TRIM_DATA_SHARE_PATHS=${TRIM_DATA_SHARE_PATHS:-<unset>}）" >> "$LOG"
+  die "data-share 目录不可用，请检查 config/resource 的 data-share 声明"
+fi
+DATA_DIR="${SHARE_ROOT}"
+mkdir -p "${DATA_DIR}" || die "无法创建数据目录 ${DATA_DIR}（share 权限不足）"
+
+RUN_USER="${TRIM_USERNAME:-octopus}"
+RUN_GROUP="${TRIM_GROUPNAME:-octopus}"
+
+# ── 幂等迁移：老 @appdata 有数据 且 share 还没有 → cp -a，源不删 ──
+# 只在 share 缺同名文件时才拷，share 已有库时绝不覆盖（存量用户升级时 data.db 已在 share 就跳过）。
+VAR_DIR="${TRIM_PKGVAR:-/var/apps/octopus/var}"
+OLD_DIR="${VAR_DIR}"
+if [ -n "${OLD_DIR}" ] && [ -d "${OLD_DIR}" ] && [ "${OLD_DIR}" != "${DATA_DIR}" ]; then
+  for f in data.db data.db-wal data.db-shm config.json listen.conf; do
+    if [ -f "${OLD_DIR}/${f}" ]; then
+      if [ -f "${DATA_DIR}/${f}" ]; then
+        echo "skip (already in share): ${f}" >> "$LOG"
+      else
+        if cp -a "${OLD_DIR}/${f}" "${DATA_DIR}/${f}" 2>/dev/null; then
+          chown "${RUN_USER}:${RUN_GROUP}" "${DATA_DIR}/${f}" 2>/dev/null || true
+          echo "migrated: ${OLD_DIR}/${f} -> ${DATA_DIR}/${f}" >> "$LOG"
+          echo "migrated: ${OLD_DIR}/${f} -> ${DATA_DIR}/${f}" >> "${VAR_DIR}/migrate.log" 2>/dev/null
+        else
+          echo "WARN: 迁移失败（源保留）：${OLD_DIR}/${f}" >> "$LOG"
+        fi
+      fi
+    fi
+  done
+  # 老版本遗留 data/ 子目录（整体搬，仅在 share 还没有时）
+  if [ -d "${OLD_DIR}/data" ] && [ -n "$(ls -A "${OLD_DIR}/data" 2>/dev/null)" ] && [ ! -d "${DATA_DIR}/data" ]; then
+    cp -a "${OLD_DIR}/data" "${DATA_DIR}/data" 2>/dev/null \
+      && chown -R "${RUN_USER}:${RUN_GROUP}" "${DATA_DIR}/data" 2>/dev/null \
+      && echo "migrated: ${OLD_DIR}/data -> ${DATA_DIR}/data" >> "$LOG"
+  fi
+else
+  echo "no legacy @appdata dir to migrate (skip)" >> "$LOG"
+fi
+
+echo "data dir: ${DATA_DIR} (data-share), logs: ${VAR_DIR} (@appdata), binary overwritten in APPDEST" >> "$LOG"
 echo "===== done =====" >> "$LOG"
 exit 0

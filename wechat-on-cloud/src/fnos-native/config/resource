@@ -1,5 +1,17 @@
 {
   "api-scope": [
     "trim.file.sharedAccess"
-  ]
+  ],
+  "data-share": {
+    "shares": [
+      {
+        "name": "wechat-on-cloud",
+        "permission": {
+          "rw": [
+            "wechat-on-cloud"
+          ]
+        }
+      }
+    ]
+  }
 }

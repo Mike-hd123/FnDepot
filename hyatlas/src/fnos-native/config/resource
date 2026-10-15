@@ -1,1 +1,12 @@
-{}
+{
+  "data-share": {
+    "shares": [
+      {
+        "name": "hyatlas",
+        "permission": {
+          "rw": ["hy-memory"]
+        }
+      }
+    ]
+  }
+}

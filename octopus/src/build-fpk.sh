@@ -15,7 +15,7 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-OUT="${1:-/vol2/1000/download/octopus-0.13.12-1-x86.fpk}"
+OUT="${1:-/vol2/1000/download/octopus-0.13.12-2-x86.fpk}"
 SKEL="${2:-}"
 STAGING="$(mktemp -d)"
 trap 'rm -rf "$STAGING"' EXIT
@@ -61,13 +61,26 @@ for d in cmd ui wizard; do
   echo "synced $d/ <- fnos/$d/"
 done
 # 逐文件内容复核（存在性检查挡不住旧内容，必须比内容）
+# 0.13.12-2 起加入 wizard/install 与 wizard/uninstall：卸载双选是本轮 share 合规交付物，
+# 漏同步会让包内 wizard 缺项（旧骨架没有 wizard/uninstall），必须内容级校验。
 for f in cmd/main cmd/install_callback cmd/upgrade_callback cmd/uninstall_callback \
          cmd/config_init cmd/config_callback cmd/install_init cmd/upgrade_init cmd/uninstall_init \
+         wizard/install wizard/uninstall \
          ui/config; do
   [ -f "$HERE/fnos/$f" ] || continue
   cmp -s "$HERE/fnos/$f" "./$f" || { echo "FAIL: $f 与 fnos/$f 内容不一致" >&2; exit 1; }
 done
-echo "cmd/ui 内容复核通过"
+echo "cmd/ui/wizard 内容复核通过"
+
+# ⚠️ .bak 闸门（与 emby-in-one/build.sh 同款）：$STAGING 是即将 fnpack build 的源目录（当前 cwd）。
+#    上面 `cp -a fnos/cmd fnos/ui fnos/wizard` 会把源码目录里的 *.bak_* 一并拷进来，
+#    fnpack 会静默打进包 = 装到设备上多一堆垃圾。命中即 FATAL 退出，先移出再打包。
+BAK="$(find "$STAGING" -name '*.bak*' -o -name '*_~' -o -name '*.orig' 2>/dev/null | head -20)"
+if [ -n "$BAK" ]; then
+  echo "FATAL: 包内含备份文件，先移出再打包：" >&2
+  echo "$BAK" >&2
+  exit 1
+fi
 
 echo "=== 4/5 fnpack build（必须显式成功；stdout/stderr 不吞，防失败沿用旧包）==="
 rm -f octopus.fpk
@@ -88,7 +101,7 @@ has_outer() { grep -qxE -- "$1" <<<"$OUTER_LIST"; }
 has_inner() { grep -qxF -- "$1" <<<"$INNER_LIST"; }
 
 FAIL=0
-for e in 'app\.tgz' 'cmd' 'config' 'manifest' 'ICON\.PNG' 'ICON_256\.PNG' 'wizard/install'; do
+for e in 'app\.tgz' 'cmd' 'config' 'manifest' 'ICON\.PNG' 'ICON_256\.PNG' 'wizard/install' 'wizard/uninstall'; do
   has_outer "$e" || { echo "FAIL: 外层缺 $e" >&2; FAIL=1; }
 done
 for f in octopus gateway/gateway_proxy.py ui/config ui/images/icon-64.png ui/images/icon-256.png \
@@ -116,6 +129,25 @@ if ! grep -q 'OCTOPUS_LISTEN_HOST' cmdmain.tmp; then
   echo "FAIL: 包内 cmd/main 缺 OCTOPUS_LISTEN_HOST 监听开关逻辑" >&2; FAIL=1
 else
   echo "监听开关存在性校验通过"
+fi
+
+# share 合规回归护栏（0.13.12-2）：数据必须落 SHARE_ROOT，且不得再拿 @appdata 当数据目录
+if ! grep -q 'resolve_share_root' cmdmain.tmp; then
+  echo "FAIL: 包内 cmd/main 缺 resolve_share_root（数据未落 data-share）" >&2; FAIL=1
+elif ! grep -q 'DATA_DIR="${SHARE_ROOT}"' cmdmain.tmp; then
+  echo "FAIL: 包内 cmd/main 的 DATA_DIR 未指向 SHARE_ROOT" >&2; FAIL=1
+elif grep -qE '^DATA_DIR=.*appdata' cmdmain.tmp; then
+  echo "FAIL: 包内 cmd/main 仍把 @appdata 当数据目录" >&2; FAIL=1
+else
+  echo "share 合规校验通过（数据落 data-share）"
+fi
+# 包内必须带卸载双选（wizard/uninstall 是新增文件，旧骨架没有）
+if [ ! -s wizard/uninstall ]; then
+  echo "FAIL: 包内缺 wizard/uninstall（卸载双选缺失）" >&2; FAIL=1
+elif ! grep -q 'wizard_delete_data' wizard/uninstall; then
+  echo "FAIL: 包内 wizard/uninstall 字段名不是 wizard_delete_data" >&2; FAIL=1
+else
+  echo "卸载双选校验通过"
 fi
 
 [ "$FAIL" = 0 ] || { echo "STRUCTURE CHECK FAILED" >&2; exit 1; }

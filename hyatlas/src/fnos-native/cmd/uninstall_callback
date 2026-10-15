@@ -1,10 +1,52 @@
 #!/bin/bash
+# cmd/uninstall_callback — 卸载双选（v4.7.3-2 合规修复版）
+# wizard_delete_data=false → 全保留（share 与 @appdata 都不动，可重装恢复）
+# wizard_delete_data=true  → 清 share 内容 + @appdata 日志/PID（不可恢复）
+# ⚠️ 本库是 hyatlas 的长期记忆正源，清掉不可恢复；wizard 里已用红字强调。
+# 注意：uninstall_callback 里 TRIM_TEMP_LOGFILE 不生效（系统不支持），失败只写自己的日志。
 set -u
 VAR_DIR="${TRIM_PKGVAR:-/vol1/@appdata/hyatlas}"
 APP_DIR="${TRIM_APPDEST:-/vol1/@appcenter/hyatlas}"
 PID_FILE="${VAR_DIR}/panel.pid"
 GW_PID_FILE="${VAR_DIR}/gateway.pid"
+LOG="${VAR_DIR}/uninstall.log"
+DATA="${wizard_delete_data:-false}"
+mkdir -p "${VAR_DIR}" 2>/dev/null || true
+echo "===== uninstall_callback $(date) delete_data=${DATA} =====" >> "$LOG" 2>/dev/null || true
 
+# ── share 根目录：官方两跳解析（与 cmd/main、install/upgrade_callback 逐字同款）──
+# 卸载阶段 cmd/ 可能已被清，所以本脚本自带一份，绝不 source 兄弟文件。
+resolve_share_root() {
+  local _app="$1" _name="$2" _paths="$3" _c
+  for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+    [ -n "${_c}" ] || continue
+    case "${_c}" in /vol0/*) continue ;; esac
+    if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+      printf '%s\n' "${_c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+_cov="${TRIM_SHARE_DIR:-}"
+if [ -n "${_cov}" ]; then
+  SHARE_ROOT="${_cov%/}/hyatlas"
+else
+  SHARE_ROOT="$(resolve_share_root hyatlas hyatlas "${TRIM_DATA_SHARE_PATHS:-}")" || SHARE_ROOT=""
+fi
+SHARE_ROOT="${SHARE_ROOT:-/var/apps/hyatlas/shares/hyatlas}"
+
+# ── 先停进程，避免清数据时服务还在写 ──
+# main 脚本与本脚本同目录（/var/apps/<app>/cmd/），卸载阶段 TRIM_APPDEST 可能已被清空
+MAIN_SELF="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/main"
+if [ -f "$MAIN_SELF" ]; then
+  "$MAIN_SELF" stop >/dev/null 2>&1 || true
+elif [ -f "${APP_DIR}/cmd/main" ]; then
+  "${APP_DIR}/cmd/main" stop >/dev/null 2>&1 || true
+fi
+
+# 网关 sidecar（保持原有清理段）
 if [ -f "$GW_PID_FILE" ]; then
   gwpid=$(cat "$GW_PID_FILE" 2>/dev/null)
   if [ -n "$gwpid" ] && kill -0 "$gwpid" 2>/dev/null; then
@@ -15,6 +57,7 @@ if [ -f "$GW_PID_FILE" ]; then
   rm -f "$GW_PID_FILE"
 fi
 
+# 面板主进程（保持原有清理段）
 if [ -f "$PID_FILE" ]; then
   pid=$(cat "$PID_FILE" 2>/dev/null)
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
@@ -25,5 +68,36 @@ if [ -f "$PID_FILE" ]; then
   rm -f "$PID_FILE"
 fi
 
+# 兜底：按进程名收拾残留（防 PID 文件错位时留下孤儿进程写 share）
+pkill -x hyatlas-go 2>/dev/null || true
+pkill -f "gateway_proxy.py" 2>/dev/null || true
+
 rm -f "${APP_DIR}/app.sock" 2>/dev/null || true
+
+case "$DATA" in
+  "true")
+    # 只清 share 内容，保留目录本体与属主，便于将来重装复用。
+    # 用 find 不用 rm -rf "$D"/* —— 通配不匹配 . 开头隐藏文件，会留垃圾。
+    if [ -n "${SHARE_ROOT}" ] && [ -d "${SHARE_ROOT}" ]; then
+      if find "${SHARE_ROOT}" -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null; then
+        echo "清除 share 数据内容：${SHARE_ROOT}" >> "$LOG" 2>/dev/null || true
+      else
+        echo "清除 share 数据失败：${SHARE_ROOT}" >> "$LOG" 2>/dev/null || true
+      fi
+    else
+      echo "share 数据目录不存在，无需清除：${SHARE_ROOT}" >> "$LOG" 2>/dev/null || true
+    fi
+    # 日志/PID/HOME/TMPDIR 属 @appdata，一并清除（数据真身在 share，不受这里影响）
+    if [ -n "${VAR_DIR}" ] && [ -d "${VAR_DIR}" ]; then
+      rm -rf "${VAR_DIR}"
+      echo "清除 @appdata 运行时目录：${VAR_DIR}" >> "${LOG}" 2>/dev/null || true
+    fi
+    echo "已按用户选择清除全部应用数据（不可恢复）"
+    ;;
+  "false"|*)
+    # 保留分支：share 与 @appdata 都不动
+    echo "保留数据（share ${SHARE_ROOT} 与 @appdata 均不动，可随时重装恢复）"
+    echo "keep data (share=${SHARE_ROOT})" >> "$LOG" 2>/dev/null || true
+    ;;
+esac
 exit 0

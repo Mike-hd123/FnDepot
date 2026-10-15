@@ -1,11 +1,20 @@
 #!/bin/bash
 # cmd/main — Vikunja 进程管理（v9：sidecar 由 systemd 单元 vikunja-sidecar 托管）
-# 应用 = systemd 单元（原生二进制，User=hermes-studio）
+# 应用 = systemd 单元（原生二进制，User/Group 由 install_callback 依 config/privilege 的
+#       username/groupname（兜底 vikunja）写入 base unit，与 data-share permission 同源）
 # sidecar = vikunja-sidecar 单元（socket 自注册，root 跑 —— 需在 APPDEST 建 app.sock）
 set -u
 
 SERVICE="vikunja"
 SIDECAR="vikunja-sidecar"
+
+# 失败要让用户看得见（TRIM_TEMP_LOGFILE 在 main/install_*/upgrade_* 里有效，应用中心界面可见）
+die() {
+  echo "FATAL: $1" >&2
+  [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "FATAL: $1" > "${TRIM_TEMP_LOGFILE}"
+  exit 1
+}
+
 # 卷探测：env 缺失时扫描实际安装卷
 APP_DIR="${TRIM_APPDEST:-}"
 if [ -z "${APP_DIR}" ]; then
@@ -14,19 +23,46 @@ if [ -z "${APP_DIR}" ]; then
   done
   [ -n "${APP_DIR}" ] || APP_DIR="/vol2/@appcenter/vikunja"
 fi
-DATA_DIR="${TRIM_PKGVAR:-}"
-if [ -z "${DATA_DIR}" ]; then
+# ── 运行区（日志/PID/boot.log）：@appdata，卷探测兜底 ──
+VAR_DIR="${TRIM_PKGVAR:-}"
+if [ -z "${VAR_DIR}" ]; then
   APP_VOL="$(printf '%s' "${APP_DIR}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
   if [ -n "${APP_VOL}" ]; then
-    DATA_DIR="${APP_VOL}/@appdata/vikunja"
+    VAR_DIR="${APP_VOL}/@appdata/vikunja"
   else
-    DATA_DIR="/var/apps/vikunja/var"
+    VAR_DIR="/var/apps/vikunja/var"
   fi
 fi
-PORT="${TRIM_SERVICE_PORT:-3456}"
-BOOT_LOG="${DATA_DIR}/boot.log"
 
-mkdir -p "${DATA_DIR}" 2>/dev/null || true
+# ── 数据区（vikunja.db / files / storage / .backup）：必须落 data-share ──
+# config/resource 已声明 data-share(name=vikunja)，但 v2.7.0-1 及以前脚本没用它，
+# 数据实际全在 @appdata —— 声明与实现脱节，用户文件管理器里根本看不到，属合规缺陷。
+# 老写法（对该变量取 dirname 再拼 share 名）禁用：安装阶段该变量是未落卷占位路径
+# /vol0/@appshare/vikunja，拼出的目录不存在也建不动。正解见下（两跳，与其余三个脚本逐字一致）：
+#   1) /var/apps/<app>/shares/<name> —— fnOS 自己维护的软链，永远指向真实卷（实测系统用复数 shares/）
+#   2) ${TRIM_DATA_SHARE_PATHS} 首段（官方写法 ${VAR%%:*}，取首段，不是 dirname）
+resolve_share_root() {
+  local _app="$1" _name="$2" _paths="$3" _c
+  for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+    [ -n "${_c}" ] || continue
+    case "${_c}" in /vol0/*) continue ;; esac
+    if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+      printf '%s\n' "${_c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+SHARE_ROOT="$(resolve_share_root vikunja vikunja "${TRIM_DATA_SHARE_PATHS:-}")" \
+  || die "找不到 data-share 目录，请检查 config/resource 的 data-share 声明"
+DATA_DIR="${SHARE_ROOT}/data"
+PORT="${TRIM_SERVICE_PORT:-3456}"
+BOOT_LOG="${VAR_DIR}/boot.log"
+
+mkdir -p "${VAR_DIR}" "${DATA_DIR}" 2>/dev/null || true
+# 老数据（@appdata）不是本脚本搬的：迁移统一由 install_callback / upgrade_callback 做
+# （这里只保证目录存在，绝不 mv、绝不覆盖已有 share 数据）
 
 log() { echo "[$(date '+%F %T')] $*" >> "${BOOT_LOG}" 2>/dev/null || true; }
 

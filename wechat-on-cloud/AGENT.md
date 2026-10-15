@@ -3,7 +3,14 @@
 > 项目说明见 [README.md](./README.md)。本文件只讲 agent 该做什么 / 红线 / 坑。
 
 ## 定位
-上游 [Gloridust/WechatOnCloud](https://github.com/Gloridust/WechatOnCloud) 的 fnOS 原生发行 fork：NAS 上跑微信的 Web 面板（Node.js + dockerode 管理微信实例容器）。当前发布 **1.5.2-1**（面板自报 `WOC_VERSION` 固定 1.5.1，与飞牛包版本解耦），面板端口 8080。
+上游 [Gloridust/WechatOnCloud](https://github.com/Gloridust/WechatOnCloud) 的 fnOS 原生发行 fork：NAS 上跑微信的 Web 面板（Node.js + dockerode 管理微信实例容器）。当前发布 **1.5.2-2**（面板自报 `WOC_VERSION` 跟上游语义化版本，与飞牛包版本解耦），面板端口 8080。
+
+## 数据边界（改脚本前必读，2026-10-15 share 合规修复后）
+两类数据，**别混**：
+- **① 面板数据**（账号/会话/面板配置/实例日志）：落 **fnOS 官方共享目录 `wechat-on-cloud`**（`config/resource` 的 `data-share` 声明 → fnOS 自动建目录 + 自动授 Windows ACL）。路径**必须**经 `resolve_share_root` 两跳解析（优先 `/var/apps/wechat-on-cloud/shares/wechat-on-cloud` 软链，退化 `TRIM_DATA_SHARE_PATHS` 首段，跳过 `/vol0/*` 占位）拿 `SHARE_ROOT`，**禁止** `dirname "$TRIM_DATA_SHARE_PATHS"`、禁止 `${APP_DIR}/shares`。PID/日志留 `@appdata`（`TRIM_PKGVAR`）。
+- **② 微信实例数据**（容器 `/config`，**含聊天记录**）：用户在面板自选，走 `WOC_DATA_DIR`（默认 `/vol2/1000/weixin/woc-data-<id>`）bind 或 docker 命名卷。**不在应用 share 内，任何卸载/清理分支都不许碰**。
+- `WOC_VAR_DIR` 保留「显式覆盖」语义：显式设置优先，否则走 share 解析。
+- 老 `@appshare/wechat-on-cloud/data` 只在「目标 share 为空」时幂等 `cp -a` 迁入，源不删（见各脚本迁移段与 `migrate.log`）。
 
 ## 架构
 - `src/` — 上游源码 fork + 全部 NAS 适配改动（Node.js 面板）
@@ -17,11 +24,13 @@
 4. 「电源」下拉：重启（重建容器保数据）+ 关机（stop 实例）
 5. `PANEL_ALLOWED_HOSTS` host-guard；图标三路径；wizard 安装向导
 6. WOC_VERSION 固定跟上游 tag（本地改动不动版本号）
+7. share 合规：`data-share` 声明 + 四脚本内联 `resolve_share_root` + 幂等迁移 + 卸载双选（`wizard/uninstall` 的 `wizard_delete_data`）
 
 ## 坑
 - 与 Octopus(8081)/Vikunja(3456) 端口错开，8080 归它
 - 微信容器"版本过低"类问题 → Hermes 技能 `wechat-selkies-ops` / `wxbackup-data-access`
-- 聊天记录备份走 WxBackup（.xb=SQLite3+XOR 0x36），别动本应用数据目录
+- 聊天记录备份走 WxBackup（.xb=SQLite3+XOR 0x36），别动本应用数据目录；**实例数据目录 ≠ 面板 share 目录**
+- 四个生命周期脚本各自内联 `resolve_share_root`，**改一处必须四处同步**（卸载阶段 `cmd/` 可能已被清，不能 source 兄弟文件）
 
 ## 红线
 同根 [AGENT.md](../AGENT.md)：改动只落 src/，版本号 `上游-本地`，合并上游必做定制存活核对。

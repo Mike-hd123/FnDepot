@@ -20,24 +20,43 @@
 
 ```ini
 appname               = vikunja
-version               = 2.7.0
-install_type          = volume      # 数据落 /volN/@appdata（用户数据）
+version               = 2.7.0-2
+install_type          = volume      # 数据落 data-share（用户可见）
 service_port          = 3456
 maintainer            = kolaente    # 上游 owner
 distributor           = Mike
 ```
 
-- **原生 systemd 模式**（抄 octopus）：cmd/main 管理 systemd unit，`User=hermes-studio`
+- **原生 systemd 模式**（抄 octopus）：cmd/main 管理 systemd unit（base unit `User=hermes-studio`，运行时被 `vikunja.service.d/override.conf` 覆盖成 `vikunja`）
 - **双通道入口**：桌面 iframe 直连 `3456`（协议相对 `://${host}:<PORT>/`）+ 手机 `/app/vikunja` 走 gateway socket 剥前缀反代（`app/gateway/gateway_proxy.py`）
-- **数据落 @appdata**：`/volN/@appdata/vikunja/`（vikunja.db + files/ + config.yml），卸载保留
+- **数据落 share**：`/var/apps/vikunja/shares/vikunja`（软链 → `/volN/@appshare/vikunja`），DB `data/vikunja.db` + 附件 `data/files/` + 日志 `data/logs/` + 配置 `config.yml`；`@appdata` 只留 `boot.log`/`migrate.log`/PID，卸载默认保留
 - **注册已关**：`enableregistration: false`，管理员 `user create` 建号，Hermes 用独立 token
+
+## share 合规修复（2.7.0-2，2026-10-15）
+
+**问题**：`config/resource` 从 2.6.0 起就声明了 `data-share(name=vikunja, permission.rw=["vikunja"])`，但所有生命周期脚本都没用它 —— `cmd_main` 的 `DATA_DIR` 取 `TRIM_PKGVAR`（@appdata），`vikunja.db` / `files/` / `logs/` 实际全落 `/volN/@appdata/vikunja`。结果：用户在文件管理器里看不到自托管待办的数据，也拿不到 fnOS 为 share 自动授的 Windows ACL，属**声明与实现脱节**。
+
+**修法**（纯打包层，上游二进制零改动）：
+
+1. **两跳解析**：四个脚本（`cmd_main` / `install_callback` / `upgrade_callback` / `uninstall_callback`）各内联一份 `resolve_share_root`（禁止 source 兄弟文件——卸载阶段 `cmd/` 可能已被清）。
+   - 第 1 跳 `/var/apps/vikunja/shares/vikunja`（fnOS 维护的软链，永远指向真实卷；实测系统用复数 `shares/`，官方文档写的单数 `share/` 不准）
+   - 第 2 跳 `${TRIM_DATA_SHARE_PATHS}` 首段（官方 `${VAR%%:*}`），并跳过 `/vol0/*` 占位路径
+   - ❌ 已证伪的写法：`dirname "${TRIM_DATA_SHARE_PATHS}"`（安装阶段是未落卷占位 `/vol0/@appshare/vikunja`，目录建不动、`|| true` 吞错 → 数据其实没落 share）
+2. **数据/配置真身进 share**：`${SHARE_ROOT}/data/{vikunja.db,files,logs}` + `${SHARE_ROOT}/config.yml`；`@appdata` 只留 `boot.log` / `migrate.log` / PID。systemd unit 的 `WorkingDirectory`、`ExecStart --config`、配置内 `database.path` / `files.basepath` / `log.path` 同步改（sidecar 的 `gateway.pid` 属运行态，仍留 @appdata）。
+3. **幂等不覆盖迁移**（升级是老数据进 share 的主通道）：只在 share 目标**缺失**且老 @appdata 有数据时 `cp -a`，**源目录永不删、绝不 `mv`**；`.backup` 备份文件一并保进 share。记录写 `@appdata/migrate.log`。
+4. **卸载双选**：新增 `wizard/uninstall`（`wizard_delete_data`，默认保留）；`uninstall_callback` 先停 systemd 服务再分支，清除用 `find "${SHARE_ROOT}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +`（通配不匹配隐藏文件，故不用 `rm -rf dir/*`）并清 @appdata，保留则两者都不动；原 systemd unit 清理逻辑完整保留。
+
+**数据安全**：`vikunja.db` 是用户待办的唯一事实源，上述迁移全部为「只增不删」；升级前仍建议 `sqlite3 <db> ".backup '<db>.bak_$(date +%Y%m%d_%H%M%S)'"`。
+
+**本机现状（2026-10-15 核实）**：现役实例在 **/vol2**，真实数据 `/vol2/@appdata/vikunja/`（`vikunja.db` 630KB + WAL 4MB、未删任务 22 条、`config.yml`、`files/`、`logs/`）；`/vol1/@appdata/vikunja` 是 2026-09-09 的历史残留（属主 hermes-studio），现役不用。/var/apps/vikunja/shares 尚不存在（升级到 2.7.0-2 后由 fnOS 依 `config/resource` 创建）。
 
 ## 首次安装后配置（管理员）
 
 ```bash
-# 管理员建号（注册已关）
-sudo -u hermes-studio /volN/@appdata/vikunja/vikunja user create --config /volN/@appdata/vikunja/config.yml -u mike -e mike@qq.com -p '<pwd>'
-sudo -u hermes-studio /volN/@appdata/vikunja/vikunja user set-admin --config /volN/@appdata/vikunja/config.yml mike --admin
+# 管理员建号（注册已关）。2.7.0-2 起数据/配置真身在 share：
+#   SHARE=/var/apps/vikunja/shares/vikunja   （软链 → /volN/@appshare/vikunja）
+sudo -u hermes-studio /volN/@appcenter/vikunja/vikunja user create --config "${SHARE}/config.yml" -u mike -e mike@qq.com -p '<pwd>'
+sudo -u hermes-studio /volN/@appcenter/vikunja/vikunja user set-admin --config "${SHARE}/config.yml" mike --admin
 
 # Hermes API token（最小权限：tasks 读写 + projects 读）
 # POST /api/v1/tokens → 存 .env VIKUNJA_API_TOKEN

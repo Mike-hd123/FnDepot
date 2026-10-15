@@ -79,6 +79,25 @@ cp -a "$PROJ_ROOT/ICON_256.PNG" "$WORK/ICON_256.PNG"
 mkdir "$WORK/app"
 tar xzf "$APP_SRC" -C "$WORK/app"
 
+# ⚠️ .bak 闸门（与 emby-in-one/build.sh 同款）：$WORK 是即将 fnpack build 的源目录（step1 用
+#    `cp -a cmd config wizard` 拷进来，源码里的 *.bak_* 会被一并带上）。step2 的 fnpack 会把
+#    $WORK 整个打进它的 app.tgz（虽产物丢弃不发布），step3 的 python 重拼才用 fnmatch 跳过 *.bak_*。
+#    闸门放最前，逼先把备份移出源码目录再构建——别指望 python 兜底（那是发布态，结构校验态不兜）。
+BAK="$(find "$WORK/cmd" "$WORK/config" "$WORK/wizard" -name '*.bak*' -o -name '*_~' -o -name '*.orig' 2>/dev/null | head -20)"
+if [ -n "$BAK" ]; then
+  echo "FATAL: 包内含备份文件，先移出再打包：" >&2
+  echo "$BAK" >&2
+  exit 1
+fi
+# $WORK/app 是定档 app.tgz 解出的字节原样载荷，不归源码管：1.5.2-1 就已内含
+# server/src/docker.ts.bak_20261012_0657 —— 清它要改定档字节并重算 manifest checksum
+# （属需装机验证的变更），留到下次重建 app.tgz 一并做。故这里只 WARN，不阻断构建。
+APPBAK="$(tar tzf "$APP_SRC" 2>/dev/null | grep -E '\.bak(\.|_|$)|\.orig|~$' | head -5)"
+if [ -n "$APPBAK" ]; then
+  echo "WARN: 定档 app.tgz 内有历史备份文件（本轮不阻断，下次重建 app.tgz 时清理）:" >&2
+  echo "$APPBAK" >&2
+fi
+
 # --- 2. fnpack build -d . 结构校验 (产物丢弃) ---
 if ! ( cd "$WORK" && fnpack build -d . ); then
   echo "ERROR: fnpack build 结构校验失败, 中止" >&2

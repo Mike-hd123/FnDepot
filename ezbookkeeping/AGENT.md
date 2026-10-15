@@ -14,7 +14,13 @@
 ## 坑
 - **fnpack.json 索引滞后**：releases 还停在 1.6.1-12/14，2.0.0-1 未录入——发版收口必须同步索引（见根 AGENT.md 规矩）
 - 记账口径/规则 → Hermes 技能 `ezbookkeeping-ops`（流水全在此）；账目核对走 Studio 工作流 f5dde188
-- 数据在用户数据目录（@appdata），改动前备份
+- **数据落点（2.0.1-2 起）**：数据与配置真身在 data-share「ezbookkeeping」（文件管理器 → 应用文件），
+  即 `db_path=share/data/ezbookkeeping.db`、`local_filesystem_path=share/storage/`、
+  `log_path=share/log/`、`ezbookkeeping.ini` 在 share 根；`@appdata` 只留 boot.log/PID 等运行态文件。
+  改动前备份，别再把 ini 或 db 挪回 @appdata（升级不丢的保证就在 share）。
+- 跨卷遗留：本机 `/vol1` 与 `/vol2` 的 `@appdata/ezbookkeeping` 都存在（vol2 为现役，vol1 是 9 月旧副本）。
+  install/upgrade_callback 的迁移是**幂等且不覆盖**的——只在 share 目标为空时才 `cp -a`，源目录保留不删，
+  已在 share 的数据不会被搬走，所以 vol1/vol2 两份历史副本不会互相污染。
 
 ## 红线
 同根 [AGENT.md](../AGENT.md)。

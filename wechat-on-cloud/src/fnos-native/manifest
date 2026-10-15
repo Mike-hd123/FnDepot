@@ -1,5 +1,5 @@
 appname                    = wechat-on-cloud
-version                    = 1.5.2-1
+version                    = 1.5.2-2
 display_name               = 云微
 desc                       = WeChatOnCloud 官方 Linux 微信面板（原生部署）
 platform                   = all
@@ -16,9 +16,10 @@ service_port               = 8080
 desktop_uidir              = ui
 desktop_applaunchname      = wechat-on-cloud.panel
 disable_authorization_path = false
+; 1.5.2-2 share 合规修复：config/resource 补 data-share 声明（保留 api-scope 不动）→ 面板数据由 fnOS 官方共享目录接管（自动建目录 + 自动授 Windows ACL），不再脚本 mkdir+chmod 777 硬建；四个生命周期脚本各内联 resolve_share_root 两跳解析（/var/apps/<app>/shares/<name> → TRIM_DATA_SHARE_PATHS 首段）；老路径数据幂等迁移（目标为空才 cp -a，源不删，写 migrate.log）；新增 wizard/uninstall 卸载保留/清除双选；清除分支只清 share 内容+@appdata，微信实例数据目录（用户自选）不在清理范围
 ; 1.5.2 合并上游 v1.5.2（QQ 下载实时签名 #153、桌面服务诊断 nginx/KasmVNC、NO_IPV6 诊断行）；修残包：补回 tar.ts/upload.ts（被 docker.ts/index.ts 硬 import，定档 app.tgz 此前缺这两个文件导致从仓库重建崩溃）
 ; 1.5.1 上游实例网络隔离（本包仍走 ipvlan 显式网络，不受影响）
 ; 1.5.0 纯 ipvlan 单网卡 + 数据卷 bind 主机目录
 ; 1.4.9 跟随上游版本号；本地改动含创建实例可选数据目录 + 多实例IP自增
-changelog                  = 1.5.2-1: 合并上游 v1.5.2（QQ 下载实时签名校验 #153、诊断包新增桌面服务 nginx/KasmVNC 端口监听+error.log、NO_IPV6 诊断行、Admin 页删过时「QQ 只对大陆开放」文案）；修复定档 app.tgz 残包（补回 tar.ts/upload.ts，二者被 docker.ts/index.ts 硬 import，此前缺失致从仓库重建即崩）；web-dist 重建；保留全部本地定制：ipvlan woc-lan 单网卡、WOC_DATA_DIR bind 数据目录+孤儿 bind 目录扫描/复用/删除、移动端不抢焦点、更多下拉菜单（含上传进度）、电源下拉菜单、host-guard、trim 网关/开放API
+changelog                  = 1.5.2-2: share 合规修复（打包层，上游 1.5.2 不动）——① config/resource 补齐 data-share 声明（原 api-scope 原样保留），面板数据改由 fnOS 官方共享目录 wechat-on-cloud 接管，自动建目录并自动授 Windows ACL，替代此前脚本自己 mkdir -p + chmod 777 硬建（拿不到官方授权且路径写死单卷）；② cmd/main、install_callback、upgrade_callback、uninstall_callback 四脚本各内联 resolve_share_root 两跳解析（优先 /var/apps/<app>/shares/<name> 软链，退化 TRIM_DATA_SHARE_PATHS 首段，跳过 /vol0 占位路径），全流程统一取 SHARE_ROOT，消除多处不同来源路径；③ 面板 config/data 落 ${SHARE_ROOT}/data，PID 与日志改留 @appdata（TRIM_PKGVAR）；④ 老路径 /vol1/@appshare/wechat-on-cloud/data 幂等迁移：仅当目标为空时 cp -a，源保留不删，记 migrate.log；⑤ 新增 wizard/uninstall 卸载「保留/清除」双选（wizard_delete_data），清除分支只清 share 内容（含隐藏文件）与 @appdata；⑥ 明确两类数据边界：面板数据入官方 share，微信实例数据目录（用户自选 WOC_DATA_DIR/bind/docker 卷，含聊天记录）不在清理范围，任何分支都不删。WOC_VAR_DIR 保留显式覆盖语义（显式设置优先，否则走 share 解析）
 checksum                    = 32ad52499ce9bbe657d8384a0cab8731

@@ -1,6 +1,113 @@
 #!/bin/bash
-# 升级后 hook: 重启服务 + v13 桌面入口切直连端口模式 + v14 config.yml publicurl 复位
+# 升级后 hook: 数据/配置归位 share + 重启服务 + v13 桌面入口切直连端口模式 + v14 config.yml publicurl 复位
 set -e
+
+# ── 失败要让用户看得见（TRIM_TEMP_LOGFILE 在 upgrade_* 里有效）──
+die() {
+  echo "FATAL: $1" >&2
+  [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "FATAL: $1" > "${TRIM_TEMP_LOGFILE}"
+  exit 1
+}
+
+# ── 卷探测（与 install_callback 同源）──
+APP_DIR="${TRIM_APPDEST:-}"
+if [ -z "${APP_DIR}" ]; then
+  for v in /vol1 /vol2 /vol3 /vol4; do
+    [ -f "${v}/@appcenter/vikunja/vikunja" ] && APP_DIR="${v}/@appcenter/vikunja" && break
+  done
+  [ -n "${APP_DIR}" ] || APP_DIR="/vol2/@appcenter/vikunja"
+fi
+
+# ── 数据落点 = data-share（v2.7.0-2 本轮合规修复，升级是老数据进 share 的主通道）──
+# 两跳解析（与 cmd_main / install_callback / uninstall_callback 逐字一致，禁止 source 兄弟文件）：
+#   1) /var/apps/<app>/shares/<name>（fnOS 软链，永远指向真实卷；实测系统用复数 shares/）
+#   2) ${TRIM_DATA_SHARE_PATHS} 首段（官方 ${VAR%%:*}；dirname 写法已证伪，/vol0 占位要跳过）
+resolve_share_root() {
+  local _app="$1" _name="$2" _paths="$3" _c
+  for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+    [ -n "${_c}" ] || continue
+    case "${_c}" in /vol0/*) continue ;; esac
+    if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+      printf '%s\n' "${_c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# ⚠️ 必须带 `|| true`：本脚本 set -e，resolve 非零会让整条赋值语句非零 → 立刻终止脚本，
+#    于是下面第 39 行的 die 兜底、老数据迁移、config.yml publicurl 复位、
+#    ui/config 端口模式改写、entry SQL 与服务重启全被跳过 → 升级"成功"但数据没归位 share、入口回滚。
+SHARE_ROOT="$(resolve_share_root vikunja vikunja "${TRIM_DATA_SHARE_PATHS:-}")" || true
+[ -n "${SHARE_ROOT}" ] || die "data-share 目录不可用，请检查 config/resource 的 data-share 声明"
+DATA_DIR="${SHARE_ROOT}/data"
+CFG_FILE="${SHARE_ROOT}/config.yml"
+mkdir -p "${DATA_DIR}" "${SHARE_ROOT}/files" "${SHARE_ROOT}/logs"
+
+APPDATA="${TRIM_PKGVAR:-}"
+if [ -z "${APPDATA}" ]; then
+  APP_VOL="$(printf '%s' "${APP_DIR}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
+  [ -n "${APP_VOL}" ] && APPDATA="${APP_VOL}/@appdata/vikunja" || APPDATA="/var/apps/vikunja/var"
+fi
+
+# ── 幂等迁移：老 @appdata 有数据、且 share 目标为空，才 cp -a（源永不删、绝不 mv）──
+# vikunja.db 是用户待办的唯一事实源（本机实测 22 条未删任务），必须极端保守。
+MIGLOG="${APPDATA}/migrate.log"
+for pair in "vikunja.db:${DATA_DIR}/vikunja.db" "files:${DATA_DIR}/files" "logs:${DATA_DIR}/logs"; do
+  OLD_NAME="${pair%%:*}"; NEW_PATH="${pair#*:}"
+  OLD_PATH="${APPDATA}/${OLD_NAME}"
+  if [ -e "${OLD_PATH}" ] && [ ! -e "${NEW_PATH}" ]; then
+    cp -a "${OLD_PATH}" "${NEW_PATH}" 2>/dev/null \
+      && echo "migrated: ${OLD_PATH} -> ${NEW_PATH}" >> "${MIGLOG}" 2>/dev/null || true
+  fi
+done
+if [ -f "${APPDATA}/config.yml" ] && [ ! -f "${CFG_FILE}" ]; then
+  cp -a "${APPDATA}/config.yml" "${CFG_FILE}" 2>/dev/null \
+    && echo "migrated: ${APPDATA}/config.yml -> ${CFG_FILE}" >> "${MIGLOG}" 2>/dev/null || true
+fi
+for b in "${APPDATA}"/vikunja.db.bak_* "${APPDATA}"/vikunja.db.backup*; do
+  [ -f "$b" ] || continue
+  [ -e "${DATA_DIR}/$(basename "$b")" ] && continue
+  cp -a "$b" "${DATA_DIR}/" 2>/dev/null \
+    && echo "migrated: $b -> ${DATA_DIR}/" >> "${MIGLOG}" 2>/dev/null || true
+done
+
+# ── 保守：升级也重写 base unit（与 install_callback 同源）──
+# 即便升级前老 unit 里残留 User=hermes-studio（v2.7.0-1 及以前），这里用 RUN_USER 覆盖写一次，
+# 保证升级后 unit / chown / data-share permission 三者同源。本机现役 override.conf
+# （User=vikunja）是 drop-in，优先级高于 base unit，不会被这里覆盖影响（详见回报）。
+RUN_USER="${TRIM_USERNAME:-vikunja}"
+RUN_GROUP="${TRIM_GROUPNAME:-vikunja}"
+PORT="${TRIM_SERVICE_PORT:-3456}"
+BIN="${APP_DIR}/vikunja"
+UNIT="/etc/systemd/system/vikunja.service"
+if [ -x "${BIN}" ]; then
+  cat > "${UNIT}" <<EOS
+[Unit]
+Description=Vikunja Todo (fnOS app)
+After=network.target
+
+[Service]
+Type=simple
+User=${RUN_USER}
+Group=${RUN_GROUP}
+WorkingDirectory=${SHARE_ROOT}
+Environment=VIKUNJA_SERVICE_INTERFACE=:${PORT}
+ExecStart=${BIN} --config ${CFG_FILE}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOS
+  chmod 644 "${UNIT}"
+  # 数据目录属主随 unit 同源（升级路径也保 share/APPDATA 属主与运行用户一致）
+  chown -R ${RUN_USER}:${RUN_GROUP} "${SHARE_ROOT}" 2>/dev/null || true
+  chown -R ${RUN_USER}:${RUN_GROUP} "${APPDATA}" 2>/dev/null || true
+  systemctl daemon-reload 2>/dev/null || true
+fi
+# sidecar 单元无 User 行（root 跑），本轮不重写（详见回报）
+
 systemctl restart vikunja 2>/dev/null || true
 
 # ── v14：把已存在 config.yml 的 service.publicurl 复位为空 ──
@@ -12,13 +119,10 @@ systemctl restart vikunja 2>/dev/null || true
 #   - 仅当 publicurl 非空才动（空 = 已是目标态，跳过，零扰动）
 #   - 先 cp 备份 .bak_日期（用户规则：改配置前先备份）
 #   - 只改 service 段顶层的 publicurl 行，不碰其它配置
-APPDATA="${TRIM_PKGVAR:-}"
-if [ -z "${APPDATA}" ] && [ -n "${TRIM_APPDEST:-}" ]; then
-  APP_VOL="$(printf '%s' "${TRIM_APPDEST}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
-  [ -n "${APP_VOL}" ] && APPDATA="${APP_VOL}/@appdata/vikunja"
-fi
-[ -z "${APPDATA}" ] && APPDATA="/vol2/@appdata/vikunja"
-CFG="${APPDATA}/config.yml"
+# v2.7.0-2：config.yml 真身已迁到 share（CFG_FILE），优先改 share 那份；
+# 若 share 那份不存在（迁移尚未发生）再退化找 @appdata 老路径。
+CFG="${CFG_FILE}"
+[ -f "${CFG}" ] || CFG="${APPDATA}/config.yml"
 if [ -f "${CFG}" ]; then
   # v14: 用 Python 一次完成「探测+备份+改写」——避开 Bash 嵌套引号陷阱
   # 逻辑：读取 publicurl 当前值 → 非空则 cp 备份 → 仅改写 publicurl 行（保留 YAML 格式）→ 写回
@@ -56,8 +160,8 @@ fi
 # 路径模式，所以这里同样要：改 ui/config + 立即 UPDATE + 延时 30s 再 UPDATE +
 # 重启反代/网关。绝不 appcenter-cli start（会覆盖 entry）。
 PORT="${TRIM_SERVICE_PORT:-3456}"
-APP_DIR="${TRIM_APPDEST:-/var/apps/vikunja}"
 # app.tgz 解到 target/（软链 @appcenter/<app>），ui/config 在 target 下
+# APP_DIR 已在上方解析（含卷探测），此处不再覆盖
 UI_CONFIG="${APP_DIR}/target/ui/config"
 [ -f "${UI_CONFIG}" ] || UI_CONFIG="${APP_DIR}/ui/config"
 

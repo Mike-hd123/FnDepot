@@ -1,3 +1,4 @@
 #!/bin/bash
-# 升级前置：数据目录固定 /volX/@appdata/ezbookkeeping，严禁迁移/换目录（octopus 丢库教训）
+# 升级前置：数据与配置真身在 data-share「ezbookkeeping」，迁移由 upgrade_callback 幂等执行
+# （只在 share 目标为空时才 cp -a，不覆盖已有数据，源目录保留不删）
 exit 0

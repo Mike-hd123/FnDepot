@@ -1,0 +1,8 @@
+{
+    "defaults":
+    {
+        "run-as": "root"
+    },
+    "username": "vikunja",
+    "groupname": "vikunja"
+}

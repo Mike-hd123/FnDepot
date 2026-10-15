@@ -13,6 +13,11 @@ SUBNET=192.168.5.0/24
 GATEWAY=192.168.5.1
 IPVL0_IP=192.168.5.51
 
+# 迁移日志落 @appdata（TRIM_PKGVAR）；拿不到就退到 /tmp，避免日志写进死路径
+PKGVAR="${TRIM_PKGVAR:-/tmp}"
+mkdir -p "$PKGVAR" 2>/dev/null || PKGVAR=/tmp
+MIGRATE_LOG="${PKGVAR}/migrate.log"
+
 # --- woc-lan ipvlan 网络 ---
 # IFACE 选取：只挑真正可用的网卡——UP 状态 + 有默认路由。
 # 坑：曾抓到 DOWN 的 enp4s0(NO-CARRIER) 当 parent，ipvlan 挂死网卡上容器失联。
@@ -93,10 +98,68 @@ if [ -n "$DATA_DIR" ]; then
   chown 1000:1000 "$DATA_DIR" 2>/dev/null || true
 fi
 
-# 面板 config 落 @appshare（与 cmd/main VAR_DIR 一致）：预建目录 + 权限
-VAR_DIR="${WOC_VAR_DIR:-/vol1/@appshare/wechat-on-cloud}"
-mkdir -p "${VAR_DIR}/data" 2>/dev/null
-chown -R wechat-on-cloud:wechat-on-cloud "${VAR_DIR}" 2>/dev/null || chmod 777 "${VAR_DIR}" 2>/dev/null || true
+# 面板 config 落 data-share（config/resource 已声明 → fnOS 自动建目录 + 授 Windows ACL）。
+# share 解析规则必须与 cmd/main 完全一致（每个脚本自带一份，卸载阶段 cmd/ 可能已被清，不能 source）。
+# ⚠️ 此前这里是「自己 mkdir -p + chown/chmod 777 硬建 @appshare/wechat-on-cloud」——那拿不到
+#    官方自动授权（Windows ACL），且路径写死单卷。现改为：显式 WOC_VAR_DIR 覆盖才自建；
+#    否则交给 fnOS data-share，脚本只做存在性校验与必要的属主修正。
+resolve_share_root() {
+  local _app="$1" _name="$2" _paths="$3" _c
+  for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+    [ -n "${_c}" ] || continue
+    case "${_c}" in /vol0/*) continue ;; esac
+    if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+      printf '%s\n' "${_c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+die() {
+  echo "FATAL: $1" >&2
+  [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "FATAL: $1" > "${TRIM_TEMP_LOGFILE}"
+  exit 1
+}
+
+if [ -n "${WOC_VAR_DIR:-}" ]; then
+  # 显式覆盖：沿用自定义路径，目录由脚本自建（旧行为，仅显式设置时走）
+  SHARE_ROOT="${WOC_VAR_DIR}"
+  mkdir -p "${SHARE_ROOT}/data" 2>/dev/null \
+    || die "无法创建 WOC_VAR_DIR 数据目录 ${SHARE_ROOT}/data"
+  echo "WOC_VAR_DIR 显式覆盖，面板数据落: ${SHARE_ROOT}"
+else
+  SHARE_ROOT="$(resolve_share_root wechat-on-cloud wechat-on-cloud "${TRIM_DATA_SHARE_PATHS:-}")" \
+    || die "找不到 data-share 目录，请检查 config/resource 的 data-share 声明"
+  # 目录由 fnOS 创建，这里只校验 + 必要的属主修正（不用 777；a+rX 够读够进）
+  [ -d "${SHARE_ROOT}" ] || die "data-share 目录不存在: ${SHARE_ROOT}"
+  echo "data-share 就绪: ${SHARE_ROOT}"
+fi
+DATA_DIR="${SHARE_ROOT}/data"
+mkdir -p "${DATA_DIR}" 2>/dev/null || die "无法创建数据目录 ${DATA_DIR}（share 权限不足）"
+chown -R wechat-on-cloud:wechat-on-cloud "${SHARE_ROOT}" 2>/dev/null \
+  || chmod -R a+rX "${SHARE_ROOT}" 2>/dev/null || true
+chmod -R a+rX "${SHARE_ROOT}" 2>/dev/null || true
+
+# 幂等迁移（配方 C）：老布局面板数据在 @appshare/wechat-on-cloud；只在老位置有数据且
+# 新位置为空时 cp -a，源保留不删。失败只记日志不阻断安装。
+# ⚠️ 同一性判定比物理路径（readlink -f）：SHARE_ROOT 常是软链 → @appshare，字面不同但同体，
+#    按字符串比较会把目录拷到自己身上。
+LEGACY_VAR_DIR="${WOC_LEGACY_VAR_DIR:-/vol1/@appshare/wechat-on-cloud}"
+LEGACY_REAL="$(readlink -f "$LEGACY_VAR_DIR" 2>/dev/null || printf '%s' "$LEGACY_VAR_DIR")"
+SHARE_REAL="$(readlink -f "$SHARE_ROOT" 2>/dev/null || printf '%s' "$SHARE_ROOT")"
+if [ -n "$LEGACY_REAL" ] && [ "$LEGACY_REAL" != "$SHARE_REAL" ] \
+   && [ -d "${LEGACY_VAR_DIR}/data" ] && [ -n "$(ls -A "${LEGACY_VAR_DIR}/data" 2>/dev/null)" ]; then
+  if [ -z "$(ls -A "${DATA_DIR}" 2>/dev/null)" ]; then
+    cp -a "${LEGACY_VAR_DIR}/data/." "${DATA_DIR}/" 2>/dev/null \
+      && echo "migrated: ${LEGACY_VAR_DIR}/data -> ${DATA_DIR}" >> "${MIGRATE_LOG}" 2>/dev/null \
+      || echo "WARN: 面板数据迁移失败（旧数据仍在 ${LEGACY_VAR_DIR}/data，未丢失）" >&2
+  else
+    echo "migrate skipped: ${DATA_DIR} 非空，不覆盖"
+  fi
+else
+  echo "migrate: 新旧位置同体或无旧数据，无需迁移"
+fi
 
 # --- 飞牛「应用开放 API」：面板运行用户加入 TrimApiUsers 组 ---
 # 三件套之一（组权限；另两件 = manifest api-scope + 系统注入 TRIM_API_TOKEN env）。

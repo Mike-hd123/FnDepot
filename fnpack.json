@@ -69,6 +69,17 @@
               "size": 15646875
             }
           }
+        },
+        "1.5.2-2": {
+          "changelog": "1.5.2-2（2026-10-15）：share 合规修复，应用体 app.tgz 定档不动（md5 32ad5249… 与 manifest checksum 不变式保持），上游仍 v1.5.2。①config/resource 原来只有 api-scope、没有 data-share——面板数据目录是脚本 mkdir + chmod 777 硬建的，拿不到官方 Windows ACL 且路径写死单卷；现保留 api-scope 原样、追加 data-share「wechat-on-cloud」，目录交由 fnOS 创建与授权，脚本只做存在性校验与 a+rX 属主修正。②面板数据落 ${SHARE_ROOT}/data（accounts.json/sessions.json/logs 同级关系不变），日志与 PID 归 @appdata。③迁移同一性判定用 readlink -f 比物理路径：SHARE_ROOT 是软链、老路径是实体挂载点，字面不等但同体——若按字符串比会把目录 cp -a 到自己身上。实测同体即跳过、真异构才迁移，所以本版是「换授权来源」而非搬数据，登录会话不受影响。④两类数据边界：面板数据入官方 share；微信实例数据目录（用户自选 WOC_DATA_DIR bind）不在清理范围，卸载清除分支只动 share 内容与 @appdata，已 grep 核对无任何 rm/find 指向实例目录。⑤卸载双选 wizard/uninstall（默认保留）；WOC_VAR_DIR 显式覆盖语义保留。",
+          "updated_at": "2026-10-15T16:37:18+08:00",
+          "packages": {
+            "all": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/wechat-on-cloud-v1.5.2-2/wechat-on-cloud-1.5.2-2-x86.fpk",
+              "sha256": "4cd80a16c220390c18e3f92d9ba40360987a9dd332bc13c935715b53395fba59",
+              "size": 15651585
+            }
+          }
         }
       }
     },
@@ -131,6 +142,17 @@
               "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/hyatlas-v4.7.3-1/hyatlas-4.7.3-1-x86.fpk",
               "sha256": "7a8fcc6a9d0c8f772eecbbb25ec037adb0a0bad936c48b579dd4d15769a953d3",
               "size": 242648812
+            }
+          }
+        },
+        "4.7.3-2": {
+          "changelog": "4.7.3-2（2026-10-15）：share 合规修复，**纯打包层**——上游仍 v4.7.3、Go 源码/二进制（sha 1bc38015…）/模型三件套（ONNX/ORT/tokenizer sha 断言）零变更，REUSE_BIN=1 显式声明不重编意图，SHA_BIN 强校验仍生效。①去掉 dirname \"${TRIM_DATA_SHARE_PATHS}\" 这一已被实测证伪的写法：安装阶段该变量是未落卷占位路径 /vol0/@appshare/<app>，拼出的目录不存在也建不动；多值时还会得到含冒号的非法路径。现按官方两跳解析（先 /var/apps/hyatlas/shares/hyatlas 软链）。②**不会搬家已用 inode 实证**：新旧解析同为 dev 39 / inode 712570，go-data 同为 712571——1.5G 记忆库原地不动，只是取路径的方式变稳。③「shares 实体化自愈」保守保留（两跳第一跳正读这条软链，一旦被安装器重建为实体目录，解析会静默落到空目录——它是唯一能发现该故障的闸门，历史已空库两次），改造为软链校验 + mv 留底不 rm。④卸载新增双选 wizard/uninstall（默认保留，文案点明这是长期记忆正源、清除不可恢复）；uninstall_callback 读 wizard_delete_data，清除走 find -mindepth 1 含隐藏文件。⑤跨应用兜底：读 octopus 取 master_key 改为按候选顺序试 share 与 @appdata 两处，命中即用、全空则留空（LLM 判 unconfigured，不影响启动与本地向量召回），日志只记路径不记密钥。⑥订正过时注释：shares 实际指向空间2（/vol2/@appshare），不是 vol1。",
+          "updated_at": "2026-10-15T16:37:18+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/hyatlas-v4.7.3-2/hyatlas-4.7.3-2-x86.fpk",
+              "sha256": "9aceae366b02cbcb4f56c5353e9be6ebc623c04911239bfddb0315a7b2d60a22",
+              "size": 242654348
             }
           }
         }
@@ -197,6 +219,17 @@
               "size": 22683210
             }
           }
+        },
+        "0.13.12-2": {
+          "changelog": "0.13.12-2（2026-10-15）：share 合规修复，二进制=上游官方 v0.13.12 CI 产物原样不重编。①根因是「假合规」：data-share 声明了、/vol1/@appshare/octopus 也被 fnOS 建出来了，但 cmd/main 把 DATA_DIR 取 TRIM_PKGVAR，data.db（含 api_keys，本机 LLM 密钥正源）/config.json/listen.conf 实际全在 @appdata，共享目录是空壳。现数据三项全入 share，日志与 PID 留 @appdata。②两跳 resolve_share_root 内联进四个生命周期脚本；install 里原有的两段历史迁移（旧 root 安装、docker 版 hermes-studio 数据）目标一并改为 share。③幂等迁移走白名单文件（只搬 data.db*/config.json/listen.conf，不搬 panel.log/gateway.log/*.pid），share 已有库即 skip——沙箱实测逐字节未被覆盖。④监听地址开关 listen.conf 随库同级入 share，升级/重装不丢。⑤卸载双选 wizard/uninstall（默认保留）；upgrade_callback 由 8 行空壳补成真正的迁移通道。⑥脚本无任何密钥读取与打印，日志只记路径与动作。⚠️ 跨应用提示：hyatlas 读 octopus data.db 取 master_key 的兜底已同步改为优先 share 路径、失败回退老 @appdata，两条通道都试。",
+          "updated_at": "2026-10-15T16:37:18+08:00",
+          "packages": {
+            "all": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/octopus-v0.13.12-2/octopus-0.13.12-2-x86.fpk",
+              "sha256": "31f1fee57bc21659328486c4bb2182ad3efac36a5278e95a7b3f61904c224580",
+              "size": 22688851
+            }
+          }
         }
       }
     },
@@ -238,6 +271,17 @@
               "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.23/ezbookkeeping-2.0.1-1.fpk",
               "sha256": "2e4d67bef4b94ce6d29f101b672cce9f30759ce38e195d693858c5520c4b3b85",
               "size": 24384400
+            }
+          }
+        },
+        "2.0.1-2": {
+          "changelog": "2.0.1-2（2026-10-15）：share 合规修复，二进制=上游官方 release 原样零变更（上游仍 v2.0.1）。①config/resource 此前是空 {}，现声明 data-share「ezbookkeeping」——账单库/附件/配置全面落共享目录，文件管理器「应用文件」可见，升级/重装不丢；@appdata 只留 boot.log 与 PID。②四个生命周期脚本各内联一份 resolve_share_root 两跳解析（先 /var/apps/<app>/shares/<name> 软链，退化 TRIM_DATA_SHARE_PATHS 首段并跳过 /vol0 占位），不再用 dirname 拼未落卷路径。③幂等不覆盖迁移：老 @appdata 的 data/log/storage 有内容且 share 目标为空才 cp -a，源不删，写 migrate.log；已在 share 的数据不会被重复搬运，跨卷历史遗留（vol1/vol2 并存）也不会反向覆盖。④每次启动强制把 ini 的 db_path/log_path/local_filesystem_path 重写为 share 路径——抢救来的老 ini 里写死的 @appdata 绝对路径不会漏。⑤新增卸载双选 wizard/uninstall（字段 wizard_delete_data，默认保留），选清除时先停进程再 find -mindepth 1 清空含隐藏文件。⑥安装/升级失败信息写 TRIM_TEMP_LOGFILE，应用中心界面可见。注：现役数据实测在 /vol2/@appdata/ezbookkeeping（vol1 那份是 9-05 旧副本），升级即完成首次入 share。",
+          "updated_at": "2026-10-15T16:37:18+08:00",
+          "packages": {
+            "all": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/ezbookkeeping-v2.0.1-2/ezbookkeeping-2.0.1-2-x86.fpk",
+              "sha256": "1e3228cb59d1b23b6af3e689b98c51b910d1f34198663b9d1f0cdb8e0ede18f2",
+              "size": 24388822
             }
           }
         }
@@ -282,6 +326,17 @@
               "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/v2026.09.23/vikunja-2.7.0-1-x86.fpk",
               "sha256": "a133fdfc7c00826483b81832b9e7868813ea8acac4350849b7c84827e4f18455",
               "size": 48926361
+            }
+          }
+        },
+        "2.7.0-2": {
+          "changelog": "2.7.0-2（2026-10-15）：share 合规修复，二进制=上游官方 v2.7.0 linux-amd64-full 原样（zip sha256 569861fd…/ELF 9745ad79… 断言不变）。①根因：config/resource 从 2.6.0 起就声明了 data-share，但脚本从没用它——vikunja.db/files/logs/config.yml 全落 @appdata，用户看不见=声明与实现脱节。现四个生命周期脚本各内联两跳 resolve_share_root，数据与配置真身入 share。②幂等迁移只用 cp -a、绝不 mv 不删源、目标已存在即跳过（沙箱实测：把 share 内 DB 换成新版后重跑迁移，仍是新版，不被老副本覆盖）——待办库是唯一事实源，保守优先。③运行用户同源修正：unit 原写 User=hermes-studio，而 data-share 只把 rw 授给 vikunja、chown 又两行互相覆盖；现统一取 fnOS 注入的 $TRIM_USERNAME（兜底 vikunja），unit/chown/permission 三者同源，否则别人全新安装（没有本机 override.conf）会因拿不到 share 权限而起不来。④修真 bug：cmd_main 第 49 行调用 die 却从未定义，share 解析失败会报 command notfound 而非可读提示。⑤set -e 下命令替换加保护，避免解析失败时跳过 systemd unit 清理段（残留旧 unit 会与新 app_id 冲突）。⑥新增卸载双选 wizard/uninstall；失败信息写 TRIM_TEMP_LOGFILE。",
+          "updated_at": "2026-10-15T16:37:18+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/vikunja-v2.7.0-2/vikunja-2.7.0-2-x86.fpk",
+              "sha256": "ba94a1c3a3e7363a2efa997f1faf3bbba8cb81d4c661b7862d9a6d8f4de045c2",
+              "size": 48917477
             }
           }
         }

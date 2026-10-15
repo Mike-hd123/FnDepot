@@ -1,11 +1,35 @@
 #!/bin/bash
+# cmd/uninstall_callback — 卸载双选：wizard_delete_data=false 保留 / true 清除
+#
+# 0.13.12-2 合规修复：清除分支只清 share 内容 + @appdata；保留时二者都不动，可直接重装复用。
+# 顺序：先停进程（gateway sidecar 的 SIGTERM 会顺带停应用）→ 再清数据，避免边写边删。
 set -u
+DATA="${wizard_delete_data:-false}"
+echo "数据删除选项: ${DATA:-<unset>}"
+
 VAR_DIR="${TRIM_PKGVAR:-/var/apps/octopus/var}"
 APP_DIR="${TRIM_APPDEST:-/vol1/@appcenter/octopus}"
 PID_FILE="${VAR_DIR}/panel.pid"
 GW_PID_FILE="${VAR_DIR}/gateway.pid"
 
-# 先停网关 sidecar（其 SIGTERM 会顺带停应用），再兜底停应用
+# share 解析规则与 cmd/main 完全一致（本脚本自带一份：卸载阶段不能依赖 source 别的文件）
+resolve_share_root() {
+  local _app="$1" _name="$2" _paths="$3" _c
+  for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+    [ -n "${_c}" ] || continue
+    case "${_c}" in /vol0/*) continue ;; esac
+    if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+      printf '%s\n' "${_c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+SHARE_ROOT="$(resolve_share_root octopus octopus "${TRIM_DATA_SHARE_PATHS:-}")"
+SHARE_ROOT="${SHARE_ROOT:-/var/apps/octopus/shares/octopus}"
+
+# ── 先停网关 sidecar（其 SIGTERM 会顺带停应用），再兜底停应用 ──
 if [ -f "$GW_PID_FILE" ]; then
   gwpid=$(cat "$GW_PID_FILE" 2>/dev/null)
   if [ -n "$gwpid" ] && kill -0 "$gwpid" 2>/dev/null; then
@@ -27,4 +51,27 @@ if [ -f "$PID_FILE" ]; then
 fi
 
 rm -f "${APP_DIR}/app.sock" 2>/dev/null || true
+
+# ── 双选分支 ──
+case "$DATA" in
+    "true")
+        # 只清内容，保留目录本体与属主，便于将来重装复用
+        # 用 find 不用 rm -rf "$D"/* —— 通配不匹配 . 开头隐藏文件，会留垃圾
+        echo "清除 share 数据内容：${SHARE_ROOT}"
+        if [ -n "${SHARE_ROOT}" ] && [ -d "${SHARE_ROOT}" ]; then
+            find "${SHARE_ROOT}" -mindepth 1 -maxdepth 1 -exec rm -rf {} + \
+              && echo "share 内容清除成功" || echo "清除失败" >&2
+        else
+            echo "share 数据目录不存在，无需清除"
+        fi
+        # 日志/PID 属 @appdata，一并清除（配置真身在 share，不受这里影响）
+        echo "清除 @appdata 日志：${VAR_DIR}"
+        if [ -n "${VAR_DIR}" ] && [ -d "${VAR_DIR}" ]; then
+            rm -rf "${VAR_DIR}"
+        fi
+        ;;
+    "false"|*)
+        echo "保留数据文件（share 数据与 @appdata 日志均不动，可随时重装恢复）"
+        ;;
+esac
 exit 0

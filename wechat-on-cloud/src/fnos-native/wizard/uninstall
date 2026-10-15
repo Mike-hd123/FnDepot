@@ -1,0 +1,21 @@
+[
+  {
+    "stepTitle": "卸载应用",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "保留或删除应用数据。\n\n• 面板数据（账号/会话/配置）在共享目录 wechat-on-cloud 里，文件管理器可见；选择保留则重装后可继续使用。\n• 微信实例数据目录（安装/创建实例时用户自选的路径，如 /vol2/1000/weixin/woc-data-<id>，含聊天记录）不在本清理范围内，无论选哪项都不会被删除。"
+      },
+      {
+        "type": "radio",
+        "field": "wizard_delete_data",
+        "label": "仅卸载，保留现有数据以备将来重新安装。",
+        "initValue": "false",
+        "options": [
+          { "label": "保留现有数据", "value": "false" },
+          { "label": "清除所有应用数据（不可恢复）！！！", "value": "true" }
+        ]
+      }
+    ]
+  }
+]

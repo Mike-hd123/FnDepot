@@ -1,13 +1,54 @@
 #!/bin/bash
+# cmd/uninstall_callback — 卸载双选：wizard_delete_data=false 保留 / true 清除
+# 清除只清「应用 share 目录内容」+ @appdata；保留时二者都不动，可直接重装复用。
+#
+# ⚠️ 清除分支绝不能碰用户自选的微信实例数据目录：
+#    实例数据在 WOC_DATA_DIR（默认 /vol2/1000/weixin/woc-data-<id>）或 docker 命名卷，
+#    是本应用 share 之外的用户数据，卸载一律不动（见下方注释与 ./wizard/uninstall 文案）。
 set -u
-# NAS 定制: 面板数据统一落 @appshare(与 cmd/main 一致)
-VAR_DIR="${WOC_VAR_DIR:-/vol1/@appshare/wechat-on-cloud}"
+
+APP_DIR="${TRIM_APPDEST:-/usr/local/apps/@appcenter/wechat-on-cloud}"
+# PID/日志在 @appdata（与 cmd/main 的 VAR_DIR 一致）
+VAR_DIR="${TRIM_PKGVAR:-/vol1/@appdata/wechat-on-cloud}"
 PID_FILE="${VAR_DIR}/panel.pid"
 PROXY_PID_FILE="${VAR_DIR}/proxy.pid"
 SYNC_PID_FILE="${VAR_DIR}/hosts-sync.pid"
-APP_DIR="${TRIM_APPDEST:-/usr/local/apps/@appcenter/wechat-on-cloud}"
 
-# 停止面板进程（直接读 PID 文件 kill，不调 cmd/main）
+# share 解析规则与 cmd/main 完全一致（本脚本自带一份：卸载阶段不能依赖 source 别的文件）
+resolve_share_root() {
+  local _app="$1" _name="$2" _paths="$3" _c
+  for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+    [ -n "${_c}" ] || continue
+    case "${_c}" in /vol0/*) continue ;; esac
+    if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+      printf '%s\n' "${_c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+if [ -n "${WOC_VAR_DIR:-}" ]; then
+  SHARE_ROOT="${WOC_VAR_DIR}"
+else
+  SHARE_ROOT="$(resolve_share_root wechat-on-cloud wechat-on-cloud "${TRIM_DATA_SHARE_PATHS:-}")"
+  SHARE_ROOT="${SHARE_ROOT:-/var/apps/wechat-on-cloud/shares/wechat-on-cloud}"
+fi
+
+DATA="${wizard_delete_data:-false}"
+echo "数据删除选项: ${DATA:-<unset>}"
+
+# --- 先停进程（清数据前必须无进程在写）---
+# 优先调同目录 main stop（它按 cmdline 扫描清场，比只读 PID 文件可靠）；
+# 路径拿不到再退回 PID 文件 kill。
+MAIN_SELF="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/main"
+if [ -f "$MAIN_SELF" ]; then
+  "$MAIN_SELF" stop >/dev/null 2>&1 || true
+elif [ -f "${APP_DIR}/cmd/main" ]; then
+  "${APP_DIR}/cmd/main" stop >/dev/null 2>&1 || true
+fi
+
+# 停止面板进程（直接读 PID 文件 kill，兜底）
 if [ -f "$PID_FILE" ]; then
   pid=$(cat "$PID_FILE" 2>/dev/null)
   if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
@@ -36,4 +77,30 @@ fi
 rm -f "${APP_DIR}/app.sock" 2>/dev/null || true
 rm -f "${VAR_DIR}/panel.pid" 2>/dev/null || true
 rm -f "${VAR_DIR}/hosts-sync.pid" 2>/dev/null || true
+
+# --- 按选择清理数据（配方 F）---
+case "$DATA" in
+    "true")
+        # 只清 share 内容，保留目录本体与属主，便于将来重装复用。
+        # 用 find 不用 rm -rf "$D"/* —— 通配不匹配 . 开头隐藏文件，会留垃圾。
+        # 注意：这里只作用于「应用 share 根」，不涉及 WOC_DATA_DIR / 实例 bind 目录 / docker 卷。
+        echo "清除 share 数据内容：${SHARE_ROOT}"
+        if [ -n "${SHARE_ROOT}" ] && [ -d "${SHARE_ROOT}" ]; then
+            find "${SHARE_ROOT}" -mindepth 1 -maxdepth 1 -exec rm -rf {} + \
+              && echo "share 内容清除成功" || echo "清除失败" >&2
+        else
+            echo "share 数据目录不存在，无需清除"
+        fi
+        # 日志/PID 属 @appdata，一并清除（配置真身在 share，不受这里影响）
+        echo "清除 @appdata 日志：${VAR_DIR}"
+        if [ -n "${VAR_DIR}" ] && [ -d "${VAR_DIR}" ]; then
+            rm -rf "${VAR_DIR}"
+        fi
+        # 微信实例数据目录（WOC_DATA_DIR / bind / 命名卷）不在本清理范围内，明确不删：
+        echo "跳过用户自选微信实例数据目录（${WOC_DATA_DIR:-/vol2/1000/weixin}），不在本清理范围内"
+        ;;
+    "false"|*)
+        echo "保留数据文件（share 数据、@appdata 日志、实例数据目录均不动，可随时重装恢复）"
+        ;;
+esac
 exit 0

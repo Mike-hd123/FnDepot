@@ -5,7 +5,7 @@
             {
                 "type": "tips",
                 "label": "",
-                "helpText": "Octopus — One Hub, All LLMs For You\nCopyright (c) bestruirui\n\nThis program is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License v3.0 (AGPL-3.0).\n\nUpstream project: https://github.com/bestruirui/octopus\nThe full license text is included in the package (LICENSE)."
+                "helpText": "Octopus — One Hub, All LLMs For You\nCopyright (c) bestruirui\n\nThis program is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License v3.0 (AGPL-3.0).\n\nUpstream project: https://github.com/bestruirui/octopus\nThe full license text is included in the package (LICENSE).\n\n数据与配置存放在共享目录 octopus 中（data.db / config.json / listen.conf）：文件管理器可见，升级与重装都不会丢失。\n默认只监听 127.0.0.1:8081（服务本机网关）；需局域网直连请编辑共享目录下的 listen.conf，改为 OCTOPUS_LISTEN_HOST=0.0.0.0 后重启应用。"
             }
         ]
     }

@@ -1,6 +1,78 @@
 #!/bin/bash
-# 升级回调：与 install_callback 同步做 TrimApiUsers 组授权（幂等）。
-# fnOS 升级路径可能不走 install_callback，这里兜底，保证升级后开放 API 三件套不缺组。
+# 升级回调两部分：
+# 1) TrimApiUsers 组授权（幂等）：fnOS 升级路径可能不走 install_callback，这里兜底，
+#    保证升级后开放 API 三件套不缺组。
+# 2) 面板数据落 data-share + 老布局幂等迁移（源不删、不覆盖）。
+# share 解析规则必须与 cmd/main 完全一致（每个脚本自带一份，卸载阶段 cmd/ 可能已被清，不能 source）。
+set -u
+
+# 日志落 @appdata（TRIM_PKGVAR）；拿不到退 /tmp，避免写进死路径
+PKGVAR="${TRIM_PKGVAR:-/tmp}"
+mkdir -p "$PKGVAR" 2>/dev/null || PKGVAR=/tmp
+LOG="${PKGVAR}/upgrade.log"
+echo "===== upgrade_callback $(date) from ${TRIM_OLD_APPVER:-?} -> ${TRIM_APPVER:-?} =====" >> "$LOG"
+
+die() {
+  echo "FATAL: $1" >&2
+  [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "FATAL: $1" > "${TRIM_TEMP_LOGFILE}"
+  exit 1
+}
+
+# 见 cmd/main 同名函数注释：优先 /var/apps/<app>/shares/<name> 软链，退化用
+# TRIM_DATA_SHARE_PATHS 首段（不是 dirname），/vol0/* 占位路径一律跳过。
+resolve_share_root() {
+  local _app="$1" _name="$2" _paths="$3" _c
+  for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+    [ -n "${_c}" ] || continue
+    case "${_c}" in /vol0/*) continue ;; esac
+    if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+      printf '%s\n' "${_c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# --- 面板数据落 data-share（与 cmd/main 同口径）---
+if [ -n "${WOC_VAR_DIR:-}" ]; then
+  SHARE_ROOT="${WOC_VAR_DIR}"
+  mkdir -p "${SHARE_ROOT}/data" 2>/dev/null \
+    || die "无法创建 WOC_VAR_DIR 数据目录 ${SHARE_ROOT}/data"
+  echo "WOC_VAR_DIR 显式覆盖，面板数据落: ${SHARE_ROOT}" >> "$LOG"
+else
+  SHARE_ROOT="$(resolve_share_root wechat-on-cloud wechat-on-cloud "${TRIM_DATA_SHARE_PATHS:-}")" \
+    || die "找不到 data-share 目录，请检查 config/resource 的 data-share 声明"
+  [ -d "${SHARE_ROOT}" ] || die "data-share 目录不存在: ${SHARE_ROOT}"
+  echo "data-share 就绪: ${SHARE_ROOT}" >> "$LOG"
+fi
+DATA_DIR="${SHARE_ROOT}/data"
+mkdir -p "${DATA_DIR}" 2>/dev/null || die "无法创建数据目录 ${DATA_DIR}"
+
+# 属主/权限修正：只读够进即可，不用 777
+chown -R wechat-on-cloud:wechat-on-cloud "${SHARE_ROOT}" 2>/dev/null || true
+chmod -R a+rX "${SHARE_ROOT}" 2>/dev/null || true
+
+# 幂等迁移（配方 C）：老布局在 @appshare/wechat-on-cloud；老位置有数据且新位置为空才 cp -a，
+# 源保留不删；重复升级不覆盖、不重复搬运。
+# ⚠️ 同一性判定比物理路径（readlink -f）：SHARE_ROOT 常是软链 → @appshare，字面不同但同体，
+#    按字符串比较会把目录拷到自己身上。
+LEGACY_VAR_DIR="${WOC_LEGACY_VAR_DIR:-/vol1/@appshare/wechat-on-cloud}"
+LEGACY_REAL="$(readlink -f "$LEGACY_VAR_DIR" 2>/dev/null || printf '%s' "$LEGACY_VAR_DIR")"
+SHARE_REAL="$(readlink -f "$SHARE_ROOT" 2>/dev/null || printf '%s' "$SHARE_ROOT")"
+if [ -n "$LEGACY_REAL" ] && [ "$LEGACY_REAL" != "$SHARE_REAL" ] \
+   && [ -d "${LEGACY_VAR_DIR}/data" ] && [ -n "$(ls -A "${LEGACY_VAR_DIR}/data" 2>/dev/null)" ]; then
+  if [ -z "$(ls -A "${DATA_DIR}" 2>/dev/null)" ]; then
+    cp -a "${LEGACY_VAR_DIR}/data/." "${DATA_DIR}/" 2>/dev/null \
+      && echo "migrated: ${LEGACY_VAR_DIR}/data -> ${DATA_DIR}" >> "$LOG" \
+      || echo "WARN: 面板数据迁移失败（旧数据仍在 ${LEGACY_VAR_DIR}/data，未丢失）" >> "$LOG"
+  else
+    echo "migrate skipped: ${DATA_DIR} 非空，不覆盖" >> "$LOG"
+  fi
+else
+  echo "migrate: 新旧位置同体或无旧数据，无需迁移" >> "$LOG"
+fi
+
+# --- TrimApiUsers 组授权（幂等）---
 if getent group TrimApiUsers >/dev/null 2>&1; then
   if id -nG wechat-on-cloud 2>/dev/null | tr ' ' '\n' | grep -qx TrimApiUsers; then
     echo "TrimApiUsers: wechat-on-cloud 已在组，跳过"

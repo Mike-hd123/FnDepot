@@ -2,8 +2,10 @@
 set -u
 
 APP_DIR="${TRIM_APPDEST:-/usr/local/apps/@appcenter/wechat-on-cloud}"
-# NAS 定制: 面板数据(accounts/sessions/log/pid)统一落 @appshare(用户要求 config 存 share)
-VAR_DIR="${WOC_VAR_DIR:-/vol1/@appshare/wechat-on-cloud}"
+# 运行区(@appdata)：只放日志 / PID / 临时运行文件（TRIM_PKGVAR）。
+# ⚠️ 配置与数据不放这里：@appdata 是内部区，用户不可见，且 fnOS 官方 data-share 才是
+#    对用户可见、可跨重装复用的位置。
+VAR_DIR="${TRIM_PKGVAR:-/vol1/@appdata/wechat-on-cloud}"
 LOG_FILE="${VAR_DIR}/panel.log"
 PID_FILE="${VAR_DIR}/panel.pid"
 PROXY_PID_FILE="${VAR_DIR}/proxy.pid"
@@ -11,7 +13,46 @@ SYNC_PID_FILE="${VAR_DIR}/hosts-sync.pid"
 NODE_BIN="/vol1/@appcenter/nodejs_v24/bin/node"
 TSX_LOADER_DIR="${APP_DIR}/server/node_modules/tsx/dist"
 
-mkdir -p "${VAR_DIR}"
+die() {
+  echo "FATAL: $1" >&2
+  [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "FATAL: $1" > "${TRIM_TEMP_LOGFILE}"
+  exit 1
+}
+
+# 面板 config/data 落 data-share（config/resource 已声明 → fnOS 自动建目录 + 授 Windows ACL）。
+# ⚠️ 别用 dirname "${TRIM_DATA_SHARE_PATHS}" 再拼路径：安装阶段 fnOS 给的是还没落卷的占位
+#    路径（/vol0/@appshare/...），拼出来的目录不存在也建不出来，静默失败 → 数据其实没落 share。
+# 正解：优先用 fnOS 自己维护的软链 /var/apps/<app>/shares/<name>（永远指向真实卷），
+# 退化再用 TRIM_DATA_SHARE_PATHS 首段（官方 ${VAR%%:*}，取首段，不是 dirname）。
+# 官方文档写 /var/apps/<app>/share/（单数），实测系统是 shares/（复数），以实测为准。
+# 本函数在四个生命周期脚本里各内联一份（卸载阶段 cmd/ 可能已被清，禁止 source 兄弟文件）。
+resolve_share_root() {
+  local _app="$1" _name="$2" _paths="$3" _c
+  for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+    [ -n "${_c}" ] || continue
+    case "${_c}" in /vol0/*) continue ;; esac
+    if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+      printf '%s\n' "${_c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# WOC_VAR_DIR 的语义保留为「显式覆盖」：显式设置时数据就落它（旧行为/自定义部署），
+# 未显式设置才走 data-share 解析。这样存量部署与自定义路径都不被强行搬家。
+if [ -n "${WOC_VAR_DIR:-}" ]; then
+  SHARE_ROOT="${WOC_VAR_DIR}"
+  echo "WOC_VAR_DIR 显式覆盖，面板数据落: ${SHARE_ROOT}" >&2
+else
+  SHARE_ROOT="$(resolve_share_root wechat-on-cloud wechat-on-cloud "${TRIM_DATA_SHARE_PATHS:-}")" \
+    || die "找不到 data-share 目录，请检查 config/resource 的 data-share 声明"
+fi
+
+# 面板 config/data 落 share 之下；PID 与日志留 @appdata（TRIM_PKGVAR）。
+DATA_DIR="${SHARE_ROOT}/data"
+
+mkdir -p "${VAR_DIR}" "${DATA_DIR}"
 
 # 活性判定改为 cmdline 模式扫描（不依赖 pid 文件——旧版 pid 文件只记 tsx wrapper，
 # 真实 server 是其子进程，wrapper 被杀后子进程孤儿化存活，pid 文件判定会失真）。
@@ -141,7 +182,7 @@ do_start() {
   export WOC_PANEL_PORT="${WOC_PANEL_PORT:-8080}"
   export HOST="${HOST:-0.0.0.0}"
   export SOCK_PATH="${SOCK_PATH:-${APP_DIR}/app.sock}"
-  export PANEL_DATA="${PANEL_DATA:-${VAR_DIR}/data/accounts.json}"
+  export PANEL_DATA="${PANEL_DATA:-${DATA_DIR}/accounts.json}"
   export WOC_VERSION="${WOC_VERSION:-1.5.2}"  # 面板版本=上游语义化版本；fnOS 包版本(TRIM_APPVER)的 -N 本地修订号不喂进代码
   export PANEL_ALLOWED_HOSTS="${PANEL_ALLOWED_HOSTS:-*.mike-hd123.fnos.net}"
   # docker 权限检测：非 root 运行时若无 docker 组，实例管理不可用
@@ -159,6 +200,27 @@ do_start() {
   export WOC_DATA_DIR="${WOC_DATA_DIR:-/vol2/1000/weixin}"
   export STATIC_DIR="${APP_DIR}/web-dist"
   mkdir -p "$(dirname "${PANEL_DATA}")"
+  # 幂等迁移（配方 C）：老布局把面板数据放在 @appshare 根目录（data 子目录 + JSON 文件），
+  # 现由 fnOS data-share 接管。只在「老位置有东西 且 新位置为空」时才 cp -a，源不删
+  # （留待用户或卸载清理）；重复启动不会覆盖、不会重复搬运。
+  # ⚠️ 同一性判定必须比物理路径（readlink -f）：SHARE_ROOT 常是软链
+  #    /var/apps/<app>/shares/<name> → /vol1/@appshare/<app>，与老路径字面不同但同体，
+  #    按字符串比较会把目录拷到自己身上。
+  migrate_legacy_panel_data() {
+    local _old_dir="${WOC_LEGACY_VAR_DIR:-/vol1/@appshare/wechat-on-cloud}"
+    local _old_data="${_old_dir}/data"
+    local _old_real _new_real
+    _old_real="$(readlink -f "$_old_dir" 2>/dev/null || printf '%s' "$_old_dir")"
+    _new_real="$(readlink -f "${SHARE_ROOT}" 2>/dev/null || printf '%s' "${SHARE_ROOT}")"
+    [ -n "$_old_real" ] && [ "$_old_real" = "$_new_real" ] && return 0   # 同体，无需迁移
+    if [ -d "$_old_data" ] && [ -n "$(ls -A "$_old_data" 2>/dev/null)" ]; then
+      if [ -z "$(ls -A "${DATA_DIR}" 2>/dev/null)" ]; then
+        cp -a "$_old_data/." "${DATA_DIR}/" 2>/dev/null \
+          && echo "migrated: $_old_data -> ${DATA_DIR}" >> "${VAR_DIR}/migrate.log" 2>/dev/null || true
+      fi
+    fi
+  }
+  migrate_legacy_panel_data
   # 陈旧 sock 文件清掉（此时已无任何进程在听）；面板自己 listen 前也会再清一次。
   rm -f "${SOCK_PATH}" 2>/dev/null
   # A1（核心）：单进程直起，去掉 tsx wrapper —— 手工复刻 tsx cli 的 spawn argv

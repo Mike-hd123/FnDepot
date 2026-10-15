@@ -6,12 +6,43 @@
 set -u
 
 APP_DIR="${TRIM_APPDEST:-/vol1/@appcenter/hyatlas}"
-# 数据目录: 复用现役 v3 的 /var/apps/hyatlas/shares (→ /vol1/@appshare/hyatlas)，v4 数据子目录独立于 v3
-APP_SHARE="${TRIM_SHARE_DIR:-}"
-if [ -z "${APP_SHARE}" ]; then
-  APP_SHARE="/var/apps/hyatlas/shares"
+
+# ── share 根目录解析（4.7.3-2 合规修复）──────────────────────────────────────
+# ⚠️ 旧写法 APP_SHARE="$(dirname "${TRIM_DATA_SHARE_PATHS}")" 已被实测证伪：
+#    安装阶段 TRIM_DATA_SHARE_PATHS 是"尚未落卷"的占位路径（实测 /vol0/@appshare/<app>），
+#    dirname 得到 /vol0/@appshare，拼出的目录既不存在也建不动（权限拒绝 → 被吞掉 →
+#    静默失败：日志写 ready 但数据从没进 share）。这正是 hyatlas 两次"改名包后数据空"
+#    的根因，此前靠 shares 实体化自愈补丁兜着。
+# 正解（emby-in-one 1.4.4-9 已实测通过的两跳写法）：
+#    ① fnOS 自维护软链 /var/apps/<app>/shares/<name>（永远指向真实落卷位置）
+#    ② 退化用 TRIM_DATA_SHARE_PATHS 首段（${VAR%%:*}，不是 dirname），并显式跳过 /vol0/*。
+# 实测核对（2026-10-15 只读 ls/readlink）：本机 /var/apps/hyatlas/shares -> /vol2/@appshare，
+#    故第①跳 /var/apps/hyatlas/shares/hyatlas -> /vol2/@appshare/hyatlas，与现役数据实际
+#    所在路径**完全同一处**（go-data 子目录），不会触发数据搬家。
+resolve_share_root() {
+  local _app="$1" _name="$2" _paths="$3" _c
+  for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+    [ -n "${_c}" ] || continue
+    case "${_c}" in /vol0/*) continue ;; esac
+    if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+      printf '%s\n' "${_c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# TRIM_SHARE_DIR 作为显式覆盖保留（迁移期手动指定用）；否则走两跳解析。
+_cov="${TRIM_SHARE_DIR:-}"
+if [ -n "${_cov}" ]; then
+  SHARE_ROOT="${_cov%/}/hyatlas"
+else
+  SHARE_ROOT="$(resolve_share_root hyatlas hyatlas "${TRIM_DATA_SHARE_PATHS:-}")" || SHARE_ROOT=""
 fi
-SHARE_ROOT="${APP_SHARE}/hyatlas"
+# 都拿不到时退回 fnOS 维护的软链路径（比裸 /var/apps/hyatlas/shares 更精确）
+SHARE_ROOT="${SHARE_ROOT:-/var/apps/hyatlas/shares/hyatlas}"
+APP_SHARE="$(dirname "${SHARE_ROOT}")"
+# 数据落在 SHARE_ROOT 之下；子目录名沿用现役布局 go-data，避免把已有库搬错位置
 DATA_DIR="${SHARE_ROOT}/go-data"
 VAR_DIR="${TRIM_PKGVAR:-/vol1/@appdata/hyatlas}"
 LOG_FILE="${VAR_DIR}/panel.log"
@@ -159,7 +190,33 @@ case "${1:-}" in
         [ -n "${V3_MODEL:-}" ] && [ ! -f "$ENV_FILE" ] && HYATLAS_LLM_MODEL="$V3_MODEL"
       fi
       if [ -z "${HYATLAS_LLM_KEY:-}" ]; then
-        HYATLAS_LLM_KEY=$(sqlite3 "${TRIM_PKGVAR:-/vol1/@appdata/octopus}/data.db" "SELECT value FROM settings WHERE key='master_key' LIMIT 1;" 2>/dev/null)
+        # ── 跨应用兜底：从 Octopus 的 data.db 取 master_key ──────────────────────
+        # ⚠️ 耦合点（4.7.3-2 记录）：这里读写的是**别的应用**的数据，不是 hyatlas 自己的。
+        #    另一个任务正在把 octopus 的 data.db 迁进它自己的 data-share，届时老路径
+        #    /vol1/@appdata/octopus/data.db 会消失。故改为两处都试：
+        #      ① octopus 的 data-share 路径（迁移后的新家）
+        #      ② TRIM_DATA_SHARE_PATHS 之外常见的 share 位置（/var/apps/octopus/shares/octopus）
+        #      ③ 老 @appdata 位置（迁移前/未迁移时的现役位置）
+        #    全部失败则保持 KEY 为空（LLM 判 unconfigured），不影响应用启动与本地向量召回。
+        #    只记路径与命中与否，绝不打印 key 本身。
+        OCT_DB=""
+        for _c in \
+          "/var/apps/octopus/shares/octopus/data.db" \
+          "/vol1/@appshare/octopus/data.db" \
+          "/vol2/@appshare/octopus/data.db" \
+          "${OCTOPUS_DB_PATH:-}" \
+          "${TRIM_PKGVAR:-/vol1/@appdata/octopus}/data.db" \
+          "/vol1/@appdata/octopus/data.db" \
+          "/vol2/@appdata/octopus/data.db" ; do
+          [ -n "${_c}" ] || continue
+          if [ -f "${_c}" ]; then OCT_DB="${_c}"; break; fi
+        done
+        if [ -n "${OCT_DB}" ]; then
+          HYATLAS_LLM_KEY=$(sqlite3 "${OCT_DB}" "SELECT value FROM settings WHERE key='master_key' LIMIT 1;" 2>/dev/null)
+          if [ -n "${HYATLAS_LLM_KEY:-}" ]; then
+            echo "llm key fallback: octopus master_key read from ${OCT_DB}" >> "$LOG_FILE" 2>/dev/null || true
+          fi
+        fi
       fi
     fi
     export HYATLAS_LLM_KEY="${HYATLAS_LLM_KEY:-}"

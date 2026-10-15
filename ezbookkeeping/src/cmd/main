@@ -1,29 +1,48 @@
 #!/bin/bash
 # cmd/main — EZBookkeeping 进程管理（fnOS 标准桌面应用法，参照 9router 模板）
+# v4(2026-10-15 share 合规修复): 数据与配置真身改落 data-share（应用文件 → ezbookkeeping），
+#   @appdata 只留 日志/PID/临时运行文件；老数据幂等迁移（不覆盖、源不删）。
 # v3: 补 fnOS 统一网关 socket 自注册（对齐 minibill 模式），恢复手机端 /app/ezbookkeeping 路由。
-# PID 文件管理，不依赖 systemd；数据目录钉死 @appdata/ezbookkeeping，升级不换目录。
+# PID 文件管理，不依赖 systemd。
 set -uo pipefail
 
 APP_NAME="${TRIM_APPNAME:-ezbookkeeping}"
 APP_DIR="${TRIM_APPDEST:-/var/apps/${APP_NAME}}"
-# 数据目录: 优先 TRIM_PKGVAR (fnOS 注入). 兜底: 从 fnOS home 软链或 APP_DIR 推导卷, 不写死具体卷.
-APP_VOL=""
-if [ -n "${TRIM_PKGVAR:-}" ]; then
-    DATA_DIR="${TRIM_PKGVAR}"
-else
-    if [ -L "${APP_DIR}/home" ]; then
-        APP_HOME="$(readlink -f "${APP_DIR}/home")"
-        APP_VOL="$(printf '%s' "${APP_HOME}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
-    fi
-    if [ -z "${APP_VOL}" ]; then
-        APP_VOL="$(printf '%s' "${APP_DIR}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
-    fi
-    if [ -n "${APP_VOL}" ]; then
-        DATA_DIR="${APP_VOL}/@appdata/${APP_NAME}"
-    else
-        DATA_DIR="${APP_DIR}/var"
-    fi
-fi
+# @appdata 只放日志/PID/临时运行文件（数据与配置真身已移到 share）
+VAR_DIR="${TRIM_PKGVAR:-/vol2/@appdata/${APP_NAME}}"
+
+die() {
+    echo "FATAL: $1" >&2
+    [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "FATAL: $1" > "${TRIM_TEMP_LOGFILE}"
+    exit 1
+}
+
+# ── share 解析（两跳；本脚本自带一份，禁止 source 兄弟文件）──
+# ⚠️ 别对 TRIM_DATA_SHARE_PATHS 取目录名再拼 share 名：安装阶段 fnOS 给的是还没落卷的
+#    占位路径（/vol0/@appshare/<app>），拼出来的目录不存在也建不出来（静默失败 → 数据其实没落 share）。
+#    正解：优先用 fnOS 自己维护的软链 /var/apps/<app>/shares/<name>（永远指向真实卷），
+#    退化再用 TRIM_DATA_SHARE_PATHS 首段（官方写法 ${VAR%%:*}，取首段，不是取目录名）。
+# ⚠️ 也别用应用安装目录下的 shares 子目录（TRIM_APPDEST=@appcenter）—— 升级会整体替换 @appcenter，数据必丢。
+resolve_share_root() {
+    local _app="$1" _name="$2" _paths="$3" _c
+    for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+        [ -n "${_c}" ] || continue
+        case "${_c}" in /vol0/*) continue ;; esac
+        if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+            printf '%s\n' "${_c}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+SHARE_ROOT="$(resolve_share_root "${APP_NAME}" ezbookkeeping "${TRIM_DATA_SHARE_PATHS:-}")" \
+    || die "找不到 data-share 目录，请检查 config/resource 的 data-share 声明"
+# 数据/附件落 share/data 与 share/storage；ini 真身落 share 根（@appcenter 每次升级整体删除）
+DATA_DIR="${SHARE_ROOT}/data"
+LOG_DIR="${SHARE_ROOT}/log"
+STORAGE_DIR="${SHARE_ROOT}/storage"
+CONF="${SHARE_ROOT}/ezbookkeeping.ini"
 
 # 兼容两种部署布局（对齐 9router）：fnOS 传 TRIM_APPDEST=/volX/@appcenter/<app> → 二进制在 ${APP_DIR}/server；
 # 部分版本 TRIM_APPDEST=/var/apps/<app> → 在 ${APP_DIR}/target/server
@@ -37,20 +56,22 @@ else
 fi
 
 APP_BIN="${BIN_DIR}/ezbookkeeping"
-CONF="${DATA_DIR}/ezbookkeeping.ini"
-PID_FILE="${DATA_DIR}/ezbookkeeping.pid"
-GW_PID_FILE="${DATA_DIR}/gateway.pid"
-GW_LOG="${DATA_DIR}/gateway.log"
+# 日志/PID 属 @appdata（用户不可见、无需备份的运行态文件）
+PID_FILE="${VAR_DIR}/ezbookkeeping.pid"
+GW_PID_FILE="${VAR_DIR}/gateway.pid"
+GW_LOG="${VAR_DIR}/gateway.log"
+BOOT_LOG="${VAR_DIR}/boot.log"
 GW_SCRIPT="${APP_DIR}/gateway/gateway_proxy.py"
 [ -f "${GW_SCRIPT}" ] || GW_SCRIPT="${APP_DIR}/target/gateway/gateway_proxy.py"
-BOOT_LOG="${DATA_DIR}/boot.log"
 
-# 端口：优先 fnOS 注入 TRIM_SERVICE_PORT，其次读数据目录配置，兜底 8580
+# 端口：优先 fnOS 注入 TRIM_SERVICE_PORT，其次读 share 里的配置，兜底 8580
 PORT="${TRIM_SERVICE_PORT:-}"
 if [ -z "${PORT}" ] && [ -f "${CONF}" ]; then
     PORT="$(sed -n 's/^http_port *= *//p' "${CONF}" | head -1)"
 fi
 PORT="${PORT:-8580}"
+
+mkdir -p "${VAR_DIR}" 2>/dev/null || true
 
 gw_running() {
     [ -f "${GW_PID_FILE}" ] && kill -0 "$(cat "${GW_PID_FILE}" 2>/dev/null)" 2>/dev/null
@@ -97,27 +118,36 @@ stop_gateway() {
 }
 
 # ── 配置管理 ──
-# 首次部署：从应用自带模板生成数据目录配置（含随机 secret_key）
-ensure_conf() {
-    mkdir -p "${DATA_DIR}/data" "${DATA_DIR}/log" "${DATA_DIR}/storage"
-    if [ ! -f "${CONF}" ]; then
-        if [ -f "${BIN_DIR}/conf/ezbookkeeping.ini" ]; then
-            cp "${BIN_DIR}/conf/ezbookkeeping.ini" "${CONF}"
-        else
-            echo "ERROR: conf template missing (${BIN_DIR}/conf/ezbookkeeping.ini)" >&2
-            exit 1
+# 配置真身在 share（@appcenter 每次升级整体删除，配置留在那儿必丢）。
+# 首次部署：优先抢救历史位置的 ini（老 @appdata → 包内默认模板），都没有才谈得上「缺配置」。
+salvage_conf() {
+    [ -f "${CONF}" ] && return 0
+    for OLD in "${VAR_DIR}/ezbookkeeping.ini" "${BIN_DIR}/conf/ezbookkeeping.ini"; do
+        if [ -f "$OLD" ]; then
+            cp -p "$OLD" "${CONF}" 2>/dev/null \
+                && echo "[$(date '+%F %T')] salvaged ini: ${OLD} -> ${CONF}" \
+                     >> "${VAR_DIR}/migrate.log" 2>/dev/null || true
+            [ -f "${CONF}" ] && return 0
         fi
-    fi
-    # 每次启动刷新占位符（升级安全：非占位符值不动，secret_key 保留原值，数据目录永不更换）
+    done
+    return 1
+}
+
+ensure_conf() {
+    mkdir -p "${DATA_DIR}" "${LOG_DIR}" "${STORAGE_DIR}" \
+        || die "无法创建数据目录 ${DATA_DIR}（share 权限不足）"
+    salvage_conf || die "缺少配置文件：share 目录 ${SHARE_ROOT}/ 下没有 ezbookkeeping.ini，包内默认模板 ${BIN_DIR}/conf/ezbookkeeping.ini 也缺失"
+    # 每次启动刷新占位符（升级安全：非占位符值不动，secret_key 保留原值）
+    # 三条路径一律指向 share 实况：老配置里写死的 @appdata 绝对路径在这里被纠正
     if grep -q '^secret_key = @SECRET_KEY@$' "${CONF}" 2>/dev/null; then
         SECRET="$(openssl rand -hex 32 2>/dev/null || (head -c 64 /dev/urandom | md5sum | cut -c1-64))"
         sed -i "s#^secret_key = @SECRET_KEY@\$#secret_key = ${SECRET}#" "${CONF}"
     fi
     sed -i \
         -e "s#^http_port = .*#http_port = ${PORT}#" \
-        -e "s#^db_path = @DB_PATH@\$#db_path = ${DATA_DIR}/data/ezbookkeeping.db#" \
-        -e "s#^log_path = @LOG_PATH@\$#log_path = ${DATA_DIR}/log/ezbookkeeping.log#" \
-        -e "s#^local_filesystem_path = @STORAGE_PATH@\$#local_filesystem_path = ${DATA_DIR}/storage/#" \
+        -e "s#^db_path = .*#db_path = ${DATA_DIR}/ezbookkeeping.db#" \
+        -e "s#^log_path = .*#log_path = ${LOG_DIR}/ezbookkeeping.log#" \
+        -e "s#^local_filesystem_path = .*#local_filesystem_path = ${STORAGE_DIR}/#" \
         "${CONF}"
 }
 
@@ -125,8 +155,25 @@ running() {
     [ -f "${PID_FILE}" ] && kill -0 "$(cat "${PID_FILE}" 2>/dev/null)" 2>/dev/null
 }
 
+# ── 老数据幂等迁移（升级主通道；不覆盖、源不删）──
+# 老位置（@appdata 的 data/log/storage）有东西、且 share 目标为空时才 cp -a，
+# 源目录保留不删（留待用户或卸载时清理）。已在 share 的数据不会被再次搬运。
+migrate_legacy() {
+    local _pair _src _dst
+    for _pair in "${VAR_DIR}/data:${DATA_DIR}" "${VAR_DIR}/storage:${STORAGE_DIR}" "${VAR_DIR}/log:${LOG_DIR}"; do
+        _src="${_pair%%:*}"; _dst="${_pair##*:}"
+        [ -d "${_src}" ] || continue
+        [ -n "$(ls -A "${_src}" 2>/dev/null)" ] || continue
+        [ -z "$(ls -A "${_dst}" 2>/dev/null)" ] || continue
+        cp -a "${_src}/." "${_dst}/" 2>/dev/null \
+            && echo "[$(date '+%F %T')] migrated: ${_src} -> ${_dst}" \
+                 >> "${VAR_DIR}/migrate.log" 2>/dev/null || true
+    done
+}
+
 start() {
     ensure_conf
+    migrate_legacy
     if running; then
         echo "already running (pid $(cat "${PID_FILE}"))"
         start_gateway || true

@@ -1,35 +1,83 @@
 #!/bin/bash
-# 安装后置：确保数据目录存在且可写
+# cmd/install_callback — 安装后置：建 share 数据骨架 + 幂等迁移老 @appdata 数据 + enable_gzip 兜底
+# share 解析规则必须与 cmd/main 完全一致（每个脚本自带一份，卸载阶段 cmd/ 可能已被清，不能 source）
 set -uo pipefail
 
 APP_NAME="${TRIM_APPNAME:-ezbookkeeping}"
 APP_DIR="${TRIM_APPDEST:-/var/apps/${APP_NAME}}"
-APP_VOL=""
-if [ -n "${TRIM_PKGVAR:-}" ]; then
-    DATA_DIR="${TRIM_PKGVAR}"
-else
-    if [ -L "${APP_DIR}/home" ]; then
-        APP_HOME="$(readlink -f "${APP_DIR}/home")"
-        APP_VOL="$(printf '%s' "${APP_HOME}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
-    fi
-    [ -z "${APP_VOL}" ] && APP_VOL="$(printf '%s' "${APP_DIR}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
-    if [ -n "${APP_VOL}" ]; then
-        DATA_DIR="${APP_VOL}/@appdata/${APP_NAME}"
-    else
-        DATA_DIR="${APP_DIR}/var"
-    fi
+VAR_DIR="${TRIM_PKGVAR:-/vol2/@appdata/${APP_NAME}}"
+
+die() {
+    echo "FATAL: $1" >&2
+    [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "FATAL: $1" > "${TRIM_TEMP_LOGFILE}"
+    exit 1
+}
+
+# ── share 解析（两跳；本脚本自带一份，禁止 source 兄弟文件）──
+# 优先 /var/apps/<app>/shares/<name>（fnOS 维护的软链，永远指向真实卷），
+# 退化用 TRIM_DATA_SHARE_PATHS 首段；/vol0/* 是未落卷占位路径，必须跳过。
+resolve_share_root() {
+    local _app="$1" _name="$2" _paths="$3" _c
+    for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+        [ -n "${_c}" ] || continue
+        case "${_c}" in /vol0/*) continue ;; esac
+        if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+            printf '%s\n' "${_c}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+SHARE_ROOT="$(resolve_share_root "${APP_NAME}" ezbookkeeping "${TRIM_DATA_SHARE_PATHS:-}")" \
+    || die "找不到 data-share 目录，请检查 config/resource 的 data-share 声明（TRIM_DATA_SHARE_PATHS=${TRIM_DATA_SHARE_PATHS:-<unset>}）"
+
+DATA_DIR="${SHARE_ROOT}/data"
+LOG_DIR="${SHARE_ROOT}/log"
+STORAGE_DIR="${SHARE_ROOT}/storage"
+CONF="${SHARE_ROOT}/ezbookkeeping.ini"
+
+mkdir -p "${VAR_DIR}" "${DATA_DIR}" "${LOG_DIR}" "${STORAGE_DIR}" \
+    || die "无法创建数据目录 ${DATA_DIR}（share 权限不足）"
+echo "[$(date '+%F %T')] install_callback: share ready ${SHARE_ROOT}" >> "${VAR_DIR}/install.log"
+
+# 配置真身进 share：share 没有就从老 @appdata 抢救一份（不覆盖 share 已有）
+if [ ! -f "${CONF}" ] && [ -f "${VAR_DIR}/ezbookkeeping.ini" ]; then
+    cp -p "${VAR_DIR}/ezbookkeeping.ini" "${CONF}" 2>/dev/null \
+        && echo "[$(date '+%F %T')] ini migrated: ${VAR_DIR}/ezbookkeeping.ini -> ${CONF}" \
+             >> "${VAR_DIR}/migrate.log"
 fi
 
-mkdir -p "${DATA_DIR}/data" "${DATA_DIR}/log" "${DATA_DIR}/storage"
-chmod -R a+rwx "${DATA_DIR}" 2>/dev/null || true
+# ── 幂等不覆盖迁移：老 @appdata 的 data/log/storage 有东西、且 share 目标为空时才 cp -a ──
+# 源目录保留不删（留待用户确认或卸载时清理）；已在 share 的数据不会被重复搬运。
+for PAIR in "${VAR_DIR}/data:${DATA_DIR}" "${VAR_DIR}/storage:${STORAGE_DIR}" "${VAR_DIR}/log:${LOG_DIR}"; do
+    SRC="${PAIR%%:*}"; DST="${PAIR##*:}"
+    [ -d "${SRC}" ] || continue
+    [ -n "$(ls -A "${SRC}" 2>/dev/null)" ] || continue
+    [ -z "$(ls -A "${DST}" 2>/dev/null)" ] || continue
+    if cp -a "${SRC}/." "${DST}/" 2>/dev/null; then
+        echo "[$(date '+%F %T')] migrated: ${SRC} -> ${DST}" >> "${VAR_DIR}/migrate.log"
+    else
+        echo "[$(date '+%F %T')] migrate FAILED: ${SRC} -> ${DST}" >> "${VAR_DIR}/migrate.log"
+    fi
+done
 
 # v12 P0 幂等兜底：确保运行配置 enable_gzip=true（老配置 enable_gzip=false 会在升级时保留，
 # 导致 gzip 提速丢失）。仅改这一行，其余配置不动；只在明确为 false 时才改。
-if [ -f "${DATA_DIR}/ezbookkeeping.ini" ] && grep -q '^enable_gzip *= *false' "${DATA_DIR}/ezbookkeeping.ini"; then
-    cp -a "${DATA_DIR}/ezbookkeeping.ini" "${DATA_DIR}/ezbookkeeping.ini.bak_gzip" 2>/dev/null || true
-    sed -i 's#^enable_gzip *= *false#enable_gzip = true#' "${DATA_DIR}/ezbookkeeping.ini"
-    echo "[$(date '+%F %T')] enable_gzip=false -> true (P0 idempotent fix)" >> "${DATA_DIR}/install.log"
+# 配置真身在 share，两条路径都扫一遍，覆盖老包 ini 仍留在 @appdata 的过渡情况。
+for INI in "${CONF}" "${VAR_DIR}/ezbookkeeping.ini"; do
+    if [ -f "${INI}" ] && grep -q '^enable_gzip *= *false' "${INI}"; then
+        cp -a "${INI}" "${INI}.bak_gzip" 2>/dev/null || true
+        sed -i 's#^enable_gzip *= *false#enable_gzip = true#' "${INI}"
+        echo "[$(date '+%F %T')] enable_gzip=false -> true (P0 idempotent fix): ${INI}" \
+            >> "${VAR_DIR}/install.log"
+    fi
+done
+
+# 二进制体检：缺二进制 = 装了个空壳，装阶段就拦住
+if [ ! -x "${APP_DIR}/server/ezbookkeeping" ] && [ ! -x "${APP_DIR}/target/server/ezbookkeeping" ]; then
+    die "安装包内缺二进制 server/ezbookkeeping，请重新打包"
 fi
 
-echo "[$(date '+%F %T')] install_callback ok, data dir: ${DATA_DIR}" >> "${DATA_DIR}/install.log"
+echo "[$(date '+%F %T')] install_callback ok, data dir: ${DATA_DIR}" >> "${VAR_DIR}/install.log"
 exit 0

@@ -1,28 +1,65 @@
 #!/bin/bash
 # cmd/main — Octopus 进程管理（v3: 补 fnOS 统一网关 socket 自注册，对齐 minibill 模式）
 # 应用监听 TCP 8081；gateway sidecar 监听 APPDEST/app.sock 转 TCP（手机端 /app/octopus 路由恢复）
+#
+# 数据落点（0.13.12-2 合规修复）：
+#   数据真身 = data-share（${SHARE_ROOT}）：data.db / config.json / listen.conf 全在这里，
+#   文件管理器可见，升级/重装不丢。
+#   @appdata（TRIM_PKGVAR）只留 日志 / PID / 临时运行文件。
 set -u
 
 APP_DIR="${TRIM_APPDEST:-/vol1/@appcenter/octopus}"
-# 数据目录: 优先 TRIM_PKGVAR (fnOS 注入, volume 安装=/vol1/@appdata/octopus);
-# 兜底从 APP_DIR 提取卷推导, 不写死卷号 (对齐 9router 规范)
-DATA_DIR="${TRIM_PKGVAR:-}"
-if [ -z "${DATA_DIR}" ]; then
+
+# ── data-share 两跳解析（每个生命周期脚本各内联一份，禁止 source 兄弟文件：
+#    卸载阶段 cmd/ 可能已被清）──
+# 为什么不写死卷号、不用 dirname "${TRIM_DATA_SHARE_PATHS}"：
+#   安装阶段 fnOS 给的是还没落卷的占位路径（/vol0/@appshare/octopus），dirname 拼出来的
+#   目录不存在也建不动，配合 || true 会静默失败 —— 日志写着「落 share 了」，数据其实在别处。
+#   也不放 ${APP_DIR}/shares（TRIM_APPDEST=@appcenter）：升级会整体替换 @appcenter，数据必丢。
+# 官方文档写 /var/apps/<app>/share/（单数），实测系统用 shares/（复数），以实测为准。
+resolve_share_root() {
+  local _app="$1" _name="$2" _paths="$3" _c
+  for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+    [ -n "${_c}" ] || continue
+    case "${_c}" in /vol0/*) continue ;; esac
+    if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+      printf '%s\n' "${_c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+die() {
+  echo "FATAL: $1" >&2
+  [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "FATAL: $1" > "${TRIM_TEMP_LOGFILE}"
+  exit 1
+}
+
+SHARE_ROOT="$(resolve_share_root octopus octopus "${TRIM_DATA_SHARE_PATHS:-}")" \
+  || die "找不到 data-share 目录，请检查 config/resource 的 data-share 声明"
+
+# 数据真身全在 share（data.db / config.json / listen.conf 同级）
+DATA_DIR="${SHARE_ROOT}"
+# @appdata 只留日志/PID（TRIM_PKGVAR 注入，volume 安装=/vol1/@appdata/octopus）
+VAR_DIR="${TRIM_PKGVAR:-}"
+if [ -z "${VAR_DIR}" ]; then
   APP_VOL="$(printf '%s' "${APP_DIR}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
   if [ -n "${APP_VOL}" ]; then
-    DATA_DIR="${APP_VOL}/@appdata/octopus"
+    VAR_DIR="${APP_VOL}/@appdata/octopus"
   else
-    DATA_DIR="/var/apps/octopus/var"
+    VAR_DIR="/var/apps/octopus/var"
   fi
 fi
-VAR_DIR="${DATA_DIR}"
 LOG_FILE="${VAR_DIR}/panel.log"
 PID_FILE="${VAR_DIR}/panel.pid"
 GW_PID_FILE="${VAR_DIR}/gateway.pid"
-# 监听地址开关的持久配置文件（落 @appdata，与 data.db 同级 → 升级/重装不丢）
-HOST_CONF="${VAR_DIR}/listen.conf"
+GW_LOG_FILE="${VAR_DIR}/gateway.log"
+# 监听地址开关的持久配置文件（0.13.12-2 起落 share，与 data.db 同级 → 升级/重装不丢，用户可见）
+HOST_CONF="${DATA_DIR}/listen.conf"
 
-mkdir -p "${VAR_DIR}"
+mkdir -p "${VAR_DIR}" "${DATA_DIR}" \
+  || die "无法创建目录 ${VAR_DIR} / ${DATA_DIR}（share 权限不足）"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 监听地址开关（v0.13.12-1 新增）
@@ -44,7 +81,7 @@ mkdir -p "${VAR_DIR}"
 #     设 0.0.0.0  → LISTEN *:PORT
 #
 # 打开 0.0.0.0 的两种方式（任选其一，改完重启应用生效）：
-#   A) 持久开关（推荐，升级不丢）：编辑 ${VAR_DIR}/listen.conf
+#   A) 持久开关（推荐，升级不丢）：编辑 ${SHARE_ROOT}/listen.conf
 #        改为 OCTOPUS_LISTEN_HOST=0.0.0.0
 #   B) 一次性环境变量：OCTOPUS_LISTEN_HOST=0.0.0.0（覆盖 config 文件，不落盘）
 # 取值只接受 127.0.0.1 / 0.0.0.0 两个白名单值，其它一律回落默认（防手滑写错致监听失败/暴露）。
@@ -74,6 +111,26 @@ seed_listen_conf() {
 # 0.0.0.0   = 同时监听局域网（飞牛 app / 手机 / 其它设备可直连 8081）
 OCTOPUS_LISTEN_HOST=127.0.0.1
 EOF
+}
+
+# 幂等把老 @appdata 里的数据/配置搬进 share（只在 share 缺时拷，源不删）
+# 0.13.12-2 升级是存量用户把 data.db 搬进 share 的主通道 —— 必须保住且绝不删源。
+migrate_legacy_data() {
+  local _old="${TRIM_PKGVAR:-}" _f
+  [ -n "${_old}" ] && [ -d "${_old}" ] || return 0
+  [ "${_old}" = "${DATA_DIR}" ] && return 0
+  # 逐个文件搬：老位置有、share 还没有，才拷（幂等，源一律不删）
+  for _f in data.db data.db-wal data.db-shm config.json listen.conf; do
+    if [ -f "${_old}/${_f}" ] && [ ! -f "${DATA_DIR}/${_f}" ]; then
+      cp -a "${_old}/${_f}" "${DATA_DIR}/${_f}" 2>/dev/null \
+        && echo "migrated: ${_old}/${_f} -> ${DATA_DIR}/${_f}" >> "${VAR_DIR}/migrate.log" 2>/dev/null
+    fi
+  done
+  # 老版本遗留的 data/ 子目录一并搬（整体搬迁，仅在 share 里还没有时）
+  if [ -d "${_old}/data" ] && [ -n "$(ls -A "${_old}/data" 2>/dev/null)" ] && [ ! -d "${DATA_DIR}/data" ]; then
+    cp -a "${_old}/data" "${DATA_DIR}/data" 2>/dev/null \
+      && echo "migrated: ${_old}/data -> ${DATA_DIR}/data" >> "${VAR_DIR}/migrate.log" 2>/dev/null
+  fi
 }
 
 is_running() {
@@ -117,14 +174,16 @@ stop_gw() {
 case "${1:-}" in
   start)
     is_running && gw_running && exit 0
+    migrate_legacy_data
     seed_listen_conf
     LISTEN_HOST="$(resolve_listen_host)"
     export OCTOPUS_SERVER_PORT="8081"
     # 默认 127.0.0.1（只服务本机 sidecar/DSH），listen.conf 或 OCTOPUS_LISTEN_HOST 可切 0.0.0.0
     export OCTOPUS_SERVER_HOST="${LISTEN_HOST}"
+    # 数据库真身在 share（升级不会被 @appcenter 整体替换抹掉）
     export OCTOPUS_DATABASE_PATH="${DATA_DIR}/data.db"
     export OCTOPUS_LOG_LEVEL="info"
-    mkdir -p "${DATA_DIR}"
+    mkdir -p "${DATA_DIR}" || die "无法创建数据目录 ${DATA_DIR}（share 权限不足）"
 
     # ── 应用进程（TCP 8081）──
     if ! is_running; then
@@ -145,12 +204,12 @@ case "${1:-}" in
       GATEWAY_SOCK_PATH="${APP_DIR}/app.sock" \
       GATEWAY_BACKEND_PORT="8081" \
       GATEWAY_PID_FILE="$GW_PID_FILE" \
-      nohup python3 "${APP_DIR}/gateway/gateway_proxy.py" >> "${VAR_DIR}/gateway.log" 2>&1 &
+      nohup python3 "${APP_DIR}/gateway/gateway_proxy.py" >> "${GW_LOG_FILE}" 2>&1 &
       echo $! > "$GW_PID_FILE"
       sleep 1
       if ! gw_running || [ ! -S "${APP_DIR}/app.sock" ]; then
         echo "gateway sidecar start failed" >&2
-        [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "网关 sidecar 启动失败，查看日志：${VAR_DIR}/gateway.log" > "${TRIM_TEMP_LOGFILE}"
+        [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "网关 sidecar 启动失败，查看日志：${GW_LOG_FILE}" > "${TRIM_TEMP_LOGFILE}"
         stop_app
         exit 1
       fi

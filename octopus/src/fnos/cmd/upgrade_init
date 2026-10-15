@@ -1,3 +1,3 @@
 #!/bin/bash
-# 升级前置：数据目录钉死 /vol1/@appdata/octopus，严禁迁移/新建数据目录
+# 升级前置：数据真身在 data-share（0.13.12-2 起），升级只覆盖 APPDEST 内文件，不动 share 与 @appdata
 exit 0

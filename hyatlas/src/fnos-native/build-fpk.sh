@@ -26,12 +26,16 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-OUT="${1:-/vol2/1000/download/hyatlas-4.7.3-1-x86.fpk}"
+OUT="${1:-/vol2/1000/download/hyatlas-4.7.3-2-x86.fpk}"
 REF_FPK="/vol2/1000/workspace/hy450-sync/out/hyatlas-4.5.0-2-x86.fpk"   # 242,218,811B 实测存在；其内层模型三件套 sha 与 SHA_ONNX/SHA_ORT/SHA_TOK 逐件相同
 
-# SHA_BIN must be recomputed against the freshly built bin/hyatlas-go-linux-amd64 for 4.7.3-1 (fork-src @ hyatlas/src).
+# SHA_BIN must be recomputed against the freshly built bin/hyatlas-go-linux-amd64 for 4.7.3-2 (fork-src @ hyatlas/src).
 # Do NOT ship fpk with the placeholder below; run sha256sum on the binary and replace.
+# 4.7.3-2 是**纯打包层修复**（只改 fnOS 控制层脚本/文档，Go 业务源码零改动），因此二进制
+# 沿用 4.7.3-1 已出货的同一件（sha 1bc38015 不变），本轮不重编。REUSE_BIN=1 显式声明该意图，
+# 见下方自检闸。
 SHA_BIN="1bc38015c4e5fd1e5e4e9159c75cae94d2afd8c494f3a40d7d8a9bdc6a5c098c"   # 实测：v4.7.3 合并树(-trimpath,无 -s -w)；15,661,048B；同步上游 v4.7.3 (fork src @ hyatlas/src)
+REUSE_BIN="${REUSE_BIN:-1}"   # 1 = 本轮为打包层修订，允许复用 bin/ 现有二进制（非重编）；重编发布时置 0
 SHA_ONNX="8a3f371a7e535e25d3d5a0ff0c0501a605ef0b62577800d2bf4b1fc76d6cbcf1"
 SHA_ORT="99458e9d185dfa1a9b5f6510790ede3bedc25dea378adb904ce292b517eeaecf"
 SHA_TOK="7dfbf1966ebf99d471c3796e9b457329d2b2182b817e144f1e904b957745c839"
@@ -39,6 +43,9 @@ SHA_TOK="7dfbf1966ebf99d471c3796e9b457329d2b2182b817e144f1e904b957745c839"
 # ── SHA_BIN 自检闸（防"只改 manifest 不动二进制"）────────────────────────────
 # sha256sum -c 只能证明"bin/ 里的文件 == SHA_BIN 写的值"，两者一起写旧值照样全绿。
 # 所以在组装前硬性拒绝：仍是占位符 / 不是 64 位十六进制 / 等于历史已出货二进制的 sha。
+# ⚠️ 4.7.3-2 例外：本版是纯打包层修复（Go 源码与模型零变更），显式用 REUSE_BIN=1
+#    声明"沿用现有二进制"，此时身份闸（下面 case）降级为 WARN 而非 FATAL；
+#    但 SHA_BIN == bin/ 实际 sha 的强校验**始终生效**，不会放过"脚本写旧值"的情形。
 case "$SHA_BIN" in
   TBD*|*recompute*|*[!0-9a-fA-F]*)
     echo "FATAL: SHA_BIN 非法（占位符或不是 64 位十六进制 sha256）: '$SHA_BIN'" >&2
@@ -48,19 +55,24 @@ esac
 [ -f "$HERE/bin/hyatlas-go-linux-amd64" ] || { echo "FATAL: 缺 $HERE/bin/hyatlas-go-linux-amd64" >&2; exit 1; }
 ACTUAL_BIN_SHA="$(sha256sum "$HERE/bin/hyatlas-go-linux-amd64" | cut -d' ' -f1)"
 [ "$ACTUAL_BIN_SHA" = "$SHA_BIN" ] || { echo "FATAL: SHA_BIN($SHA_BIN) != bin/ 实际 sha($ACTUAL_BIN_SHA)" >&2; exit 1; }
+GATE_FATAL=1
+[ "$REUSE_BIN" = "1" ] && GATE_FATAL=0
+_identity_gate() {
+  if [ "$GATE_FATAL" = "1" ]; then echo "FATAL: $1" >&2; exit 1; else echo "WARN(REUSE_BIN=1 打包层修订): $1" >&2; fi
+}
 case "$ACTUAL_BIN_SHA" in
   4a39e8e02cf564c1b0c085a1ec216d02ba0eb4bea952ca95b77c1163bd76e95b)
-    echo "FATAL: bin/ 仍是 4.5.0-2 出货二进制（4a39e8e0），不能以 4.6.0-1 名义打包" >&2; exit 1;;
+    _identity_gate "bin/ 仍是 4.5.0-2 出货二进制（4a39e8e0），不能以 4.7.3-2 名义打包";;
   01bec1798c50456672b2a2980aa931b994d10e55f6c97caebea60b3ce73abdce)
-    echo "FATAL: bin/ 仍是 4.3.3-1 出货二进制（01bec179），不能以 4.6.0-1 名义打包" >&2; exit 1;;
+    _identity_gate "bin/ 仍是 4.3.3-1 出货二进制（01bec179），不能以 4.7.3-2 名义打包";;
   83740365a1235a2dc0086be35c1d7667dd7eb7817c0ff09d1b229e3df18d2b4d)
-    echo "FATAL: bin/ 仍是 4.3.0-1 出货二进制（83740365），不能以 4.6.0-1 名义打包" >&2; exit 1;;
+    _identity_gate "bin/ 仍是 4.3.0-1 出货二进制（83740365），不能以 4.7.3-2 名义打包";;
   f9acdf9f4917df1f73a609ce975d4651684a6d0ccdd533f071a7ee66a8c47c2d)
     echo "WARN: bin/ 是 dashboard 汉化修复前的 f9acdf9f —— 若 i18n 补全已合入则本值应已变化" >&2;;
   510b83cc2f9d7b9d670c0b523df3a343cd81077a0e70a514618b13133c159b34)
-    echo "FATAL: bin/ 仍是 4.7.2-1 出货二进制（510b83cc），不能以 4.7.3-1 名义打包" >&2; exit 1;;
+    _identity_gate "bin/ 仍是 4.7.2-1 出货二进制（510b83cc），不能以 4.7.3-2 名义打包";;
 esac
-echo "SHA_BIN 自检通过: $ACTUAL_BIN_SHA ($(stat -c '%s' "$HERE/bin/hyatlas-go-linux-amd64") B)"
+echo "SHA_BIN 自检通过: $ACTUAL_BIN_SHA ($(stat -c '%s' "$HERE/bin/hyatlas-go-linux-amd64") B, REUSE_BIN=$REUSE_BIN)"
 
 STAGING="$(mktemp -d)"
 trap 'rm -rf "$STAGING"' EXIT
@@ -148,6 +160,16 @@ cd "$STAGING"
 # 控制层：仓库归档原件直取（字节已验证 == fpk 内原件）
 cp -a "$HERE/cmd" "$HERE/config" "$HERE/wizard" .
 cp -a "$HERE/ICON.PNG" "$HERE/ICON_256.PNG" "$HERE/manifest" .
+# ⚠️ .bak 闸门（与 emby-in-one/build.sh 同款）：$STAGING 是即将拼外层 fpk 的源目录（当前 cwd）。
+#    上面 `cp -a cmd config wizard` 会把源码目录里的 *.bak_* 一并拷进来；下方 python 按 os.listdir
+#    逐个取 OUTER_PINS['cmd/<child>']，混入的备份会直接 KeyError 崩，这里提前给一句人话 FATAL。
+#    （内层 app.tgz 走 INNER_PINS 白名单+定档 app 源，本就不含备份，无需重复查。）
+BAK="$(find "$STAGING" -name '*.bak*' -o -name '*_~' -o -name '*.orig' 2>/dev/null | head -20)"
+if [ -n "$BAK" ]; then
+  echo "FATAL: 包内含备份文件，先移出再打包：" >&2
+  echo "$BAK" >&2
+  exit 1
+fi
 python3 - "$OUT" << 'PYEOF'
 import gzip, os, stat, sys, tarfile
 out = sys.argv[1]
@@ -173,6 +195,7 @@ OUTER_PINS = {
     'manifest':               {'mode': 0o644, 'mtime': 1788777601},
     'wizard':                 {'mode': 0o755, 'mtime': 1788777602},
     'wizard/install':         {'mode': 0o644, 'mtime': 1788777602},
+    'wizard/uninstall':       {'mode': 0o644, 'mtime': 1788777602},
 }
 import pwd, grp
 
@@ -232,14 +255,38 @@ fi
 # 2) manifest 版本/appname
 GOT_VER=$(tar -xOf "$OUT" manifest | awk -F'= *' '$1 ~ /^version/ {print $2}' | tr -d ' ')
 GOT_APP=$(tar -xOf "$OUT" manifest | awk -F'= *' '$1 ~ /^appname/ {print $2}' | tr -d ' ')
-if [ "$GOT_VER" != "4.7.3-1" ] || [ "$GOT_APP" != "hyatlas" ]; then
-  echo "FAIL: manifest appname=$GOT_APP version=$GOT_VER (expected hyatlas 4.7.3-1)" >&2; FAIL=1
+if [ "$GOT_VER" != "4.7.3-2" ] || [ "$GOT_APP" != "hyatlas" ]; then
+  echo "FAIL: manifest appname=$GOT_APP version=$GOT_VER (expected hyatlas 4.7.3-2)" >&2; FAIL=1
 fi
 
-# 3) shares 自愈回调在位（install/upgrade 双回调都含特征串）
+# 3) shares 校验/自愈回调在位（install/upgrade 双回调都含特征串）
 for f in install_callback upgrade_callback; do
   if ! tar -xOf "$OUT" "cmd/$f" 2>/dev/null | grep -q 'shares is NOT a symlink'; then
-    echo "FAIL: cmd/$f missing shares-heal logic" >&2; FAIL=1
+    echo "FAIL: cmd/$f missing shares-heal/verify logic" >&2; FAIL=1
+  fi
+done
+
+# 3b) 四脚本各带一份 resolve_share_root（禁止 source 兄弟文件）
+for f in main install_callback upgrade_callback uninstall_callback; do
+  if ! tar -xOf "$OUT" "cmd/$f" 2>/dev/null | grep -q 'resolve_share_root'; then
+    echo "FAIL: cmd/$f missing resolve_share_root" >&2; FAIL=1
+  fi
+done
+
+# 3c) 卸载双选：wizard/uninstall 存在 + 字段名 wizard_delete_data 两处齐
+if ! tar -xOf "$OUT" wizard/uninstall 2>/dev/null | grep -q 'wizard_delete_data'; then
+  echo "FAIL: wizard/uninstall missing wizard_delete_data" >&2; FAIL=1
+fi
+if ! tar -xOf "$OUT" cmd/uninstall_callback 2>/dev/null | grep -q 'wizard_delete_data'; then
+  echo "FAIL: cmd/uninstall_callback does not read wizard_delete_data" >&2; FAIL=1
+fi
+
+# 3d) 已证伪的路径写法不得出现（dirname TRIM_DATA_SHARE_PATHS / ${APP_DIR}/shares / 单数 /share/）
+#     ⚠️ 必须先剥掉 `#` 注释：脚本里保留的“旧写法为何被证伪”说明注释本身就含这两个字符串，
+#     不剥注释会把反面教材误判成代码回退，让构建被自己的注释拦下。
+for f in main install_callback upgrade_callback uninstall_callback; do
+  if tar -xOf "$OUT" "cmd/$f" 2>/dev/null | sed 's/#.*$//' | grep -qE 'dirname.*TRIM_DATA_SHARE_PATHS|\$\{APP_DIR\}/shares'; then
+    echo "FAIL: cmd/$f still uses disproved share path form" >&2; FAIL=1
   fi
 done
 
@@ -261,5 +308,5 @@ if [ "$FAIL" != "0" ]; then
   echo "STRUCTURE CHECK FAILED" >&2
   exit 1
 fi
-echo "PASS: structure ok (manifest 4.7.3-1, shares-heal callbacks present, app payload complete incl env.example)"
+echo "PASS: structure ok (manifest 4.7.3-2, share two-hop resolve + uninstall wizard present, app payload complete incl env.example)"
 echo "$OUT  $((GOT_SIZE/1024/1024))MB  sha256=$GOT_SHA"

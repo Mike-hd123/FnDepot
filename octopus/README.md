@@ -1,6 +1,6 @@
 # octopus.fpk — Octopus 安装包
 
-- 版本：0.13.12-1（2026-10-14）
+- 版本：0.13.12-2（2026-10-15）
 - 打包时间：2026-10-14
 - 上游项目：[bestruirui/octopus](https://github.com/bestruirui/octopus)
 - 上游 commit：`3d1ff13`（tag v0.13.12，2026-10-14 11:22 +0800）
@@ -16,7 +16,24 @@
 
 二进制为上游官方 CI 产物原样（`octopus-linux-amd64` sha256 `96474a06aa7d333ca12992f6fbe40d60544eb35946970ed79df5ee40b854d9f0`；反解 Version=v0.13.12 / Commit 3d1ff13 / Built 2026-10-14 11:22:42 +0800；与 Release `SHA256SUMS` 中 `octopus-linux-amd64.zip` 条目 `fb48a40a…` 解出件一致）。**`internal/conf` 与 `main.go` 逐字节未变，无 breaking change、无配置键变更**，src 全量核对无残留差异。
 
-### ★ 新增：监听地址开关（默认只监听 127.0.0.1）
+## v2/0.13.12-2（2026-10-15，share 合规修复）
+
+本轮无上游变更（二进制仍是 v0.13.12 上游 CI 产物），纯 fnOS 打包层整改。配方见仓库 `docs/fix-share-compliance-recipe.md`，基准实现 `emby-in-one` 1.4.4-9。
+
+**审计结论（改前）**：`config/resource` **已经**声明了 data-share（`name=octopus`），本机 `/vol1/@appshare/octopus` 也确实被建出来了——**但它是个空壳**。`cmd/main` 里 `DATA_DIR="${TRIM_PKGVAR:-}"` 落在 `/vol1/@appdata/octopus`，真实数据（`data.db` 含 `api_keys` 表、`config.json`、`listen.conf`）全在 @appdata。即「声明了但没用」的假合规。
+
+**改了什么**：
+
+1. **数据与配置真身改落 data-share**：`data.db` / `config.json` / `listen.conf` 都在共享目录 `octopus` 里（文件管理器可见，升级/重装不丢）；`@appdata` 只留日志与 PID。`OCTOPUS_DATABASE_PATH` 指向 `${SHARE_ROOT}/data.db`。
+2. **两跳 share 解析**：四个生命周期脚本各内联一份 `resolve_share_root`（优先 fnOS 维护的软链 `/var/apps/octopus/shares/octopus`，退化用 `TRIM_DATA_SHARE_PATHS` 首段）。**禁止** `dirname "${TRIM_DATA_SHARE_PATHS}"`（安装阶段拿到的是未落卷占位路径 `/vol0/...`，静默失败）与 `${APP_DIR}/shares`（升级整体替换 @appcenter，数据必丢）。
+3. **幂等、不覆盖的迁移**：`install_callback` 的两段历史迁移（旧 root 安装 `/usr/local/apps/@appcenter/octopus/data`、docker 版 `/vol1/@apphome/hermes-studio/data/octopus`）目标从 @appdata 改为 share；`upgrade_callback` 加同款迁移——**升级是存量用户把 `data.db` 搬进 share 的主通道**。规则：老位置有、share 还没有，才 `cp -a`；**源一律不删**；share 已有同名文件则跳过（绝不覆盖已有库）；动作写 `@appdata/migrate.log`。
+4. **卸载双选**：新建 `wizard/uninstall`（字段名固定 `wizard_delete_data`，默认「保留」），`uninstall_callback` 按选择分支——清除时**先停进程**，再用 `find -mindepth 1 -maxdepth 1 -exec rm -rf {} +` 清 share 内容（含隐藏文件），并清 `@appdata`；保留时二者都不动。
+5. **失败可见**：`main` / `install_callback` / `upgrade_callback` 的 `die()` 把 FATAL 写进 `TRIM_TEMP_LOGFILE`，应用中心界面可见。
+6. **既有职责全保留**：gateway sidecar 起停、监听开关三态白名单、`OCTOPUS_DATABASE_PATH` 导出、`app.sock` 清理均未改。
+
+> ⚠️ **跨应用耦合（留给 hyatlas 任务处理）**：`hyatlas/src/fnos-native/cmd/main:166` 用 `sqlite3 "${TRIM_PKGVAR:-/vol1/@appdata/octopus}/data.db" ... settings.master_key` 直读本应用 DB。本应用数据搬进 share 后该路径失效，**hyatlas 需同步改指向 `/vol1/@appshare/octopus/data.db`**，否则 hyatlas 的 LLM key 兜底链路取不到值。
+
+### ★ 监听地址开关（0.13.12-1 引入，落点已随本轮迁到 share）
 
 **背景**：fnOS 统一网关注入 `host=127.0.0.1`，照搬会让 octopus 只听回环，局域网客户端（手机/电视/其它机器）连不上 8081——历史上只能用 socat 桥到 8082 绕路。
 
@@ -27,7 +44,7 @@
 
 | 打开方式 | 操作 | 特点 |
 |---|---|---|
-| A) 持久开关（推荐） | 编辑 `/vol1/@appdata/octopus/listen.conf` → `OCTOPUS_LISTEN_HOST=0.0.0.0` | 与 `data.db` 同级，**升级/重装不丢**；首次启动自动落带注释样例 |
+| A) 持久开关（推荐） | 编辑 `/vol1/@appshare/octopus/listen.conf` → `OCTOPUS_LISTEN_HOST=0.0.0.0` | 与 `data.db` 同级（**0.13.12-2 起在 share**），**升级/重装不丢**；首次启动自动落带注释样例 |
 | B) 临时覆盖 | 启动前设环境变量 `OCTOPUS_LISTEN_HOST=0.0.0.0` | 覆盖 A，不落盘 |
 
 改完**重启应用**生效。取值白名单只认 `127.0.0.1` / `0.0.0.0`，非法值告警并回落默认（防手滑写错致监听失败或意外暴露）。
@@ -85,7 +102,7 @@ gateway sidecar v8 全部保留：API 前缀手工改写默认关（`GATEWAY_API
    zip 内附带的 LICENSE / README.md / THIRD_PARTY_LICENSES.csv 一并同步替换。
    校验：`sha256sum octopus-linux-amd64.zip` = `fb48a40a82ff46f7d0aa172384e2376d390a9b801f78c9dd196a832b4a899840`（与上游 Release SHA256SUMS 一致）；包内二进制 sha256 = `96474a06aa7d333ca12992f6fbe40d60544eb35946970ed79df5ee40b854d9f0`（与官方 zip 解出件逐字节一致）。
 2. fnOS 原生 volume 安装（落 `/vol1/@appcenter/octopus/`）：cmd/ 生命周期脚本 + install_callback 数据目录准备，`OCTOPUS_SERVER_PORT=8081`（避开云微 8080）。
-3. 数据目录 `/vol1/@appdata/octopus/data.db`（TRIM_PKGVAR 注入，卸载重装不丢），SQLite 存储；监听开关 `listen.conf` 同目录。
+3. 数据目录 **`/vol1/@appshare/octopus/data.db`**（data-share，0.13.12-2 起；软链 `/var/apps/octopus/shares/octopus`），SQLite 存储；监听开关 `listen.conf`、`config.json` 同目录。`@appdata/octopus` 只留日志与 PID。
 4. **v3-v4**：接入飞牛统一网关 socket 自注册（对齐 minibill），gateway sidecar 监听 `APPDEST/app.sock` → TCP 8081，手机端 /app/octopus 恢复路由。
 5. **v5**：gateway sidecar 由裸 TCP 盲转发升级为**剥前缀 HTTP 反代**（修复手机端 404）。
 6. **v6-v8**：sidecar 迭代修 SPA 白屏——SSE 流式透传、POST Content-Length 透传、JS chunk 同版本参数注入保证单模块图单实例（ThemeProvider Context 不断裂）。
@@ -96,13 +113,14 @@ gateway sidecar v8 全部保留：API 前缀手工改写默认关（`GATEWAY_API
 11. **v1/0.13.8-1（2026-09-23 晚）**：同步上游 v0.13.8（commit 9357a32）——创建渠道错误时弹窗提醒（channel/Form.tsx）、增加思考等级、优化日志布局（log/Item.tsx、api/log.ts）；依赖 axonhub/llm 升级（go.mod/go.sum），relay handler/state 微调。保留 sidecar v8 不变。
 12. **v1/0.13.10-1（2026-10-08）**：同步上游 v0.13.10（commit d1a26bd）——数据库迁移修复、passwd 改密命令、分组编辑置顶置底、子路径反代支持。关闭 sidecar 的 API 前缀手工改写（`GATEWAY_API_REWRITE=0`）。详见上方「历史版本」。
 13. **v1/0.13.12-1（2026-10-14）**：同步上游 v0.13.11 + v0.13.12（commit 3d1ff13）——流式响应空启动事件暂存重试、请求头 UA 透传修复。**新增监听地址开关**（默认 127.0.0.1，可切 0.0.0.0）。并修复 `build-fpk.sh` 不同步 `fnos/cmd` 导致新功能被静默丢弃的严重 bug。
+14. **v2/0.13.12-2（2026-10-15）**：**share 合规修复**——数据/配置真身（`data.db`/`config.json`/`listen.conf`）从 @appdata 改落 data-share，两跳 share 解析，幂等不覆盖迁移，新增卸载双选。详见上方「v2/0.13.12-2」。
 
 ## 验证方式（打包后自检，本轮全绿）
 
 ```bash
 tar xzf octopus.fpk -C /tmp/chk          # fpk 本体可解
 tar tzf /tmp/chk/app.tgz                 # app.tgz 含 octopus/ui/config/gateway
-grep '^version' /tmp/chk/manifest        # version = 0.13.12-1
+grep '^version' /tmp/chk/manifest        # version = 0.13.12-2
 tar xzf /tmp/chk/app.tgz -C /tmp/chk octopus && /tmp/chk/octopus version
 #   Version: v0.13.12 / Commit ID: 3d1ff13 / Built At: 2026-10-14 11:22:42 +0800
 grep -c OCTOPUS_LISTEN_HOST /tmp/chk/cmd/main   # 监听开关逻辑确在包内（>0）

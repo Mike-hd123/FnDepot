@@ -1,28 +1,76 @@
 #!/bin/bash
-# 升级后置：数据目录不动、配置保留；确保目录可写，不做任何迁移
+# cmd/upgrade_callback — 升级后置：数据/配置归位 share + 幂等迁移（升级是老用户搬进 share 的主通道）
+# fnOS 升级会整体替换 @appcenter（TRIM_APPDEST），所以留在 @appcenter 的东西都会丢。
 set -uo pipefail
 
 APP_NAME="${TRIM_APPNAME:-ezbookkeeping}"
 APP_DIR="${TRIM_APPDEST:-/var/apps/${APP_NAME}}"
-APP_VOL=""
-if [ -n "${TRIM_PKGVAR:-}" ]; then
-    DATA_DIR="${TRIM_PKGVAR}"
-else
-    if [ -L "${APP_DIR}/home" ]; then
-        APP_HOME="$(readlink -f "${APP_DIR}/home")"
-        APP_VOL="$(printf '%s' "${APP_HOME}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
-    fi
-    [ -z "${APP_VOL}" ] && APP_VOL="$(printf '%s' "${APP_DIR}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
-    if [ -n "${APP_VOL}" ]; then
-        DATA_DIR="${APP_VOL}/@appdata/${APP_NAME}"
-    else
-        DATA_DIR="${APP_DIR}/var"
-    fi
+VAR_DIR="${TRIM_PKGVAR:-/vol2/@appdata/${APP_NAME}}"
+
+die() {
+    echo "FATAL: $1" >&2
+    [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "FATAL: $1" > "${TRIM_TEMP_LOGFILE}"
+    exit 1
+}
+
+# ── share 解析（两跳；本脚本自带一份，禁止 source 兄弟文件）──
+# 优先 /var/apps/<app>/shares/<name>（fnOS 维护的软链，永远指向真实卷），
+# 退化用 TRIM_DATA_SHARE_PATHS 首段；/vol0/* 是未落卷占位路径，必须跳过。
+resolve_share_root() {
+    local _app="$1" _name="$2" _paths="$3" _c
+    for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+        [ -n "${_c}" ] || continue
+        case "${_c}" in /vol0/*) continue ;; esac
+        if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+            printf '%s\n' "${_c}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+SHARE_ROOT="$(resolve_share_root "${APP_NAME}" ezbookkeeping "${TRIM_DATA_SHARE_PATHS:-}")" \
+    || die "找不到 data-share 目录，请检查 config/resource 的 data-share 声明（TRIM_DATA_SHARE_PATHS=${TRIM_DATA_SHARE_PATHS:-<unset>}）"
+
+DATA_DIR="${SHARE_ROOT}/data"
+LOG_DIR="${SHARE_ROOT}/log"
+STORAGE_DIR="${SHARE_ROOT}/storage"
+CONF="${SHARE_ROOT}/ezbookkeeping.ini"
+
+mkdir -p "${VAR_DIR}" "${DATA_DIR}" "${LOG_DIR}" "${STORAGE_DIR}" \
+    || die "无法创建数据目录 ${DATA_DIR}（share 权限不足）"
+
+# 配置真身进 share：share 没有才从老位置抢救（@appdata 老包 ini → 包内默认模板），不覆盖 share 已有
+if [ ! -f "${CONF}" ]; then
+    for OLD in "${VAR_DIR}/ezbookkeeping.ini" "${APP_DIR}/server/conf/ezbookkeeping.ini" \
+               "${APP_DIR}/target/server/conf/ezbookkeeping.ini"; do
+        if [ -f "${OLD}" ]; then
+            cp -p "${OLD}" "${CONF}" 2>/dev/null \
+                && echo "[$(date '+%F %T')] ini salvaged: ${OLD} -> ${CONF}" >> "${VAR_DIR}/migrate.log"
+            [ -f "${CONF}" ] && break
+        fi
+    done
 fi
 
-mkdir -p "${DATA_DIR}/data" "${DATA_DIR}/log" "${DATA_DIR}/storage"
-chmod -R a+rwx "${DATA_DIR}" 2>/dev/null || true
-# 配置中的占位符若仍有残留（例如手工编辑过），下次 cmd/main start 会自动刷新，这里不动配置内容。
+# ── 幂等不覆盖迁移：老 @appdata 的 data/log/storage 有东西、且 share 目标为空时才 cp -a ──
+# 不覆盖 share 已有内容 = 已在 share 的数据绝不会被老副本反向覆盖；源目录保留不删。
+for PAIR in "${VAR_DIR}/data:${DATA_DIR}" "${VAR_DIR}/storage:${STORAGE_DIR}" "${VAR_DIR}/log:${LOG_DIR}"; do
+    SRC="${PAIR%%:*}"; DST="${PAIR##*:}"
+    [ -d "${SRC}" ] || continue
+    [ -n "$(ls -A "${SRC}" 2>/dev/null)" ] || continue
+    [ -z "$(ls -A "${DST}" 2>/dev/null)" ] || continue
+    if cp -a "${SRC}/." "${DST}/" 2>/dev/null; then
+        echo "[$(date '+%F %T')] migrated: ${SRC} -> ${DST}" >> "${VAR_DIR}/migrate.log"
+    else
+        echo "[$(date '+%F %T')] migrate FAILED: ${SRC} -> ${DST}" >> "${VAR_DIR}/migrate.log"
+    fi
+done
 
-echo "[$(date '+%F %T')] upgrade_callback ok, data dir unchanged: ${DATA_DIR}" >> "${DATA_DIR}/install.log"
+# 二进制体检：升级成空包 = 应用直接瘫痪，升级阶段就拦住
+if [ ! -x "${APP_DIR}/server/ezbookkeeping" ] && [ ! -x "${APP_DIR}/target/server/ezbookkeeping" ]; then
+    die "升级包内缺二进制 server/ezbookkeeping，请重新打包"
+fi
+
+# 配置里的路径占位符/旧绝对路径由下次 cmd/main start 统一刷新为 share 实况，这里不动配置内容。
+echo "[$(date '+%F %T')] upgrade_callback ok, data dir: ${DATA_DIR}" >> "${VAR_DIR}/upgrade.log"
 exit 0

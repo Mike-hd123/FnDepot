@@ -1,3 +1,69 @@
 #!/bin/bash
-# 卸载后置：数据保留（fnOS 默认策略），无 systemd 单元需清理
+# cmd/uninstall_callback — 卸载双选：wizard_delete_data=false 保留 / true 清除
+# 清除只清 share 目录内容 + @appdata（日志/PID）；保留时二者都不动，可直接重装复用。
+# 注：uninstall_* 阶段 TRIM_TEMP_LOGFILE 不可用，失败信息只写自己的 log。
+set -uo pipefail
+
+APP_NAME="${TRIM_APPNAME:-ezbookkeeping}"
+APP_DIR="${TRIM_APPDEST:-/var/apps/${APP_NAME}}"
+VAR_DIR="${TRIM_PKGVAR:-/vol2/@appdata/${APP_NAME}}"
+DATA="${wizard_delete_data:-false}"
+echo "数据删除选项: ${DATA:-<unset>}"
+
+# ── share 解析（两跳；本脚本自带一份：卸载阶段 cmd/ 可能已被清，不能 source 别的文件）──
+resolve_share_root() {
+    local _app="$1" _name="$2" _paths="$3" _c
+    for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+        [ -n "${_c}" ] || continue
+        case "${_c}" in /vol0/*) continue ;; esac
+        if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+            printf '%s\n' "${_c}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# 带 `|| true`：本脚本是 set -uo pipefail（无 -e），resolve 非零当前不会终止脚本，
+#    但保留 || true 让下一行兜底赋值在任何 set 配置下都生效；若日后误加 set -e，
+#    可避免下面的进程停止与数据双选清理被整段跳过（删数据时进程还在写半截文件）。
+SHARE_ROOT="$(resolve_share_root "${APP_NAME}" ezbookkeeping "${TRIM_DATA_SHARE_PATHS:-}")" || true
+SHARE_ROOT="${SHARE_ROOT:-/var/apps/ezbookkeeping/shares/ezbookkeeping}"
+
+# 先停进程，避免删数据时进程还在写（main 与本脚本同目录；卸载阶段 TRIM_APPDEST 可能已被清空）
+MAIN_SELF="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/main"
+if [ -f "$MAIN_SELF" ]; then
+    bash "$MAIN_SELF" stop >/dev/null 2>&1 || true
+elif [ -f "${APP_DIR}/cmd/main" ]; then
+    bash "${APP_DIR}/cmd/main" stop >/dev/null 2>&1 || true
+fi
+# 兜底：按 PID 文件 kill（配置真身在 share，APP_BIN 路径可能已随 @appcenter 消失）
+for PIDF in "${VAR_DIR}/ezbookkeeping.pid" "${VAR_DIR}/gateway.pid"; do
+    if [ -f "$PIDF" ]; then
+        kill "$(cat "$PIDF" 2>/dev/null)" 2>/dev/null || true
+        rm -f "$PIDF"
+    fi
+done
+
+case "$DATA" in
+    "true")
+        # 只清 share 内容，保留目录本体与属主，便于将来重装复用。
+        # 用 find 不用 rm -rf "$D"/* —— 通配不匹配 . 开头的隐藏文件，会留垃圾。
+        echo "清除 share 数据内容：${SHARE_ROOT}"
+        if [ -n "${SHARE_ROOT}" ] && [ -d "${SHARE_ROOT}" ]; then
+            find "${SHARE_ROOT}" -mindepth 1 -maxdepth 1 -exec rm -rf {} + \
+              && echo "share 内容清除成功" || echo "清除失败" >&2
+        else
+            echo "share 数据目录不存在，无需清除"
+        fi
+        # 日志/PID/临时文件属 @appdata，一并清除（配置真身已在 share，上面那条 find 已覆盖）
+        echo "清除 @appdata 运行文件：${VAR_DIR}"
+        if [ -n "${VAR_DIR}" ] && [ -d "${VAR_DIR}" ]; then
+            rm -rf "${VAR_DIR}"
+        fi
+        ;;
+    "false"|*)
+        echo "保留数据文件（share 数据/配置与 @appdata 日志均不动，可随时重装恢复）"
+        ;;
+esac
 exit 0

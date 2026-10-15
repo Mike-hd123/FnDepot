@@ -1,8 +1,13 @@
 #!/bin/bash
-# 卸载后 hook: 清理 systemd 单元 + sidecar + socket（数据目录 @appdata 默认保留）
+# 卸载后 hook: 清理 systemd 单元 + sidecar + socket，并按用户选择保留/清除数据
+# v2.7.0-2：新增 wizard_delete_data 双选（wizard/uninstall 提供，字段名是系统约定不可改）；
+#           数据现在在 data-share，清除时清 share 内容 + @appdata；保留时两者都不动。
 set -e
 SERVICE="vikunja"
 SIDECAR="vikunja-sidecar"
+# 卸载阶段 TRIM_TEMP_LOGFILE 不生效（配方 D），只写自己的 log
+DATA_CHOICE="${wizard_delete_data:-false}"
+echo "wizard_delete_data=${DATA_CHOICE}"
 # 卷探测：env 缺失时扫描实际安装卷
 APP_DIR="${TRIM_APPDEST:-}"
 if [ -z "${APP_DIR}" ]; then
@@ -16,6 +21,27 @@ if [ -z "${APPDATA}" ]; then
   APP_VOL="$(printf '%s' "${APP_DIR}" | sed -n 's#^\(/vol[^/]*\)/.*#\1#p')"
   [ -n "${APP_VOL}" ] && APPDATA="${APP_VOL}/@appdata/vikunja" || APPDATA="/var/apps/vikunja/var"
 fi
+
+# ── share 解析：与 cmd/main 完全一致（本脚本自带一份，卸载阶段不能依赖 source 兄弟文件）──
+resolve_share_root() {
+  local _app="$1" _name="$2" _paths="$3" _c
+  for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+    [ -n "${_c}" ] || continue
+    case "${_c}" in /vol0/*) continue ;; esac
+    if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+      printf '%s\n' "${_c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# ⚠️ 必须带 `|| true`：本脚本 set -e，resolve 非零会让整条赋值语句非零 → 立刻终止脚本，
+#    于是下面第 40 行的兜底赋值被跳过，更严重的是整段 systemd unit 删除段
+#    （sidecar+main 的 disable/stop/rm + daemon-reload，第 43-60 行）与数据双选清理
+#    全被跳过 → 旧 unit 残留在盘上，重装后与新 app_id 冲突（正是仓库文档 skill 坑 #3 必须清理的坑）。
+SHARE_ROOT="$(resolve_share_root vikunja vikunja "${TRIM_DATA_SHARE_PATHS:-}")" || true
+SHARE_ROOT="${SHARE_ROOT:-/var/apps/vikunja/shares/vikunja}"
 
 # 停 sidecar（v9 = systemd 单元；并兼容清理 v8 及更早 nohup 残留）
 systemctl disable "${SIDECAR}" 2>/dev/null || true
@@ -31,9 +57,36 @@ pkill -f "vikunja/gateway/gateway_proxy.py" 2>/dev/null || true
 rm -f "${APP_DIR}/app.sock" "${APP_DIR}/target/app.sock" "${APPDATA}/app.sock" 2>/dev/null || true
 
 # 清 systemd 单元（skill 坑 #3：必须清理，防重装后旧 unit 与新 app_id 冲突）
+# ⚠️ 本段必须保留：服务在此已停（上面 disable+stop），下面的数据清除才安全
 systemctl disable "${SERVICE}" 2>/dev/null || true
 systemctl stop "${SERVICE}" 2>/dev/null || true
 rm -f "/etc/systemd/system/${SERVICE}.service"
 systemctl daemon-reload
 
-echo "vikunja uninstall_callback done (data kept at ${APPDATA})"
+# 兜底：万一 systemd 停不掉，按进程名补刀（清数据前必须确认进程已死）
+pkill -f "${APP_DIR}/vikunja" 2>/dev/null || true
+
+# ── 数据双选（配方 F）：true=清除 / false|*=保留 ──
+case "${DATA_CHOICE}" in
+  "true")
+    # 只清 share 内容，保留目录本体与属主，便于将来重装复用。
+    # 用 find 不用 rm -rf "${SHARE_ROOT}"/* —— 通配不匹配 . 开头隐藏文件，会留垃圾
+    echo "清除 share 数据内容：${SHARE_ROOT}"
+    if [ -n "${SHARE_ROOT}" ] && [ -d "${SHARE_ROOT}" ]; then
+      find "${SHARE_ROOT}" -mindepth 1 -maxdepth 1 -exec rm -rf {} + \
+        && echo "share 内容清除成功" || echo "清除失败" >&2
+    else
+      echo "share 数据目录不存在，无需清除"
+    fi
+    # 日志/PID 属 @appdata，一并清除（配置真身在 share，已随上面一起清）
+    echo "清除 @appdata 运行区：${APPDATA}"
+    if [ -n "${APPDATA}" ] && [ -d "${APPDATA}" ]; then
+      rm -rf "${APPDATA}"
+    fi
+    ;;
+  "false"|*)
+    echo "保留数据（share 与 @appdata 均不动，可随时重装恢复）"
+    ;;
+esac
+
+echo "vikunja uninstall_callback done (delete_data=${DATA_CHOICE}, SHARE_ROOT=${SHARE_ROOT}, APPDATA=${APPDATA})"

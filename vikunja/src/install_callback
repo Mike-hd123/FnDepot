@@ -27,7 +27,75 @@ fi
 PORT="${TRIM_SERVICE_PORT:-3456}"
 BIN="${APP_DIR}/vikunja"
 
-mkdir -p "${APPDATA}/files" "${APPDATA}/logs"
+# 运行用户单一事实源：fnOS 依 config/privilege 注入 TRIM_USERNAME/TRIM_GROUPNAME，
+# 缺失时兜底 vikunja（与 privilege 声明的 username/groupname=vikunja 一致）。
+# systemd unit 的 User/Group、SHARE_ROOT/APPDATA 的 chown、config/resource 的
+# data-share permission.rw 三者必须同源，否则全新安装（无本机 override.conf）会
+# 因数据目录 ACL 只授 vikunja 而 unit 以别的用户跑 → 待办库不可写、服务起不来。
+RUN_USER="${TRIM_USERNAME:-vikunja}"
+RUN_GROUP="${TRIM_GROUPNAME:-vikunja}"
+
+# ── 失败要让用户看得见（TRIM_TEMP_LOGFILE 在 install_* 里有效，应用中心界面可见）──
+die() {
+  echo "FATAL: $1" >&2
+  [ -n "${TRIM_TEMP_LOGFILE:-}" ] && echo "FATAL: $1" > "${TRIM_TEMP_LOGFILE}"
+  exit 1
+}
+
+# ── 数据落点 = data-share（v2.7.0-2 本轮合规修复）──
+# config/resource 早就声明了 data-share(name=vikunja)，但 v2.7.0-1 及以前脚本没用它：
+# vikunja.db / files / logs 全落在 @appdata，用户文件管理器里看不到 = 声明与实现脱节。
+# 两跳解析（与 cmd_main / upgrade_callback / uninstall_callback 逐字一致，禁止 source 兄弟文件）：
+#   1) /var/apps/<app>/shares/<name> —— fnOS 维护的软链，永远指向真实卷（实测系统用复数 shares/）
+#   2) ${TRIM_DATA_SHARE_PATHS} 首段（官方写法 ${VAR%%:*}，取首段；dirname 写法已证伪：
+#      安装阶段该变量是未落卷占位 /vol0/@appshare/vikunja，拼出的目录建不动）
+resolve_share_root() {
+  local _app="$1" _name="$2" _paths="$3" _c
+  for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
+    [ -n "${_c}" ] || continue
+    case "${_c}" in /vol0/*) continue ;; esac
+    if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
+      printf '%s\n' "${_c}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# ⚠️ 必须带 `|| true`：本脚本 set -e，resolve 非零会让整条赋值语句非零 → 立刻终止脚本，
+#    于是下面第 58 行的 die 兜底、systemd unit 生成、sidecar 单元、chown、
+#    ui/config 端口模式改写与 entry SQL 全被跳过 → 装了但没写 unit，重启后起不来。
+SHARE_ROOT="$(resolve_share_root vikunja vikunja "${TRIM_DATA_SHARE_PATHS:-}")" || true
+[ -n "${SHARE_ROOT}" ] || die "data-share 目录不可用（TRIM_DATA_SHARE_PATHS=${TRIM_DATA_SHARE_PATHS:-<unset>}），请检查 config/resource 的 data-share 声明"
+DATA_DIR="${SHARE_ROOT}/data"
+CFG_FILE="${SHARE_ROOT}/config.yml"
+mkdir -p "${DATA_DIR}" "${SHARE_ROOT}/files" "${SHARE_ROOT}/logs"
+# 运行区只留日志/PID：@appdata 仍建着，兼容旧 boot.log 与 sidecar 的 gateway.pid 清理
+mkdir -p "${APPDATA}/logs"
+
+# ── 幂等迁移：老 @appdata 有数据、且 share 目标为空，才 cp -a（源永不删、绝不 mv）──
+# vikunja.db 是用户待办的唯一事实源，迁移必须极端保守。
+MIGLOG="${APPDATA}/migrate.log"
+for pair in "vikunja.db:${DATA_DIR}/vikunja.db" "files:${DATA_DIR}/files" "logs:${DATA_DIR}/logs"; do
+  OLD_NAME="${pair%%:*}"; NEW_PATH="${pair#*:}"
+  OLD_PATH="${APPDATA}/${OLD_NAME}"
+  if [ -e "${OLD_PATH}" ] && [ ! -e "${NEW_PATH}" ]; then
+    cp -a "${OLD_PATH}" "${NEW_PATH}" 2>/dev/null \
+      && echo "migrated: ${OLD_PATH} -> ${NEW_PATH}" >> "${MIGLOG}" 2>/dev/null || true
+  fi
+done
+# 老 config.yml（含 JWTSecret / DB 路径）整体搬进 share；share 已有则绝不覆盖
+if [ -f "${APPDATA}/config.yml" ] && [ ! -f "${CFG_FILE}" ]; then
+  cp -a "${APPDATA}/config.yml" "${CFG_FILE}" 2>/dev/null \
+    && echo "migrated: ${APPDATA}/config.yml -> ${CFG_FILE}" >> "${MIGLOG}" 2>/dev/null || true
+fi
+# .backup 全量备份文件也一并保进 share（保命用，绝不丢）
+for b in "${APPDATA}"/vikunja.db.bak_* "${APPDATA}"/vikunja.db.backup*; do
+  [ -f "$b" ] || continue
+  [ -e "${DATA_DIR}/$(basename "$b")" ] && continue
+  cp -a "$b" "${DATA_DIR}/" 2>/dev/null \
+    && echo "migrated: $b -> ${DATA_DIR}/" >> "${MIGLOG}" 2>/dev/null || true
+done
 
 # ── 二进制就位校验（app.tgz 平铺解到 APPDEST）──
 if [ ! -x "${BIN}" ]; then
@@ -38,11 +106,13 @@ fi
 chmod 755 "${BIN}"
 
 # ── config.yml：不存在才生成（升级/重装保用户配置）──
-if [ ! -f "${APPDATA}/config.yml" ]; then
+# v2.7.0-2：配置真身改放 share（@appcenter 升级被替换、@appdata 用户不可见），
+# 且 DB/文件/日志路径一并指向 share；老配置已在上方幂等搬到 ${CFG_FILE}。
+if [ ! -f "${CFG_FILE}" ]; then
   if [ -f "${APP_DIR}/config.yml.sample" ]; then
-    cp "${APP_DIR}/config.yml.sample" "${APPDATA}/config.yml"
+    cp "${APP_DIR}/config.yml.sample" "${CFG_FILE}"
   fi
-  cat > "${APPDATA}/config.yml" <<EOS
+  cat > "${CFG_FILE}" <<EOS
 service:
   JWTSecret: "$(openssl rand -hex 16 2>/dev/null || head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
   interface: ":${PORT}"
@@ -53,22 +123,41 @@ service:
   enabletaskattachments: true
 database:
   type: sqlite
-  path: "${APPDATA}/vikunja.db"
+  path: "${DATA_DIR}/vikunja.db"
 files:
-  basepath: "${APPDATA}/files"
+  basepath: "${DATA_DIR}/files"
 log:
-  path: "${APPDATA}/logs"
+  path: "${DATA_DIR}/logs"
   enabled: true
   level: INFO
 cors:
   enable: false
 EOS
-  echo "generated default config.yml at ${APPDATA}/config.yml"
+  echo "generated default config.yml at ${CFG_FILE}"
 else
-  echo "keeping existing config.yml"
+  echo "keeping existing config.yml at ${CFG_FILE}"
+  # 老配置里若还写着 @appdata 的 DB/files/log 路径，按 share 重写（先备份，只改这三行）
+  if grep -q "${APPDATA}/" "${CFG_FILE}" 2>/dev/null; then
+    cp -a "${CFG_FILE}" "${CFG_FILE}.bak_$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
+    sed -i \
+      -e "s#^\(  path: \).*vikunja\.db.*#\1\"${DATA_DIR}/vikunja.db\"#" \
+      -e "s#^\(  basepath: \).*#\1\"${DATA_DIR}/files\"#" \
+      "${CFG_FILE}" 2>/dev/null || true
+    # log.path 与 basepath 同名 key 风险：只改 log 段那条（用 awk 限定段）
+    awk -v p="${DATA_DIR}/logs" '
+      /^log:/ {inlog=1} /^[a-z]/ && !/^log:/ {inlog=0}
+      inlog && /^  path:/ {sub(/^  path:.*/, "  path: \"" p "\""); }
+      {print}
+    ' "${CFG_FILE}" > "${CFG_FILE}.tmp" 2>/dev/null && mv "${CFG_FILE}.tmp" "${CFG_FILE}" 2>/dev/null || true
+    echo "rewrote @appdata paths in config.yml to share"
+  fi
 fi
 
-# ── systemd 单元（hermes-studio uid=1000 与历史手动实例一致，保数据属主）──
+# ── 运行区属主：chown 统一在 unit 生成之后做一次（见文末），此处不重复 chown
+#    （旧版在此 chown vikunja:vikunja，文末又 chown hermes-studio 覆盖，读者易误判谁覆盖谁）
+
+# ── systemd 单元（User/Group 用上面的 RUN_USER/RUN_GROUP 单一事实源，与
+#    config/privilege 的 username、data-share permission 三者同源）──
 cat > "${UNIT}" <<EOS
 [Unit]
 Description=Vikunja Todo (fnOS app)
@@ -76,11 +165,11 @@ After=network.target
 
 [Service]
 Type=simple
-User=hermes-studio
-Group=hermes-studio
-WorkingDirectory=${APPDATA}
+User=${RUN_USER}
+Group=${RUN_GROUP}
+WorkingDirectory=${SHARE_ROOT}
 Environment=VIKUNJA_SERVICE_INTERFACE=:${PORT}
-ExecStart=${BIN} --config ${APPDATA}/config.yml
+ExecStart=${BIN} --config ${CFG_FILE}
 Restart=on-failure
 RestartSec=5
 
@@ -118,8 +207,10 @@ EOS
   systemctl daemon-reload
 fi
 
-# 数据目录属主（服务以 hermes-studio 跑）
-chown -R hermes-studio:hermes-studio "${APPDATA}" 2>/dev/null || true
+# 数据目录属主（unit 的 User=${RUN_USER}，chown 必须同源；share 与运行区各授一次，
+# 此处是唯一一次 chown，上方重复的 chown 已合并到这里）
+chown -R ${RUN_USER}:${RUN_GROUP} "${SHARE_ROOT}" 2>/dev/null || true
+chown -R ${RUN_USER}:${RUN_GROUP} "${APPDATA}" 2>/dev/null || true
 
 # ── v13：把桌面入口从路径反代切到直连端口模式 ──
 # 根因（v13 实测确认，对照实验坐实）：
