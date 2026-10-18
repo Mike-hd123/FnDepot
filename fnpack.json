@@ -171,6 +171,17 @@
               "size": 242758303
             }
           }
+        },
+        "4.9.1-1": {
+          "changelog": "4.9.1-1（2026-10-18）：同步上游 v4.9.0→v4.9.1（9 commits / 16 files / +713 −57，全 server 侧；上游 Hermes 插件未变，plugins/** 不取）。上游本轮是 4.8/4.9 复查后的修复：①reconcile 覆盖 HYATLAS_USER_ALIASES 里同一个人的所有 id；②一条新事实只走一种操作（此前被替换行会指向一条自己也已退役的事实）；③抽取模型不再看到 task experience，普通事实不会把经验替换掉；④重复经验只在 experiences 集合内判定（0.92 阈值不变），此前普通事实更近就把经验藏住；⑤episode 摘要失败改 5/10/20/40/80 分钟退避共六次（约 2.5h），不再 3 次即永久丢弃——走免费/易限流的 LLM 端点时这条收益最大；⑥图谱辅助召回落在结果上限之内（最多占可见位 1/3、排末尾），此前追加在最后被 limit 直接截掉；纯关键词检索不再放进向量候选。fork 手工合并 4 处 reject：experience.go（上游改先 embed 再 searchWhere(where)，按 fork 5 参签名补 includeExpired=false）、extract_context.go（读取量 extractRelatedMax*2 + 满额 break + 跳过 isExperience，补 fork 第 6 参）、.env.example（示例模型名注释行）、README.md（banner alt 取上游新措辞并保留 fork 的 eight-layer 修正与 V3_V4_COMPARISON 指针行）；并删除历史误提交进仓库的 .env.example.rej。质量：go build/go vet 全绿；go test 失败 11 项与 4.9.0-1 基线逐名相同（含 TestEpisodePersistsAcrossRestart 的上游 TempDir 夹具竞争）→ 零新增回归；本轮上游新增的 experience/graphrecall/reconcile/episode/search_491 测试除该夹具项外全部通过。控制层继承 4.9.0-2 的加固（解析第①跳只认软链、救援跳按 doc_index 找回真库、heal 自指硬闸、cmd/main 空壳库保护闸）。二进制 sha 5ef89a1532366c4e576a1ce3b14b8dd00a41d12948c75e4d679ae322c621f2d4（go1.26.5，CGO_ENABLED=1 + -trimpath + GOAMD64=v1，15,786,320B；/tmp 与 /vol2 两份不同挂载重编逐字节一致，embed_check GATE PASS）；模型三件套逐件与现役相同零漂移。fpk 两次重打逐字节一致（sha256 8d6ef6a25a1a…，242,761,769B），结构校验 PASS。",
+          "updated_at": "2026-10-18T12:46:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/hyatlas-v4.9.1-1/hyatlas-4.9.1-1-x86.fpk",
+              "sha256": "8d6ef6a25a1a356b6ea466a5260d78d2031405f166e37df9680a39acf0e58d23",
+              "size": 242761769
+            }
+          }
         }
       }
     },
