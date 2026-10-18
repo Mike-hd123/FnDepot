@@ -47,6 +47,8 @@
   - 自愈建链改 `heal_shares_link()` 硬闸：源为空 / 源等于软链自身 / 源不在数据卷 → **一律拒绝**（旧版正是 `ln -sfn` 源=目标建出自指链）；heal 后复核 `SHARE_ROOT`/`DATA_DIR` 必须落 `/volN`
   - `cmd/main` 加**空壳库保护闸**：生效库 `doc_index.json <1MB` 而别卷有 `>1MB` 真库 → 拒绝启动，错误写 `panel.log` + `TRIM_TEMP_LOGFILE`（应用中心可见）；`HYATLAS_ALLOW_EMPTY_START=on` 才放行；`config/env.example` 补 `HYATLAS_GO_DATA`/`HYATLAS_ALLOW_EMPTY_START`（注释行，升级合并不注入）
   - 回归：`/vol2/1000/workspace/hy490-work/test_share_resolve.py`（17 断言）+ `test_empty_guard.py`（12 断言），二者都是**从出货脚本按 if/fi 配对抽真实代码**挪进 /tmp 沙箱重演现场；`/vol2/1000/workspace/hyatlas-fix-shares.sh` 是这类故障的停机修复器
+- **整理吞吐的实测基线（装 4.9.1-1 之后）**：`HYATLAS_CONSOLIDATE_PARALLEL` 默认 2、上限 4。本机实测同一版本二进制下——打关思考补丁前每轮 `ClustersRun:2` 且 cluster 全为 `ok=false in 9m49s~9m59s`（10 分钟预算烧穿、Pending 死卡 1397）；补丁后 parallel=2 → `ClustersRun:11 / Pending 1388`；提到 `HYATLAS_CONSOLIDATE_PARALLEL=4` 后 → `ClustersRun:24 / Pending 1353`，单 cluster 用时 11s~2m29s 且全部 `ok=true`。按每 30 分钟一轮、每轮净减约 35 估算，千级积压约 19 小时排空。**判康乐指标**：`panel.log` 里 `ClustersRun` 与 `ClustersPending` 的逐轮变化，而不是 `ok=false` 的出现频率。注意整理真跑起来后 `l3_fact`/`vdb_points` 会**下降**（旧事实被合并、软退役），这不代表丢数据——核对 `go-data/doc_index.json` 是否只增不减（本机 2026-10-18：117,161,865B → 117,685,081B）且 `l2_raw` 不变即可。`/vol2/@appdata/hyatlas/env` 改前留底 `env.bak_20261018_2158`。
+
 - 4.7.3-1 同步上游 v4.7.3（重编二进制 sha `1bc38015`）
 - 4.7.3-2 **纯打包层 share 合规修复**（上游与二进制/模型零变更，沿用 4.7.3-1 的二进制；`build-fpk.sh` 用 `REUSE_BIN=1` 显式声明允许复用，身份闸降级为 WARN 但 `SHA_BIN == bin/ 实际 sha` 强校验始终生效）
 
