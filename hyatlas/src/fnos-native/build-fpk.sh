@@ -27,6 +27,7 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 OUT="${1:-/vol2/1000/download/hyatlas-4.9.0-1-x86.fpk}"
+VER="4.9.0-1"   # 本包版本，manifest 校验与身份闸提示共用（上游版本 + fork 修订号）
 REF_FPK="/vol2/1000/workspace/hy450-sync/out/hyatlas-4.5.0-2-x86.fpk"   # 242,218,811B 实测存在；其内层模型三件套 sha 与 SHA_ONNX/SHA_ORT/SHA_TOK 逐件相同
 
 # 4.9.0-1 是**上游同步版**（v4.7.3→v4.9.0，Go 源码与前端 embed 均有改动），本轮**重编**，
@@ -42,9 +43,9 @@ SHA_TOK="7dfbf1966ebf99d471c3796e9b457329d2b2182b817e144f1e904b957745c839"
 # ── SHA_BIN 自检闸（防"只改 manifest 不动二进制"）────────────────────────────
 # sha256sum -c 只能证明"bin/ 里的文件 == SHA_BIN 写的值"，两者一起写旧值照样全绿。
 # 所以在组装前硬性拒绝：仍是占位符 / 不是 64 位十六进制 / 等于历史已出货二进制的 sha。
-# ⚠️ 4.7.3-2 例外：本版是纯打包层修复（Go 源码与模型零变更），显式用 REUSE_BIN=1
-#    声明"沿用现有二进制"，此时身份闸（下面 case）降级为 WARN 而非 FATAL；
-#    但 SHA_BIN == bin/ 实际 sha 的强校验**始终生效**，不会放过"脚本写旧值"的情形。
+# ⚠️ REUSE_BIN=1 只在"纯打包层修订（Go 源码与模型零变更）"时用：此时身份闸（下面 case）
+#    降级为 WARN 而非 FATAL；但 SHA_BIN == bin/ 实际 sha 的强校验**始终生效**，
+#    不会放过"脚本写旧值"的情形。本轮 4.9.0-1 是上游同步版，REUSE_BIN=0（重编）。
 case "$SHA_BIN" in
   TBD*|*recompute*|*[!0-9a-fA-F]*)
     echo "FATAL: SHA_BIN 非法（占位符或不是 64 位十六进制 sha256）: '$SHA_BIN'" >&2
@@ -61,15 +62,15 @@ _identity_gate() {
 }
 case "$ACTUAL_BIN_SHA" in
   4a39e8e02cf564c1b0c085a1ec216d02ba0eb4bea952ca95b77c1163bd76e95b)
-    _identity_gate "bin/ 仍是 4.5.0-2 出货二进制（4a39e8e0），不能以 4.7.3-2 名义打包";;
+    _identity_gate "bin/ 仍是 4.5.0-2 出货二进制（4a39e8e0），不能以 $VER 名义打包";;
   01bec1798c50456672b2a2980aa931b994d10e55f6c97caebea60b3ce73abdce)
-    _identity_gate "bin/ 仍是 4.3.3-1 出货二进制（01bec179），不能以 4.7.3-2 名义打包";;
+    _identity_gate "bin/ 仍是 4.3.3-1 出货二进制（01bec179），不能以 $VER 名义打包";;
   83740365a1235a2dc0086be35c1d7667dd7eb7817c0ff09d1b229e3df18d2b4d)
-    _identity_gate "bin/ 仍是 4.3.0-1 出货二进制（83740365），不能以 4.7.3-2 名义打包";;
+    _identity_gate "bin/ 仍是 4.3.0-1 出货二进制（83740365），不能以 $VER 名义打包";;
   f9acdf9f4917df1f73a609ce975d4651684a6d0ccdd533f071a7ee66a8c47c2d)
     echo "WARN: bin/ 是 dashboard 汉化修复前的 f9acdf9f —— 若 i18n 补全已合入则本值应已变化" >&2;;
   510b83cc2f9d7b9d670c0b523df3a343cd81077a0e70a514618b13133c159b34)
-    _identity_gate "bin/ 仍是 4.7.2-1 出货二进制（510b83cc），不能以 4.7.3-2 名义打包";;
+    _identity_gate "bin/ 仍是 4.7.2-1 出货二进制（510b83cc），不能以 $VER 名义打包";;
 esac
 echo "SHA_BIN 自检通过: $ACTUAL_BIN_SHA ($(stat -c '%s' "$HERE/bin/hyatlas-go-linux-amd64") B, REUSE_BIN=$REUSE_BIN)"
 
@@ -254,8 +255,8 @@ fi
 # 2) manifest 版本/appname
 GOT_VER=$(tar -xOf "$OUT" manifest | awk -F'= *' '$1 ~ /^version/ {print $2}' | tr -d ' ')
 GOT_APP=$(tar -xOf "$OUT" manifest | awk -F'= *' '$1 ~ /^appname/ {print $2}' | tr -d ' ')
-if [ "$GOT_VER" != "4.7.3-2" ] || [ "$GOT_APP" != "hyatlas" ]; then
-  echo "FAIL: manifest appname=$GOT_APP version=$GOT_VER (expected hyatlas 4.7.3-2)" >&2; FAIL=1
+if [ "$GOT_VER" != "$VER" ] || [ "$GOT_APP" != "hyatlas" ]; then
+  echo "FAIL: manifest appname=$GOT_APP version=$GOT_VER (expected hyatlas $VER)" >&2; FAIL=1
 fi
 
 # 3) shares 校验/自愈回调在位（install/upgrade 双回调都含特征串）
@@ -307,5 +308,5 @@ if [ "$FAIL" != "0" ]; then
   echo "STRUCTURE CHECK FAILED" >&2
   exit 1
 fi
-echo "PASS: structure ok (manifest 4.7.3-2, share two-hop resolve + uninstall wizard present, app payload complete incl env.example)"
+echo "PASS: structure ok (manifest $VER, share two-hop resolve + uninstall wizard present, app payload complete incl env.example)"
 echo "$OUT  $((GOT_SIZE/1024/1024))MB  sha256=$GOT_SHA"

@@ -155,6 +155,17 @@
               "size": 242654348
             }
           }
+        },
+        "4.9.0-1": {
+          "changelog": "4.9.0-1（2026-10-18）：同步上游 v4.7.3→v4.9.0（48 commits / 71 files / +6173 −375，无新 Go 依赖、无 env 移除）。v4.8.0：事件日期 event_at/event_date、查询里认时间窗（昨天/上周/11月/具体日期，窗内分数下限放宽 0.20）、更新计数（同一件事写\"两次\"不产生近似重复）、意图按到期日失效（不再固定 7 天）、episode 摘要（HYATLAS_EPISODE_GAP 默认 30m，一段工作产一条 L4；上游已移除\"每写一条产一条 L4\"，所以关 episode 即失去 L4 产出路径）、读时带历史 history（was: … until …）+ superseded_how、用量学习独立存 usage_learning.json、recency 按\"写入或被回复用到\"较晚者算；安全：程序不再读别的应用凭证，新增 POST /api/v1/llm/key 运行时交接（key 只留内存）。v4.8.1：仅修 Hermes 插件 share_llm_key 交接时机，本机不依赖。v4.9.0：任务经验 experiences 独立召回通道、schema 保留证据链、>300 字长事实按句进只服务搜索的 l3_clause 集合（启动自动 backfill）、实体加成 + 图谱辅助召回、按查询类型自适应权重、召回配额与 schema/意图槽位、可选写后对齐 HYATLAS_RECONCILE（默认 off）。fork 定制全保留并逐项核验：System1 不写 L1、L7 dedup 0.80 + 硬顶 100、search/searchWhere 的 includeExpired 参数、NewMemoryStore dims、delete_all 加固、touch/patch 双时态、bge-large-zh 1024d + embedDims、dashboard 汉化 + 移动端、shares 两跳、端口 19528 + 网关 socket、fnos-native 控制层。新调用点回填 includeExpired=false（consolidate.go schemaKnown / experience.go / reconcile.go）；测试侧补 dims、恢复 filepath import、hasID→hasIDMap 改名、补 memory import 与 nowTS()。env.example 补 12 个代码在读但模板漏记的键。质量：go build/go vet 全绿；go test 失败 11 = 基线 10 项 fork 语义差异 + TestEpisodePersistsAcrossRestart（已在上游 v4.9.0 纯净树复现同款 TempDir 竞争，非本次回归）→ 零新增回归。二进制 sha e3dd4abfa1eb7cca…（15,780,328B，go1.26.5，CGO_ENABLED=1 + -trimpath + GOAMD64=v1，/vol2 与 /vol1 两份不同挂载重编逐字节一致）；fpk 端到端重打逐字节可复现（sha256 7068b75e…，242,752,791B，结构校验 PASS）。模型三件套沿用同款，逐件 sha 零漂移。",
+          "updated_at": "2026-10-18T08:42:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/hyatlas-v4.9.0-1/hyatlas-4.9.0-1-x86.fpk",
+              "sha256": "7068b75e29fb04446517c1f111d6a2d90d9f80a6e7e9c30b14388a64eebad235",
+              "size": 242752791
+            }
+          }
         }
       }
     },

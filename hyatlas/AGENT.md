@@ -34,9 +34,19 @@
 **保守保留的理由**：这条校验是唯一能发现「安装器重建 shares」故障的闸门，且它本身幂等 + 不破坏（有 bak、不删数据），保留成本低、失效代价高。
 
 ## 版本口径
-上游 v4.7.3 → `4.7.3-N`（本地修订从 1 起，禁止改上游版本号）：
+上游版本 → `<上游版本>-N`（本地修订从 1 起，禁止改上游版本号）：
+- **4.9.0-1 同步上游 v4.7.3→v4.9.0**（48 commits / 71 files / +6173 −375；重编二进制 sha `e3dd4abf`，15,780,328B；`build-fpk.sh` 的 `VER` 变量与 `SHA_BIN`/`REUSE_BIN=0` 已同步；产物 242,752,791B，sha256 `7068b75e…`，fpk 端到端重打逐字节可复现）
+  - 合并手法：`git apply --reject --directory=hyatlas/src` 打上游区间补丁（排除 `plugins/**`），31 个 fork 缺失文件整取上游，再手工合两份必冲突大文件
+  - **每次都要做的固定回填**（漏一处就编不过/行为漂移）：①上游新代码的 `searchWhere(...)` 是 5 参，fork 是 6 参（多 `includeExpired`）→ 新调用点补 `false`；②测试里的 `NewMemoryStore(...)` 上游 4 参，fork 5 参（多 `dims`）→ 补维度；③`Embedder` 上游新增**可选** `Semantic()`（类型断言识别，不强制实现），fork 的 `LocalEmbedder` 建议补；④测试 helper 撞名要改名（本次 `search_490_test.go` 的 `hasID` → `hasIDMap`，因为 `metadata_test.go` 已有同名）
+  - 已知失败基线：**11 项**（fork 语义差异 10 项：L1 mirror 3、L7 dedup 1、SetExtracted 1、delete_all 守卫 3、describeEmbed/监听行 2）+ `TestEpisodePersistsAcrossRestart`（**上游自带夹具竞争**：TempDir RemoveAll 时后台 episode 还在写；在未合并的上游 v4.9.0 纯净树上同样失败，不是回归）
 - 4.7.3-1 同步上游 v4.7.3（重编二进制 sha `1bc38015`）
 - 4.7.3-2 **纯打包层 share 合规修复**（上游与二进制/模型零变更，沿用 4.7.3-1 的二进制；`build-fpk.sh` 用 `REUSE_BIN=1` 显式声明允许复用，身份闸降级为 WARN 但 `SHA_BIN == bin/ 实际 sha` 强校验始终生效）
+
+## v4.8/v4.9 上线后要注意的语义变化
+- **L4 摘要不再是「每写一条产一条」**：改由 episode 聚合（`HYATLAS_EPISODE_GAP` 默认 30m）。把该值设成 `0/off/false` 会**彻底关掉 L4 产出路径**（旧路径上游已删），别当成"省资源开关"随手关。
+- **`HYATLAS_RECONCILE` 默认关，本机也保持关**：打开等于每条写入多一次 LLM 调用，octopus 免费额度与延迟都不宽裕。
+- **key 交接改走 `POST /api/v1/llm/key`（只留内存）**：上游明确禁止任何程序读别的应用凭证文件（Hermes `auth.json` 那套）；本机走 fnos env 的 `HYATLAS_LLM_KEY` 显式配置，`cmd/main` 里读 octopus `data.db` 的兜底属于历史遗留，后续可用该端点摘掉。
+- **DSH 侧插件要跟着改渲染**：`~/hy-memory/index.js` 的召回块原来只认四通道；v4.9.0 多了 `experiences` 通道、每条命中多了 `event_date`/`history`，已在 2026-10-18 适配（`CHANNEL_LIMIT.experiences=300`、事件日优先显示并标 `记于`、`history` 只取 1 条截 120 字符）。改 JS 后必须重启 DSH。
 
 ## 血泪坑（别重蹈）
 - **env 必须 `set -a` 导出**：只 `.` source 不 export，`HYATLAS_EMBED_KEY` 等静默丢失（2026-10-08 embed 401 事故根因）。
