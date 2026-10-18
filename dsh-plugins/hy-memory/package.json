@@ -1,0 +1,26 @@
+{
+  "name": "dsh-hy-memory",
+  "version": "1.3.0",
+  "private": true,
+  "type": "module",
+  "description": "混元记忆 (HyAtlas) 长期记忆接入：检索/写入/遗忘工具 + 每轮自动召回 + 会话自动落库 + Hermes 式核心记忆 md 常驻注入",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "locale/*.json"
+  ],
+  "meta": {
+    "title": "混元记忆 (HyAtlas)",
+    "description": "把本机混元记忆 HyAtlas（127.0.0.1:19528）接入 DSH：memory_search / memory_add / memory_list / memory_stats / memory_digest / memory_forget / memory_mirror 七个工具、每轮自动召回注入、回合结束自动写入 L2 原始层，并把 memories/USER.md 与 MEMORY.md 作为核心记忆每轮常驻注入系统提示。"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

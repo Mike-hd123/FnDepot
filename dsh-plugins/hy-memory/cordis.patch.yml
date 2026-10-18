@@ -1,0 +1,107 @@
+# 混元记忆 (HyAtlas) —— 本机长期记忆接入
+#
+# 由 plugin_manager install_bundle 安装到当前 profile；下列 config 就是插件运行参数，
+# 修改后重装/重载即可生效。endpoint 指向本机 HyAtlas 的 HTTP 端口。
+- insert:
+    - id: hy-memory
+      name: dsh-hy-memory
+      config:
+        # HyAtlas HTTP 端点（本机混元记忆，19528）
+        endpoint: http://127.0.0.1:19528
+        # 记忆归属：与 Hermes 共享 default 用户池，但按 agent 区分来源
+        userId: default
+        agentId: dsh
+        # 每轮对话自动检索并注入相关记忆
+        autoRecall: true
+        recallLimit: 5
+        recallMinScore: 0.25
+        recallTimeoutMs: 2000
+        # 回合结束后把「用户 + 助手」写入 L2 原始层，交给 HyAtlas 的 digest 管线提炼
+        autoWrite: true
+        maxWriteChars: 3000
+        writeTimeoutMs: 5000
+        # 核心记忆 md（Hermes 式）：这两份文件每轮常驻注入系统提示
+        coreMemory: true
+        memoriesDir: /vol1/@appshare/Harness/memories
+        userCharLimit: 2300
+        memoryCharLimit: 2800
+        # memory_mirror 的源层：USER.md 取用户画像层，MEMORY.md 取方法论 + 事实层
+        mirrorSources: [l1_profile]
+        mirrorMemorySources: [l6_schema, l3_fact]
+        # 固定源（权威源）目录：重建时这里同名 USER.md / MEMORY.md 的条目优先占位，
+        # HyAtlas 蒸馏条目只补剩余预算。这里钉 Hermes 维护的记忆文件，避免镜像把
+        # 人工合并进常驻文件的条目整体覆盖掉。目录/文件缺失时静默跳过。
+        # 顺序即优先级：现网策展文件排第一 => memory_mirror 只会「补空位」，永远不会覆盖掉
+        # 已经策展好的条目（实测重跑字节一致、不产生新 .bak）。
+        mirrorMergeDirs:
+          - /vol1/@appshare/Harness/memories
+          - /vol1/@appshare/Harness/memories_from_hermes
+        mirrorLimit: 200
+        # 落库后是否自动重建 md。默认关：常驻块会喂给所有后续回合并污染 digest。
+        mirrorOnWrite: false
+        mirrorThrottleMs: 900000
+        mirrorTimeoutMs: 15000
+        # 出网脱敏闸：常驻注入 / 每轮自动召回 / memory_mirror 输出 / memory_search 与 memory_list 的
+        # 返回内容，进入模型上下文前一律把下列形态替换成 [REDACTED]。HyAtlas 库里仍存原值（本机可读
+        # 不出网）。正则只覆盖身份与凭证形态；内网 IP/端口/卷路径按用户决定不脱，否则 ssh 用不了。
+        redact: true
+        redactLiterals:
+          - "梁又友"
+          - "1999-12-03"
+          - "农历十月廿"
+          - "一学习就犯困"
+          - "mike-hd123@qq.com"
+          - "10580066601292993591"
+          - "归义镇"
+          - "岑溪"
+          - "科韵北路"
+          - "沐陂西路"
+        # 记忆压缩（2026-10-06 方向 1「记忆推理融合」MVP；2026-10-07 修复）：
+        # 自动召回检索到 N 条后，先送本机 octopus 网关的 compression 别名
+        # (实际后端 = 本地 neohorse-1-9b)压成 3-5 条决策要点，再注入本轮上下文；
+        # 压缩失败/超时静默降级回原始行，绝不阻断召回。
+        # 与上下文压缩共用同一套 alias，改一处模型两处生效。
+        #
+        # 10-07 修复背景：原 compressTimeoutMs=15000，实测本地 9B 压缩 7.3~10.4s
+        # （小样本 2.2s），且压缩 await 在召回关键路径上，实测把注入延迟从 ~1s
+        # 拉到 ~11s，微信 IM 表现为「发消息没反应」。三处修复：
+        #   ① 超时 15000→8000，挡住贴顶超时（3000 会全灭，实测 p50=4.8s）；
+        #   ② compressMemories 内部加产出有效性校验（未显著缩短则丢弃回退原文）
+        #      并剥掉模型常带的 ^\s+ 前缀空行（neohorse 会在正文前塞 \n\n）；
+        #      另修 URL 拼接 bug：原 new URL('/chat/completions', base) 会丢掉
+        #      base 里的 /v1（URL 规范绝对路径丢弃 base 路径）→ 一直 404 →
+        #      压缩其实从来没生效过，每轮都在静默失败；
+        #   ③ 调用点改为「先注入原文，压缩结果异步补注入，下一轮生效」，
+        #      彻底把压缩挪出关键路径。
+        compressEnabled: false
+        compressEndpoint: http://127.0.0.1:8081/v1
+        compressApiKeyEnv: OCTOPUS_API_KEY
+        compressModel: compression
+        # 2026-10-13：octopus 的 compression 别名现指向 sensenova-6.8-flash-lite
+        # （不再是 neohorse-1-9b），实测带 reasoning 字段返回 ~7.2s，原 8s 阈值
+        # 掐断导致压缩永远超时降级。拉高到 15s 留 8s 余量，避免压缩永远走 fallback。
+        compressTimeoutMs: 15000
+        compressMaxChars: 1200
+        # ---- jev 写入门闸：2026-10-18 Mike 拍板「jev × 混元记忆结合方案取消」→ 整体停用 ----
+        # 停用原因：观察 22 条样本，prob 中位 0.565 / 最低 0.037，阈值 0.6 会拦掉 53%，
+        # 且情感/倾诉类集中在 0.35–0.49 ⇒ 真开闸必然误杀最该记的内容。收益不成立，
+        # 不再出阈值建议、不开 enforce、不合并 dsh-memory-suite。
+        # enabled:false 后下面几项全部惰性（不再每轮调 tokenrhythm、不再写采样日志），
+        # 保留只为将来若要重启这条路时一处改回 true 即可（备份 .bak_20261018_jev_cancel）。
+        # 注意：dsh-jev-gate（命令安全闸，拦 rm -rf/递归 chown 等）与本节无关，继续运行。
+        jevFilterEnabled: false
+        jevFilterUrl: https://tokenrhythm.studio/v1/systemone
+        jevFilterModel: NeoHorse-Jev-4B
+        jevFilterApiKeyFile: /vol1/@appshare/Harness/.dsh/credentials-vault/jev-jiyuan.key
+        jevFilterApiKeyEnv: TOKENRHYTHM_KEY
+        jevFilterAskAbove: 0.6
+        jevFilterTimeoutMs: 2500
+        jevFilterStateMaxChars: 1500
+        jevFilterObserve: true
+        # ---- feedback 召回反馈（2026-10-13 启用）----
+        # search 后异步 POST /api/v1/feedback，把助手回复回传 HyAtlas，
+        # 服务端据此调整召回权重——用得多的记忆优先展示，从未用到的慢慢沉底。
+        # 不影响写入链路，风险低。
+        feedbackEnabled: true
+        feedbackTimeoutMs: 3000
+        feedbackMaxReplyChars: 20000

@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Hunyuan Memory (HyAtlas)",
+    "description": "Connect DSH to the local HyAtlas long-term memory service: memory tools, per-turn recall injection, and automatic turn write-back to the L2 raw layer."
+  }
+}
