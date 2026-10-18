@@ -17,13 +17,35 @@ echo "===== uninstall_callback $(date) delete_data=${DATA} =====" >> "$LOG" 2>/d
 # ── share 根目录：官方两跳解析（与 cmd/main、install/upgrade_callback 逐字同款）──
 # 卸载阶段 cmd/ 可能已被清，所以本脚本自带一份，绝不 source 兄弟文件。
 resolve_share_root() {
-  local _app="$1" _name="$2" _paths="$3" _c
-  for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
-    [ -n "${_c}" ] || continue
-    case "${_c}" in /vol0/*) continue ;; esac
-    if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
-      printf '%s\n' "${_c}"
-      return 0
+  local _app="$1" _name="$2" _paths="$3" _first _rp _vol _sz
+  # ① 只采信「shares 本身是软链」的这一跳：安装器把 shares 重建成实体目录时，那个目录
+  #    是系统盘上的全新空壳，路径存在但没货——旧写法据此返回，服务就指向空库（实测踩过）。
+  #    同时要求 realpath 落在数据卷 /volN 上，防止把 /var/apps 自身的实体目录当 share。
+  if [ -L "/var/apps/${_app}/shares" ]; then
+    _rp="$(readlink -f "/var/apps/${_app}/shares/${_name}" 2>/dev/null || true)"
+    case "${_rp}" in /vol[1-9]*) printf '%s\n' "${_rp}"; return 0 ;; esac
+  fi
+  # ② TRIM_DATA_SHARE_PATHS 首段（%%:*，不是 dirname），跳过未落卷的 /vol0/* 占位路径。
+  #    该值既可能是 share 父目录（/vol2/@appshare）也可能直接是 <app> 本体，两种形状都吃。
+  _first="${_paths%%:*}"
+  if [ -n "${_first}" ]; then
+    case "${_first}" in
+      /vol0/*) : ;;
+      */"${_name}") printf '%s\n' "${_first}"; return 0 ;;
+      *) if [ -d "${_first}/${_name}" ] || mkdir -p "${_first}/${_name}" 2>/dev/null; then
+           printf '%s\n' "${_first}/${_name}"; return 0
+         fi ;;
+    esac
+  fi
+  # ③ 救援：在已挂载卷里找「有货」的 share 本体（go-data/doc_index.json > 1MB 视为有货）。
+  #    用于 shares 被实体化、且安装器没给 TRIM_DATA_SHARE_PATHS 的场合——宁可找回真库，
+  #    也不要在系统盘上另起一个空库。
+  for _vol in /vol[1-9]*; do
+    [ -d "${_vol}/@appshare/${_name}/go-data" ] || continue
+    _sz=$(stat -c %s "${_vol}/@appshare/${_name}/go-data/doc_index.json" 2>/dev/null || echo 0)
+    [ -n "${_sz}" ] || _sz=0
+    if [ "${_sz}" -gt 1000000 ] 2>/dev/null; then
+      printf '%s\n' "${_vol}/@appshare/${_name}"; return 0
     fi
   done
   return 1

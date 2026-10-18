@@ -39,6 +39,11 @@
   - 合并手法：`git apply --reject --directory=hyatlas/src` 打上游区间补丁（排除 `plugins/**`），31 个 fork 缺失文件整取上游，再手工合两份必冲突大文件
   - **每次都要做的固定回填**（漏一处就编不过/行为漂移）：①上游新代码的 `searchWhere(...)` 是 5 参，fork 是 6 参（多 `includeExpired`）→ 新调用点补 `false`；②测试里的 `NewMemoryStore(...)` 上游 4 参，fork 5 参（多 `dims`）→ 补维度；③`Embedder` 上游新增**可选** `Semantic()`（类型断言识别，不强制实现），fork 的 `LocalEmbedder` 建议补；④测试 helper 撞名要改名（本次 `search_490_test.go` 的 `hasID` → `hasIDMap`，因为 `metadata_test.go` 已有同名）
   - 已知失败基线：**11 项**（fork 语义差异 10 项：L1 mirror 3、L7 dedup 1、SetExtracted 1、delete_all 守卫 3、describeEmbed/监听行 2）+ `TestEpisodePersistsAcrossRestart`（**上游自带夹具竞争**：TempDir RemoveAll 时后台 episode 还在写；在未合并的上游 v4.9.0 纯净树上同样失败，不是回归）
+- **4.9.0-2 纯控制层修复**（上游、二进制与模型三件套零变更，沿用 4.9.0-1 的二进制 `e3dd4abf`，`REUSE_BIN=1`；产物 242,758,303B，sha256 `624366c8…`，两次重打逐字节一致）。修的是 4.9.0-1 装机复发的「shares 被安装器重建成实体空目录 → 服务读空壳、面板全 0」：
+  - 解析第①跳**只采信 shares 本身是软链、且 realpath 落在 `/volN`** 的情形；第②跳吃 `TRIM_DATA_SHARE_PATHS` 首段的两种形状；新增第③跳**按各卷 `go-data/doc_index.json >1MB` 找回有货真库**的救援
+  - 自愈建链改 `heal_shares_link()` 硬闸：源为空 / 源等于软链自身 / 源不在数据卷 → **一律拒绝**（旧版正是 `ln -sfn` 源=目标建出自指链）；heal 后复核 `SHARE_ROOT`/`DATA_DIR` 必须落 `/volN`
+  - `cmd/main` 加**空壳库保护闸**：生效库 `doc_index.json <1MB` 而别卷有 `>1MB` 真库 → 拒绝启动，错误写 `panel.log` + `TRIM_TEMP_LOGFILE`（应用中心可见）；`HYATLAS_ALLOW_EMPTY_START=on` 才放行；`config/env.example` 补 `HYATLAS_GO_DATA`/`HYATLAS_ALLOW_EMPTY_START`（注释行，升级合并不注入）
+  - 回归：`/vol2/1000/workspace/hy490-work/test_share_resolve.py`（17 断言）+ `test_empty_guard.py`（12 断言），二者都是**从出货脚本按 if/fi 配对抽真实代码**挪进 /tmp 沙箱重演现场；`/vol2/1000/workspace/hyatlas-fix-shares.sh` 是这类故障的停机修复器
 - 4.7.3-1 同步上游 v4.7.3（重编二进制 sha `1bc38015`）
 - 4.7.3-2 **纯打包层 share 合规修复**（上游与二进制/模型零变更，沿用 4.7.3-1 的二进制；`build-fpk.sh` 用 `REUSE_BIN=1` 显式声明允许复用，身份闸降级为 WARN 但 `SHA_BIN == bin/ 实际 sha` 强校验始终生效）
 
@@ -48,6 +53,18 @@
 - **key 交接改走 `POST /api/v1/llm/key`（只留内存）**：上游明确禁止任何程序读别的应用凭证文件（Hermes `auth.json` 那套）；本机走 fnos env 的 `HYATLAS_LLM_KEY` 显式配置，`cmd/main` 里读 octopus `data.db` 的兜底属于历史遗留，后续可用该端点摘掉。
 - **DSH 侧插件要跟着改渲染**：`~/hy-memory/index.js` 的召回块原来只认四通道；v4.9.0 多了 `experiences` 通道、每条命中多了 `event_date`/`history`，已在 2026-10-18 适配（`CHANNEL_LIMIT.experiences=300`、事件日优先显示并标 `记于`、`history` 只取 1 条截 120 字符）。改 JS 后必须重启 DSH。
 
+## 装机后「界面全 0 / 记忆没数据」的标准判法（2026-10-18 第三次复现后固化）
+先分清**是服务读到空库**还是**真库被搬走/损坏**——九成是前者，数据通常毫发无损：
+```bash
+curl -s --noproxy '*' http://127.0.0.1:19528/api/v1/status | python3 -c "import json,sys;d=json.load(sys.stdin);print(d.get('version'),d.get('vdb_points'),(d.get('layers') or {}).get('l2_raw'))"
+sudo ls -l /proc/$(pgrep -x hyatlas-go|head -1)/fd | grep -o '/[^ ]*go-data' | sort -u   # 进程在读写哪一份
+stat -c '%s %n' /vol*/@appshare/hyatlas/go-data/doc_index.json                            # 真库多大、在哪
+ls -ld /var/apps/hyatlas/shares; readlink /var/apps/hyatlas/shares                        # 期望：软链 -> /volN/@appshare
+```
+- `shares` 变成**实体目录**（不是软链）= 安装器又把它重建了：服务会在系统盘上现造一个空壳 `go-data`，真库留在 `@appshare` 没人读。修复走 `bash /vol2/1000/workspace/hyatlas-fix-shares.sh`（只读预检）→ `sudo … --apply --pin-env`（mv 留底、绝不 rm、建正链、钉 `HYATLAS_GO_DATA`）。**必须先停服务**：运行中的进程内存里是空索引，一旦换路径回写会把真库 `doc_index.json` 覆盖成空的。
+- 误库里的新写入别丢：留底目录下的 `doc_index.json` 逐条取 `content` 回灌 `POST /api/v1/add` 即可（`/add` 只写 L2，抽取会重新加工，重复由 dedupe/supersede 收敛）。
+- **启动慢 4–5 分钟不是故障**：HTTP 监听在 `NewMemoryStore` 之后才开，而 `rebuildIndex()` 要把 11.8 万个 `.gob` 全量读一遍（本机 1.3GB，HDD 顺序读）。判进度：`sudo cat /proc/<pid>/io` 的 `read_bytes` 对比 `sudo du -sb go-data`。这期间面板与召回都是空的，别急着判"没数据"。
+
 ## 血泪坑（别重蹈）
 - **env 必须 `set -a` 导出**：只 `.` source 不 export，`HYATLAS_EMBED_KEY` 等静默丢失（2026-10-08 embed 401 事故根因）。
 - **别用 Python 探可写性**：降权进程可能没有可用的 python3，且 `to_thread` 探测本身会抛错（曾导致 `parse failed` + `No model` 双重故障）。用 shell `test -w`。
@@ -55,6 +72,8 @@
 - **`panel.pid` 会与真身错位**：`as_user` 里 `exec` 前的 `&` 子 shell 让 `$!` 记成已退出的过渡 PID → `status` 误判停用；已加 `pgrep -x hyatlas-go` 兜底回写校准。
 - **日志/pid 的 root 属主会卡住降权进程**：启动前按运行用户身份 `test -w` 探测，不可写即删除重建。
 - 二进制含 dashboard `go:embed` 内嵌前端：**前端有改动必须重编**再装进 `bin/`，只改 manifest 不算交付。
+- **`case` 模式里引号位置会静默失效**：`*/"/${_name}")` 在 bash 5.2 下**匹配不上**，`*/"${_name}")` 才匹配（引号跨在 `/` 前后会改变模式解析）。4.9.0-2 的沙箱测试就是这么抓出「`TRIM_DATA_SHARE_PATHS` 已是 `<app>` 本体时多拼一层 `hyatlas`」的真缺陷——**路径解析类逻辑必须有沙箱场景测试**，光 `bash -n` 和肉眼都不够。
+- **自愈脚本的 `ln -sfn` 必须挡住自指**：`ln -sfn "$SRC" "$LINK"` 当 `$SRC` 恰好等于 `$LINK` 时不会报错，而是建出一条指向自己的软链，后续 `mkdir -p` 会顺着它把空壳目录"造成功"，看起来一切正常。任何"重建软链"的代码都要显式拒绝 ①源为空 ②源等于目标 ③源不在数据卷 `/volN` 上这三种输入。
 
 ## ⚠️ 跨应用耦合：Octopus `data.db`（4.7.3-2 标注）
 `cmd/main` 在 `HYATLAS_LLM_KEY` 为空时有兜底：从 **Octopus 的 `data.db`** 读 `settings.master_key` 当 LLM key。

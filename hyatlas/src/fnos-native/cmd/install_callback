@@ -13,13 +13,35 @@ APP_DIR="${TRIM_APPDEST:-/vol1/@appcenter/hyatlas}"
 # 拼出的目录建不动 → 静默失败。两跳：① fnOS 维护软链 /var/apps/<app>/shares/<name>
 # ② TRIM_DATA_SHARE_PATHS 首段（%%:*，不是 dirname），并跳过 /vol0/*。
 resolve_share_root() {
-  local _app="$1" _name="$2" _paths="$3" _c
-  for _c in "/var/apps/${_app}/shares/${_name}" "${_paths%%:*}"; do
-    [ -n "${_c}" ] || continue
-    case "${_c}" in /vol0/*) continue ;; esac
-    if [ -d "${_c}" ] || mkdir -p "${_c}" 2>/dev/null; then
-      printf '%s\n' "${_c}"
-      return 0
+  local _app="$1" _name="$2" _paths="$3" _first _rp _vol _sz
+  # ① 只采信「shares 本身是软链」的这一跳：安装器把 shares 重建成实体目录时，那个目录
+  #    是系统盘上的全新空壳，路径存在但没货——旧写法据此返回，服务就指向空库（实测踩过）。
+  #    同时要求 realpath 落在数据卷 /volN 上，防止把 /var/apps 自身的实体目录当 share。
+  if [ -L "/var/apps/${_app}/shares" ]; then
+    _rp="$(readlink -f "/var/apps/${_app}/shares/${_name}" 2>/dev/null || true)"
+    case "${_rp}" in /vol[1-9]*) printf '%s\n' "${_rp}"; return 0 ;; esac
+  fi
+  # ② TRIM_DATA_SHARE_PATHS 首段（%%:*，不是 dirname），跳过未落卷的 /vol0/* 占位路径。
+  #    该值既可能是 share 父目录（/vol2/@appshare）也可能直接是 <app> 本体，两种形状都吃。
+  _first="${_paths%%:*}"
+  if [ -n "${_first}" ]; then
+    case "${_first}" in
+      /vol0/*) : ;;
+      */"${_name}") printf '%s\n' "${_first}"; return 0 ;;
+      *) if [ -d "${_first}/${_name}" ] || mkdir -p "${_first}/${_name}" 2>/dev/null; then
+           printf '%s\n' "${_first}/${_name}"; return 0
+         fi ;;
+    esac
+  fi
+  # ③ 救援：在已挂载卷里找「有货」的 share 本体（go-data/doc_index.json > 1MB 视为有货）。
+  #    用于 shares 被实体化、且安装器没给 TRIM_DATA_SHARE_PATHS 的场合——宁可找回真库，
+  #    也不要在系统盘上另起一个空库。
+  for _vol in /vol[1-9]*; do
+    [ -d "${_vol}/@appshare/${_name}/go-data" ] || continue
+    _sz=$(stat -c %s "${_vol}/@appshare/${_name}/go-data/doc_index.json" 2>/dev/null || echo 0)
+    [ -n "${_sz}" ] || _sz=0
+    if [ "${_sz}" -gt 1000000 ] 2>/dev/null; then
+      printf '%s\n' "${_vol}/@appshare/${_name}"; return 0
     fi
   done
   return 1
@@ -70,29 +92,58 @@ echo "data dir ready: ${DATA_DIR} (share root ${SHARE_ROOT}, owner ${RUN_USER})"
 #     解析会落到"实体空目录"上而不报错。这条校验是唯一能发现该故障并补救的闸门，
 #     且它本身是幂等 + 不破坏性的（有 bak、不删数据），保留成本低、失效代价高。
 SHARES_LINK="/var/apps/hyatlas/shares"
-SHARE_SRC="${APP_SHARE}"
+# SHARE_SRC 必须来自「加固后的解析结果」，不能用早先在实体目录上算出来的路径：
+# 旧写法 SHARE_SRC="${APP_SHARE}" 在 shares 被实体化时恰好等于 SHARES_LINK 自身，
+# 于是 ln -sfn 建出 shares -> /var/apps/hyatlas/shares 的**自指软链**（4.9.0-1 实测）。
+SHARE_SRC="$(dirname "${SHARE_ROOT}")"
+heal_shares_link() {
+  local _src="$1"
+  case "${_src}" in
+    ""|"${SHARES_LINK}")
+      echo "FATAL: 拒绝自愈——share 父目录解析为 '${_src}'（等于软链自身会造出空壳库）" >> "$LOG"
+      return 1 ;;
+  esac
+  case "${_src}" in
+    /vol[1-9]*) : ;;
+    *) echo "FATAL: 拒绝自愈——share 父目录 '${_src}' 不在数据卷 /volN 上" >> "$LOG"; return 1 ;;
+  esac
+  mkdir -p "${_src}/hyatlas/go-data" 2>/dev/null || true
+  if ln -sfn "${_src}" "${SHARES_LINK}"; then
+    echo "healed: ${SHARES_LINK} -> ${_src} (share root now: $(readlink -f "${SHARES_LINK}/hyatlas" 2>/dev/null))" >> "$LOG"
+    return 0
+  fi
+  echo "FATAL: ln -sfn ${_src} ${SHARES_LINK} 失败（权限或只读卷）" >> "$LOG"
+  return 1
+}
 if [ -L "${SHARES_LINK}" ]; then
   echo "shares symlink ok -> $(readlink "${SHARES_LINK}") (resolved share root: ${SHARE_ROOT})" >> "$LOG"
 elif [ -e "${SHARES_LINK}" ]; then
   echo "WARN: shares is NOT a symlink (type: $(stat -c %F "${SHARES_LINK}" 2>/dev/null || echo unknown)), healing" >> "$LOG"
-  # 实体目录移开留底（不直接 rm：实体目录里可能有升级间隙的新写入数据），保留最近 2 份
+  # 实体目录移开留底（不直接 rm：里面可能有升级间隙的新写入），只保留最近 2 份
   BAK="${SHARES_LINK}.entity-bak-$(date +%Y%m%d%H%M%S)"
   if mv "${SHARES_LINK}" "${BAK}" 2>/dev/null; then
     echo "moved entity dir aside: ${BAK} (若其中有新写入数据，从该目录找回)" >> "$LOG"
     ls -1dt "${SHARES_LINK}".entity-bak-* 2>/dev/null | tail -n +3 | xargs -r rm -rf
-    mkdir -p "${SHARE_SRC}/hyatlas/go-data" 2>/dev/null || true
-    ln -sfn "${SHARE_SRC}" "${SHARES_LINK}" \
-      && echo "healed: relinked ${SHARES_LINK} -> ${SHARE_SRC}" >> "$LOG" \
-      || echo "FATAL: ln -s shares failed (数据仍在 ${SHARE_SRC}/hyatlas)" >> "$LOG"
+    heal_shares_link "${SHARE_SRC}" || true
   else
     echo "FATAL: cannot move entity shares dir aside (数据仍在 ${SHARE_SRC}/hyatlas)" >> "$LOG"
   fi
 else
-  # 全新安装：软链不存在，由 fnOS 声明 data-share 后自动创建；这里只确保目录本体在
-  echo "shares link missing (fresh install), ensuring ${SHARE_SRC}/hyatlas" >> "$LOG"
-  mkdir -p "${SHARE_SRC}/hyatlas/go-data" 2>/dev/null || true
-  ln -sfn "${SHARE_SRC}" "${SHARES_LINK}" 2>/dev/null || true
+  echo "shares link missing（新装或安装器未建链），按解析结果建链" >> "$LOG"
+  heal_shares_link "${SHARE_SRC}" || true
 fi
+
+# heal 之后复核：SHARE_ROOT/DATA_DIR 必须落在数据卷上，否则按刚建好的软链重新解析。
+case "${SHARE_ROOT}" in
+  /vol[1-9]*) : ;;
+  *)
+    _lr="$(readlink -f "${SHARES_LINK}" 2>/dev/null || true)"
+    if [ -n "${_lr}" ]; then
+      SHARE_ROOT="${_lr%/}/hyatlas"; APP_SHARE="${_lr}"; DATA_DIR="${SHARE_ROOT}/go-data"
+      echo "post-heal re-resolve: share_root=${SHARE_ROOT} data_dir=${DATA_DIR}" >> "$LOG"
+    fi ;;
+esac
+mkdir -p "${DATA_DIR}" 2>/dev/null || true
 chown -R "${RUN_USER}:${RUN_GRP}" "${SHARE_ROOT}" 2>/dev/null || true
 
 # 1a-2) 幂等不覆盖迁移（配方 C）：只在 share 目标为空时从老位置 cp -a，源保留不删

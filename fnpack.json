@@ -166,6 +166,17 @@
               "size": 242752791
             }
           }
+        },
+        "4.9.0-2": {
+          "changelog": "4.9.0-2（2026-10-18）：纯控制层修复（上游与二进制/模型零变更：二进制沿用 e3dd4abf，15,780,328B；模型三件套 sha 与现役逐件相同）。修 4.9.0-1 装机实测事故——fnOS 安装器把 /var/apps/hyatlas/shares 重建成实体空目录（系统盘上），旧两跳解析只要该路径存在就采信 → 服务指向空壳库（doc_index 2 字节）、117MB 真库留在 /vol2/@appshare/hyatlas 无人读，面板与召回全 0；旧自愈 SHARE_SRC=\"${APP_SHARE}\" 恰好等于软链自身，ln -sfn 还建出自指软链。① resolve_share_root 第①跳只采信「shares 本身是软链」且 realpath 落在数据卷 /volN 的情形；第②跳吃 TRIM_DATA_SHARE_PATHS 首段两种形状（share 父目录 / <app> 本体）并跳过 /vol0 未落卷占位；新增第③跳救援——扫描各卷 @appshare，按 go-data/doc_index.json >1MB 找回有货真库，宁可找回真库也不在系统盘另起空库。② install/upgrade 自愈重写：SHARE_SRC 取「加固后解析结果」的父目录（不再用会在实体目录上算错的 APP_SHARE）；新增 heal_shares_link() 硬闸——源为空 / 源等于软链自身 / 源不在 /volN 上，三种输入一律拒绝建链；heal 完成后复核 SHARE_ROOT、DATA_DIR 必须落数据卷，否则按刚建好的软链重新解析。③ cmd/main 新增空壳库保护闸：生效的 go-data/doc_index.json <1MB、而别的卷上存在 >1MB 真库时拒绝启动，错误同时写 panel.log 与 TRIM_TEMP_LOGFILE（应用中心可见）并给出修法（恢复软链或在 env 钉 HYATLAS_GO_DATA；实体目录先 mv 留底别删）；确需空库启动可设 HYATLAS_ALLOW_EMPTY_START=on。config/env.example 补 HYATLAS_GO_DATA 与 HYATLAS_ALLOW_EMPTY_START 说明（均为注释行，升级合并逻辑跳过 # 行，不会把本机卷号带给别人）。回归测试：两个沙箱场景测试从出货脚本按 if/fi 配对抽取真实代码、把绝对前缀挪进 /tmp 沙箱重演 5 类现场（软链正常／shares 被实体化＋自指残留／无软链且无 TRIM_DATA_SHARE_PATHS／/vol0 占位／全新装无真库／多卷取最大库／经软链访问同一库不得误判／ALLOW_EMPTY_START=on 放行），共 29 条断言全 PASS；测试另抓出一个真实缺陷：case 模式写成 */\"/${_name}\" 在 bash 5.2 下不匹配，会让「TRIM_DATA_SHARE_PATHS 已是 <app> 本体」的场景多拼一层 hyatlas 落到错目录，已改为 */\"${_name}\"。fpk 端到端两次重打逐字节一致（sha256 624366c8…，242,758,303B），结构校验 PASS，REUSE_BIN=1 身份闸按设计降级告警但 SHA_BIN == bin/ 实测 sha 强校验通过。",
+          "updated_at": "2026-10-18T09:30:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/hyatlas-v4.9.0-2/hyatlas-4.9.0-2-x86.fpk",
+              "sha256": "624366c84c126576a4ea6d41f6d4304c374987f7011bbbb6881a4beda7027e32",
+              "size": 242758303
+            }
+          }
         }
       }
     },

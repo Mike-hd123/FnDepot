@@ -26,8 +26,8 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-OUT="${1:-/vol2/1000/download/hyatlas-4.9.0-1-x86.fpk}"
-VER="4.9.0-1"   # 本包版本，manifest 校验与身份闸提示共用（上游版本 + fork 修订号）
+OUT="${1:-/vol2/1000/download/hyatlas-4.9.0-2-x86.fpk}"
+VER="4.9.0-2"   # 本包版本，manifest 校验与身份闸提示共用（上游版本 + fork 修订号）
 REF_FPK="/vol2/1000/workspace/hy450-sync/out/hyatlas-4.5.0-2-x86.fpk"   # 242,218,811B 实测存在；其内层模型三件套 sha 与 SHA_ONNX/SHA_ORT/SHA_TOK 逐件相同
 
 # 4.9.0-1 是**上游同步版**（v4.7.3→v4.9.0，Go 源码与前端 embed 均有改动），本轮**重编**，
