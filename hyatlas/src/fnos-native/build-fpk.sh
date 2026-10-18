@@ -34,7 +34,7 @@ REF_FPK="/vol2/1000/workspace/hy450-sync/out/hyatlas-4.5.0-2-x86.fpk"   # 242,21
 # 不允许复用旧二进制：REUSE_BIN 默认置 0（要复用必须显式 REUSE_BIN=1 且那是打包层修订）。
 # SHA_BIN 取自出包前置门禁 rebuild-twice.sh 的权威值：/vol2 与 /vol1 两份不同挂载路径
 # 重编逐字节一致（go1.26.5，CGO_ENABLED=1，-trimpath，GOAMD64=v1）。
-SHA_BIN="5ef89a1532366c4e576a1ce3b14b8dd00a41d12948c75e4d679ae322c621f2d4"   # 实测：v4.9.1 合并树(-trimpath,无 -s -w)；15,786,320B；同步上游 v4.9.1 (fork src @ hyatlas/src)
+SHA_BIN="1cb6d4cc5b20ede70d2de6c19797669cd5a2a4225f999fad26fde2fa2a41b7fe"   # 实测：v4.9.1 合并树 + fork 关思考补丁(-trimpath,无 -s -w)；15,795,272B
 REUSE_BIN="${REUSE_BIN:-0}"   # 1 = 本轮为打包层修订，允许复用 bin/ 现有二进制（非重编）；重编发布时置 0
 SHA_ONNX="8a3f371a7e535e25d3d5a0ff0c0501a605ef0b62577800d2bf4b1fc76d6cbcf1"
 SHA_ORT="99458e9d185dfa1a9b5f6510790ede3bedc25dea378adb904ce292b517eeaecf"
