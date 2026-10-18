@@ -2120,6 +2120,15 @@ func main() {
 		llm.SetFallback(os.Getenv("HYATLAS_LLM_FALLBACK_BASE"), fb, os.Getenv("HYATLAS_LLM_FALLBACK_KEY"))
 		log.Printf("llm: fallback model %s configured", strings.TrimSpace(fb))
 	}
+	// fork (fnos): 默认给每次 LLM 请求带上顶层 "enable_thinking": false。本机网关各别名
+	// pri=1 全是 reasoning-first 模型，长输入的"只回 JSON"任务会把整个输出预算烧在推理上、
+	// content 返回空且 finish_reason=length，整理（consolidation）因此每轮烧满 10 分钟预算却
+	// 零产出。同一 1,905 token 输入实测：原样 95.0s/6,000 token/正文 0；带这个参数
+	// 12.4s/732 token/正文 1,837 字且可直接 json.loads。HYATLAS_LLM_DISABLE_THINKING=off
+	// 回到上游姿势；HYATLAS_LLM_MAX_TOKENS 默认 0 = 不发 max_tokens，免得截断合法长输出。
+	llm.DisableThinking = !envOff("HYATLAS_LLM_DISABLE_THINKING")
+	llm.MaxTokens = envInt("HYATLAS_LLM_MAX_TOKENS", 0)
+	log.Printf("llm: enable_thinking=false on=%v, max_tokens=%d (0 = 不发)", llm.DisableThinking, llm.MaxTokens)
 	extractTimeout = resolveExtractTimeout()
 	llm.KeyFile = llmKeyFile
 	srv := &Server{store: store, llm: llm, llmModel: llmModel, llmBase: llmBase,

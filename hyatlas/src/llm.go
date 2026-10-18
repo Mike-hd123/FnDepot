@@ -35,6 +35,19 @@ type LLMClient struct {
 	// key resolution (Key / KeyFile) is used.
 	FallbackKey string
 
+	// fork (fnos): DisableThinking 给请求体带上顶层 "enable_thinking": false。
+	// 本机 octopus 三条别名的 pri=1 全是 reasoning-first 模型（compression→neohorse-1-9b、
+	// chat→deepseek-flash、default→glm-5.3-flash），"只回 JSON、不要解释"这类任务会把整个输出
+	// 预算烧在 reasoning_content 上、content 返回空且 finish_reason=length。同一 1,905 token
+	// 的整理输入实测：原样 95.0s / 6,000 token / 17,502 字推理 / 正文 0；带顶层
+	// enable_thinking:false 后 12.4s / 732 token / 0 推理 / 正文 1,837 字且是可直接 json.loads
+	// 的完整 JSON。reasoning_effort:"none" 与 chat_template_kwargs 嵌套姿势都被渠道忽略，
+	// 只有顶层这个键有效，所以在这里发它。由 HYATLAS_LLM_DISABLE_THINKING 控制，默认开。
+	DisableThinking bool
+	// MaxTokens > 0 时请求体带 "max_tokens"。默认 0 = 不带，保持上游"不截断合法长输出"的语义；
+	// 只在个别渠道放任推理跑飞时才需要显式设。
+	MaxTokens int
+
 	// pushed is a key handed over at runtime through POST /api/v1/llm/key, typically
 	// by the Hermes plugin, which holds the user's provider credential. It is kept
 	// in memory only and wins over APIKey and KeyFile. This lets the server run
@@ -415,20 +428,48 @@ func (l *LLMClient) chat(ctx context.Context, messages []map[string]string, temp
 
 // chatOnce sends one request to one model and returns the assistant's text.
 //
+// fork (fnos): the request body is built here so the thinking switch and the
+// optional output cap apply to the primary and the fallback path alike (both go
+// through chatOnce), and so a channel that rejects the unknown field is recovered
+// instead of failing the whole call.
+func (l *LLMClient) chatOnce(ctx context.Context, base, model, key string, messages []map[string]string, temp float64) (string, error) {
+	spec := map[string]any{
+		"model":       model,
+		"messages":    messages,
+		"temperature": temp,
+	}
+	if l.MaxTokens > 0 {
+		spec["max_tokens"] = l.MaxTokens
+	}
+	if l.DisableThinking {
+		spec["enable_thinking"] = false
+	}
+	content, status, err := l.postChat(ctx, base, spec, key)
+	if err != nil && status == 400 && l.DisableThinking {
+		// Some channels 400 on an unknown field. Drop enable_thinking and send once
+		// more rather than losing the call: a reply that may come back blank is
+		// still better than no reply at all, and this is the only path that knows
+		// the field was ours.
+		log.Printf("llm: %s rejected enable_thinking=false (HTTP 400); retrying without it: %v", model, err)
+		delete(spec, "enable_thinking")
+		content, _, err = l.postChat(ctx, base, spec, key)
+	}
+	return content, err
+}
+
+// postChat sends the built request and returns the assistant's text plus the HTTP
+// status (0 when the request never got an answer).
+//
 // Shared by the primary and fallback paths so the two cannot drift on the parts
 // that are easy to get wrong once and hard to notice: the Cloudflare WAF
 // rejects Go's default User-Agent with a 403, and the key must be resolved per
 // request because a rotating JWT goes stale if frozen at startup. A non-empty
 // key overrides that resolution; an empty one falls back to resolveKey.
-func (l *LLMClient) chatOnce(ctx context.Context, base, model, key string, messages []map[string]string, temp float64) (string, error) {
-	body, _ := json.Marshal(map[string]any{
-		"model":       model,
-		"messages":    messages,
-		"temperature": temp,
-	})
+func (l *LLMClient) postChat(ctx context.Context, base string, spec map[string]any, key string) (string, int, error) {
+	body, _ := json.Marshal(spec)
 	req, err := http.NewRequestWithContext(ctx, "POST", base+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	// The Nous Portal sits behind Cloudflare, which 403s Go's default
@@ -443,12 +484,12 @@ func (l *LLMClient) chatOnce(ctx context.Context, base, model, key string, messa
 	}
 	resp, err := l.Client.Do(req)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode != 200 {
-		return "", fmt.Errorf("LLM HTTP %d: %s", resp.StatusCode, truncStr(data, 200))
+		return "", resp.StatusCode, fmt.Errorf("LLM HTTP %d: %s", resp.StatusCode, truncStr(data, 200))
 	}
 	var out struct {
 		Choices []struct {
@@ -466,17 +507,20 @@ func (l *LLMClient) chatOnce(ctx context.Context, base, model, key string, messa
 		} `json:"choices"`
 	}
 	if err := json.Unmarshal(data, &out); err != nil {
-		return "", err
+		return "", 0, err
 	}
 	if len(out.Choices) == 0 {
-		return "", fmt.Errorf("LLM: no choices")
+		return "", 0, fmt.Errorf("LLM: no choices")
 	}
 	msg := out.Choices[0].Message
 	if strings.TrimSpace(msg.Content) == "" && strings.TrimSpace(msg.ReasoningContent) != "" {
 		// The reasoning text is what the caller has to work with, and the
 		// tolerant JSON extraction downstream picks the object out of it.
+		// fork (fnos): 实测本机的 reasoning-first 渠道在长输入下这里拿到的是**纯推理文本、
+		// 里面往往没有完整 JSON**（finish_reason=length，正文与 JSON 都没轮到输出），所以
+		// 这条兜底不能替代关掉思考——真正的修法见 DisableThinking。
 		log.Printf("llm: empty content, using reasoning_content (%d bytes)", len(msg.ReasoningContent))
-		return msg.ReasoningContent, nil
+		return msg.ReasoningContent, 0, nil
 	}
 	if strings.TrimSpace(msg.Content) == "" {
 		// Say so plainly: a parse error on an empty string reads as "the model
@@ -484,10 +528,10 @@ func (l *LLMClient) chatOnce(ctx context.Context, base, model, key string, messa
 		// and the two want different fixes.
 		// finish_reason tells a reply cut off by the provider ("length") apart
 		// from one that simply came back blank.
-		return "", fmt.Errorf("LLM returned an empty message (no content, no reasoning_content, finish_reason=%q)",
+		return "", 0, fmt.Errorf("LLM returned an empty message (no content, no reasoning_content, finish_reason=%q)",
 			out.Choices[0].FinishReason)
 	}
-	return msg.Content, nil
+	return msg.Content, 0, nil
 }
 
 // parseExtraction tolerantly extracts the JSON object from the LLM reply.
