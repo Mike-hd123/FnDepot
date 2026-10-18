@@ -65,7 +65,7 @@ FnDepot/
 └── docs/                    # 通用研究文档（fnOS API / Octopus 日志审计等）
 ```
 
-**HyAtlas 4.9.0-2 fpk**：231MB（242,758,303B，sha256 `624366c8…`），本地产物 /vol2/1000/download/hyatlas-4.9.0-2-x86.fpk（Release `hyatlas-v4.9.0-2` 待实测后再发），不进 git 跟踪。该包二进制与 4.9.0-1 相同（sha `e3dd4abf…`，REUSE_BIN=1 的打包层修订），模型三件套逐件 sha 零漂移。fork 源码在本仓库 `hyatlas/src/`，上游工程 [tuancookiez-hub/HyAtlas-Memory](https://github.com/tuancookiez-hub/HyAtlas-Memory)。历史包：`hyatlas-v4.9.0-1` 留 4.9.0-1（242,752,791B，sha `7068b75e…`）、`hyatlas-v4.7.3-2` 留 4.7.3-2（242,654,348B，sha `9aceae36…`）、`hyatlas-v4.7.3-1` 留 4.7.3-1（242,648,812B，sha `7a8fcc6a…`）、`hyatlas-v4.7.2-1` 留 4.7.2-1（242.6MB）、`v2026.10.12` 留 4.6.0-1、`v2026.10.08` 留 4.5.0-2（fnpack.json releases 六条均在，4.7.0-1 未单独发 Release，被 4.7.2-1 覆盖）。
+**HyAtlas 4.9.0-2 fpk**：231MB（242,758,303B，sha256 `624366c8…`），本地产物 /vol2/1000/download/hyatlas-4.9.0-2-x86.fpk（Release `hyatlas-v4.9.0-2` 待实测后再发），不进 git 跟踪。该包二进制与 4.9.0-1 相同（sha `e3dd4abf…`，REUSE_BIN=1 的打包层修订），模型三件套逐件 sha 零漂移。fork 源码在本仓库 `hyatlas/src/`，上游工程 [tuancookiez-hub/HyAtlas-Memory](https://github.com/tuancookiez-hub/HyAtlas-Memory)。历史包：4.9.0-1（242,752,791B，sha `7068b75e…`）**只留本机未发 Release**（装后触发 fnOS shares 实体化故障，已被 4.9.0-2 覆盖，二进制与 4.9.0-2 相同）、`hyatlas-v4.7.3-2` 留 4.7.3-2（242,654,348B，sha `9aceae36…`）、`hyatlas-v4.7.3-1` 留 4.7.3-1（242,648,812B，sha `7a8fcc6a…`）、`hyatlas-v4.7.2-1` 留 4.7.2-1（242.6MB）、`v2026.10.12` 留 4.6.0-1、`v2026.10.08` 留 4.5.0-2（fnpack.json releases 六条均在，4.7.0-1 未单独发 Release，被 4.7.2-1 覆盖）。
 
 ## 打包说明
 
