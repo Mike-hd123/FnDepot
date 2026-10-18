@@ -1,5 +1,5 @@
 #!/bin/bash
-# HyAtlas v4.6.0-1 fpk 构建（同步上游 v4.6.0：L7 意图关闭+降噪、召回带日期戳、写时语义替换、检索时效权重 HYATLAS_RECENCY、固化器 prompt 带日期、L1/L5/L6 降噪、自动快照 HYATLAS_SNAPSHOT_*、插件 auto_start 默认关、hyatlas-go --version/--help）
+# HyAtlas v4.9.0-1 fpk 构建（同步上游 v4.7.3→v4.9.0：事件日期 event_at/event_date、查询时间窗、更新计数、意图到期日、episode 摘要(取代每写一条产一条 L4)、读时带历史 history、superseded_how、用量学习独立存 usage_learning.json、程序不再读别的应用凭证 + POST /api/v1/llm/key 运行时交 key、任务经验 experiences 通道、schema 证据链、长事实按句索引 l3_clause、实体加成与图谱辅助召回、查询类型自适应权重、召回配额与 schema/意图槽位、可选写后对齐 HYATLAS_RECONCILE 默认 off；详见 fnos-native/manifest 的 changelog 字段）
 #
 # 输入来源：
 #   - fpk 控制层（cmd/config/wizard/manifest/ICON）：本目录归档原件
@@ -26,16 +26,15 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-OUT="${1:-/vol2/1000/download/hyatlas-4.7.3-2-x86.fpk}"
+OUT="${1:-/vol2/1000/download/hyatlas-4.9.0-1-x86.fpk}"
 REF_FPK="/vol2/1000/workspace/hy450-sync/out/hyatlas-4.5.0-2-x86.fpk"   # 242,218,811B 实测存在；其内层模型三件套 sha 与 SHA_ONNX/SHA_ORT/SHA_TOK 逐件相同
 
-# SHA_BIN must be recomputed against the freshly built bin/hyatlas-go-linux-amd64 for 4.7.3-2 (fork-src @ hyatlas/src).
-# Do NOT ship fpk with the placeholder below; run sha256sum on the binary and replace.
-# 4.7.3-2 是**纯打包层修复**（只改 fnOS 控制层脚本/文档，Go 业务源码零改动），因此二进制
-# 沿用 4.7.3-1 已出货的同一件（sha 1bc38015 不变），本轮不重编。REUSE_BIN=1 显式声明该意图，
-# 见下方自检闸。
-SHA_BIN="1bc38015c4e5fd1e5e4e9159c75cae94d2afd8c494f3a40d7d8a9bdc6a5c098c"   # 实测：v4.7.3 合并树(-trimpath,无 -s -w)；15,661,048B；同步上游 v4.7.3 (fork src @ hyatlas/src)
-REUSE_BIN="${REUSE_BIN:-1}"   # 1 = 本轮为打包层修订，允许复用 bin/ 现有二进制（非重编）；重编发布时置 0
+# 4.9.0-1 是**上游同步版**（v4.7.3→v4.9.0，Go 源码与前端 embed 均有改动），本轮**重编**，
+# 不允许复用旧二进制：REUSE_BIN 默认置 0（要复用必须显式 REUSE_BIN=1 且那是打包层修订）。
+# SHA_BIN 取自出包前置门禁 rebuild-twice.sh 的权威值：/vol2 与 /vol1 两份不同挂载路径
+# 重编逐字节一致（go1.26.5，CGO_ENABLED=1，-trimpath，GOAMD64=v1）。
+SHA_BIN="e3dd4abfa1eb7ccaa4680d75c801dadb30091d92cd5bd10ee9431d40a520ab36"   # 实测：v4.9.0 合并树(-trimpath,无 -s -w)；15,780,328B；同步上游 v4.9.0 (fork src @ hyatlas/src)
+REUSE_BIN="${REUSE_BIN:-0}"   # 1 = 本轮为打包层修订，允许复用 bin/ 现有二进制（非重编）；重编发布时置 0
 SHA_ONNX="8a3f371a7e535e25d3d5a0ff0c0501a605ef0b62577800d2bf4b1fc76d6cbcf1"
 SHA_ORT="99458e9d185dfa1a9b5f6510790ede3bedc25dea378adb904ce292b517eeaecf"
 SHA_TOK="7dfbf1966ebf99d471c3796e9b457329d2b2182b817e144f1e904b957745c839"

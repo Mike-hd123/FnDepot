@@ -128,6 +128,9 @@ type ConsolidatedSchema struct {
 	Pattern    string   `json:"pattern"`
 	Context    string   `json:"context,omitempty"`
 	Supersedes []string `json:"supersedes,omitempty"`
+	// Evidence are the fact IDs from the batch that show the pattern. A schema is
+	// linked to its facts so it can be checked and explained at read time.
+	Evidence idList `json:"evidence,omitempty"`
 }
 
 // Consolidation is the JSON contract for one consolidation call.
@@ -950,7 +953,7 @@ func (c *Consolidator) consolidateScope(ctx context.Context, owner scopeKey, fac
 			seen[id] = true
 			absorbed = append(absorbed, byID[id])
 		}
-		absorbed = c.onTopic(text, absorbed, rep)
+		absorbed, vec := c.onTopic(text, absorbed, rep)
 		if len(absorbed) < 2 {
 			// A "merge" of one fact is a rewrite, not a consolidation. Dropping
 			// it avoids losing the original's provenance for no gain.
@@ -960,7 +963,7 @@ func (c *Consolidator) consolidateScope(ctx context.Context, owner scopeKey, fac
 		if label == "" {
 			label = "consolidated"
 		}
-		if id := c.applyMerge(owner, text, label, absorbed, now, live, rep, fatal, soft); id != "" {
+		if id := c.applyMerge(owner, text, vec, label, absorbed, now, live, rep, fatal, soft); id != "" {
 			created = append(created, id)
 		}
 	}
@@ -1083,14 +1086,28 @@ func (c *Consolidator) consolidateScope(ctx context.Context, owner scopeKey, fac
 			continue
 		}
 		known[key] = true
-		if c.schemaKnown(owner, pattern, sc.Supersedes) {
+		dup, vec := c.schemaKnown(owner, pattern, sc.Supersedes)
+		if dup {
 			continue
 		}
 		id := newID()
-		if err := c.store.Add(memory.L6Schema, id, pattern, map[string]string{
+		meta := map[string]string{
 			"user_id": owner.user, "agent_id": owner.agent,
 			"context": sc.Context, "ts": now, "consolidated": "true",
-		}); err != nil {
+		}
+		// Evidence counts only facts the model was shown, each once. Two or more
+		// are needed to call it a pattern; with fewer, the schema is still written
+		// without the key, since losing the pattern would be worse.
+		var evidence []string
+		for _, fid := range sc.Evidence {
+			if batch[fid] && !containsID(evidence, fid) {
+				evidence = append(evidence, fid)
+			}
+		}
+		if len(evidence) >= 2 {
+			meta["evidence"] = strings.Join(evidence, ",")
+		}
+		if err := c.store.addWithVector(memory.L6Schema, id, pattern, meta, vec); err != nil {
 			soft("schema: " + err.Error())
 			continue
 		}
@@ -1147,8 +1164,22 @@ func (c *Consolidator) consolidateScope(ctx context.Context, owner scopeKey, fac
 // originals superseded by a fact that no longer exists. The unmarked originals
 // stay live beside it, and the failure is reported so the owner is retried. The
 // replacement write and the supersedes are fatal; the L1 mirror writes are soft.
-func (c *Consolidator) applyMerge(owner scopeKey, text, label string, absorbed []DocIndex, now string,
+func (c *Consolidator) applyMerge(owner scopeKey, text string, vec []float32, label string, absorbed []DocIndex, now string,
 	live map[string]bool, rep *Report, fatal, soft func(string)) string {
+	// An experience may only merge with another experience: a mixed merge is refused
+	// and every row stays live. An all-experience merge keeps the experience label.
+	exps := 0
+	for _, d := range absorbed {
+		if d.Meta["source_layer_label"] == experienceLabel {
+			exps++
+		}
+	}
+	if exps > 0 && exps < len(absorbed) {
+		return ""
+	}
+	if exps > 0 {
+		label = experienceLabel
+	}
 	srcs := distinctSources(absorbed)
 	// The merged fact inherits the conversations it absorbed, so L5
 	// corroboration and the raw-decay citation guard still see them.
@@ -1161,7 +1192,7 @@ func (c *Consolidator) applyMerge(owner scopeKey, text, label string, absorbed [
 		meta["source_ids"] = strings.Join(srcs, ",")
 	}
 	mergedID := newID()
-	if err := c.store.Add(memory.L3Fact, mergedID, text, meta); err != nil {
+	if err := c.store.addWithVector(memory.L3Fact, mergedID, text, meta, vec); err != nil {
 		fatal("merge add: " + err.Error())
 		return ""
 	}
@@ -1169,7 +1200,7 @@ func (c *Consolidator) applyMerge(owner scopeKey, text, label string, absorbed [
 	for i, d := range absorbed {
 		ids[i] = d.ID
 	}
-	_, supErr := c.store.Supersede(ids, mergedID)
+	_, supErr := c.store.supersedeWith(ids, mergedID, map[string]string{metaSupersededHow: howMerged})
 
 	// Count what the store marked, not what was asked for.
 	marked := c.supersededOf(ids)
@@ -1212,49 +1243,33 @@ func (c *Consolidator) applyMerge(owner scopeKey, text, label string, absorbed [
 	return mergedID
 }
 
-// semantic reports whether the store's vectors carry meaning. The LocalEmbedder
-// fallback hashes bytes, so similarity between its vectors says nothing about what
-// two texts mean, and the similarity guards stand aside rather than guess.
-// An embedder that wraps another says so with Unwrap, and the inner one decides.
-func (c *Consolidator) semantic() bool {
-	e := c.store.embed
-	for {
-		if _, hashed := e.(*LocalEmbedder); hashed {
-			return false
-		}
-		w, ok := e.(interface{ Unwrap() Embedder })
-		if !ok {
-			return true
-		}
-		e = w.Unwrap()
-	}
-}
-
 // onTopic returns the facts in absorbed that the merged text is about, judged by
 // the cosine similarity of their stored vectors to the text's. A fact below
 // mergeMinSimilarity is left out, so it stays live, and is counted in
 // rep.KeptOffTopic. When the text cannot be embedded or a vector is missing, that
-// fact is kept: the guard never blocks a merge it cannot judge.
-func (c *Consolidator) onTopic(text string, absorbed []DocIndex, rep *Report) []DocIndex {
-	if len(absorbed) < 2 || !c.semantic() {
-		return absorbed
+// fact is kept: the guard never blocks a merge it cannot judge. It also returns
+// the text's vector (nil if not computed), so the merged fact is not embedded twice.
+func (c *Consolidator) onTopic(text string, absorbed []DocIndex, rep *Report) ([]DocIndex, []float32) {
+	if len(absorbed) < 2 || !c.store.semantic {
+		return absorbed, nil
 	}
 	tv, err := c.store.embed.Embed(c.store.ctx, text)
 	if err != nil {
-		return absorbed
+		return absorbed, nil
 	}
 	vecs := c.store.vectors(idsOf(absorbed))
 	kept := absorbed[:0:0]
 	for _, d := range absorbed {
-		v, ok := vecs[d.ID]
-		if ok && cosineSim(tv, v) < mergeMinSimilarity {
-			log.Printf("consolidate: merge left %s live: %.2f similar to the merged text", d.ID, cosineSim(tv, v))
-			rep.KeptOffTopic++
-			continue
+		if v, ok := vecs[d.ID]; ok {
+			if sim := cosineSim(tv, v); sim < mergeMinSimilarity {
+				log.Printf("consolidate: merge left %s live: %.2f similar to the merged text", d.ID, sim)
+				rep.KeptOffTopic++
+				continue
+			}
 		}
 		kept = append(kept, d)
 	}
-	return kept
+	return kept, tv
 }
 
 // relevantSchemas picks the owner's schemas to show the model beside a cluster:
@@ -1264,16 +1279,13 @@ func (c *Consolidator) onTopic(text string, absorbed []DocIndex, rep *Report) []
 // Without vectors it falls back to the newest schemas.
 func (c *Consolidator) relevantSchemas(owner scopeKey, facts []DocIndex) []DocIndex {
 	all := c.liveOf(memory.L6Schema, owner)
-	if len(all) <= maxPromptSchemas || !c.semantic() {
-		if len(all) > maxPromptSchemas {
-			return all[:maxPromptSchemas]
-		}
+	if len(all) <= maxPromptSchemas {
 		return all
 	}
-	vecs := c.store.vectors(idsOf(facts))
-	if len(vecs) == 0 {
+	if !c.store.semantic {
 		return all[:maxPromptSchemas]
 	}
+	vecs := c.store.vectors(idsOf(facts))
 	// Each fact nominates its nearest schemas; a schema ranks by its best score.
 	best := map[string]float32{}
 	where := map[string]string{"user_id": owner.user, "agent_id": owner.agent}
@@ -1310,26 +1322,27 @@ func (c *Consolidator) relevantSchemas(owner scopeKey, facts []DocIndex) []DocIn
 
 // schemaKnown reports whether the owner already has a live schema that says the
 // same as pattern (similarity at or above schemaDupScore). A schema the new one is
-// meant to replace does not count: a refinement is expected to resemble it.
-func (c *Consolidator) schemaKnown(owner scopeKey, pattern string, replaces []string) bool {
-	if !c.semantic() {
-		return false
+// meant to replace does not count: a refinement is expected to resemble it. It
+// also returns the pattern's vector (nil if not computed) for the write.
+func (c *Consolidator) schemaKnown(owner scopeKey, pattern string, replaces []string) (bool, []float32) {
+	if !c.store.semantic {
+		return false, nil
 	}
 	v, err := c.store.embed.Embed(c.store.ctx, pattern)
 	if err != nil {
-		return false
+		return false, nil
 	}
 	hits, err := c.store.searchWhere(v, 3, memory.L6Schema,
-		map[string]string{"user_id": owner.user, "agent_id": owner.agent}, false)
+		map[string]string{"user_id": owner.user, "agent_id": owner.agent}, false) // fork (fnos): includeExpired=false
 	if err != nil {
-		return false
+		return false, v
 	}
 	for _, h := range hits {
 		if float64(h.Score) >= schemaDupScore && !containsID(replaces, h.ID) {
-			return true
+			return true, v
 		}
 	}
-	return false
+	return false, v
 }
 
 // retireMirrors supersedes the L1 Profile rows that mirror superseded
@@ -1556,12 +1569,12 @@ func (c *Consolidator) ask(ctx context.Context, facts, schemas []DocIndex) (*Con
 {
   "merges": [{"text": "<one fact that replaces several>", "layer": "user_preferences|project_state|technical_lesson|decision|negative_knowledge", "supersedes": ["<id>", "<id>"]}],
   "drops": [{"id": "<id>", "reason": "<why this fact is stale or trivially obvious>"}],
-  "schemas": [{"pattern": "<a recurring pattern only visible across many facts>", "context": "<when it applies>", "supersedes": ["<schema_id>"]}]` + graphKeys + `
+  "schemas": [{"pattern": "<a recurring pattern only visible across many facts>", "context": "<when it applies>", "evidence": ["<fact id>", "<fact id>"], "supersedes": ["<schema_id>"]}]` + graphKeys + `
 }
 Rules:
 - merges: ONLY combine facts that genuinely say the same thing or contradict each other. For a contradiction, keep the newer statement (later date) and supersede the older. supersedes MUST list at least 2 ids. Use only ids from the input.
 - drops: facts that are stale (a temporary state that has since passed) or trivially obvious, each with a short reason. A durable fact — a preference, a decision, where something lives, how something works — is never stale just because it is old. A drop without a reason is ignored. Be conservative.
-- schemas: 0-3 patterns that generalise beyond the individual facts, each a full sentence that says what the pattern is and when it applies (not a 3-word label such as "pilot trade within cap"). Do not repeat a schema already stored (listed below, if any). To refine a stored schema, return the refined pattern and list the schema_id it replaces in "supersedes"; otherwise leave "supersedes" empty.` + graphRules + `
+- schemas: 0-3 patterns that generalise beyond the individual facts, each a full sentence that says what the pattern is and when it applies (not a 3-word label such as "pilot trade within cap"). Do not repeat a schema already stored (listed below, if any). To refine a stored schema, return the refined pattern and list the schema_id it replaces in "supersedes"; otherwise leave "supersedes" empty. Each schema lists in "evidence" the ids of the facts above that show the pattern, at least two.` + graphRules + `
 - Never invent an id. Never reference a fact not listed.
 Return ONLY valid JSON, no prose, no markdown fences.
 

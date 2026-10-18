@@ -1,5 +1,142 @@
 # Changelog
 
+## [4.9.0] — 2026-10-18
+
+The rest of what was worth adopting from Hunyuan (Tencent Hy-Memory 2.0), as planned
+after 4.8.0. Still one LLM call per write unless `HYATLAS_RECONCILE` is turned on.
+
+### Added
+
+- **Task experiences.** When a turn shows a task actually solved, extraction records
+  the lesson: task, what solved it, the environment it depends on, and confidence.
+  They come back in their own `experiences` search channel, and a repeat of the same
+  lesson updates the stored one.
+- **Schemas keep their evidence.** Consolidation records which facts support each
+  schema, and a search that returns those facts also returns the schema behind them.
+- **Long facts are found by their parts.** Facts over 300 characters are also indexed
+  by their sentences, in a search-only collection that counts and lists never see.
+- **Entity boost and graph-assisted recall.** A query naming an entity page favours
+  hits about it, and facts the knowledge graph links to it may pass a slightly lower
+  floor.
+- **Search adapts to the kind of query.** Identifiers lean on keyword search; "how /
+  why" questions lean slightly on meaning.
+- **Slots for schemas and intentions.** The patterns behind the facts found, and an
+  open intention just below the cut, each get a place in the results.
+- **`HYATLAS_RECONCILE=on`** (off by default): a second LLM call per write compares new
+  facts with similar stored ones and updates or replaces them. Meant for local models.
+
+## [4.8.1] — 2026-10-18
+
+### Fixed
+
+- **The key is handed over as soon as Hermes loads the plugin.** With `share_llm_key`
+  on, the hand-over started at the first conversation, so after a gateway restart
+  consolidation and episode summaries had no key until someone chatted. It now
+  starts when the plugin is registered.
+
+## [4.8.0] — 2026-10-17
+
+Precision per fact and smarter recall, from a code-level comparison with Tencent's
+Hy-Memory 2.0 ("Hunyuan"). Still one LLM call per write.
+
+### Added
+
+- **Event dates.** Extraction is told today's date and gives each fact the date its
+  event happened or is due (`event_at`). Search returns it as `event_date`, and the
+  plugin shows "happened 2026-10-05".
+- **Dates in the query.** "yesterday", "last week", "in november", "2026-10-05" and
+  similar are read from the query: facts dated in that window join the results and
+  hits outside it move down.
+- **Updates with counts.** Besides replacing a contradicted fact, extraction can
+  extend one: new detail, or the same event again ("has injured the ankle twice:
+  …"), instead of writing a near-duplicate.
+- **Intention due dates.** "The interview next Tuesday" stays in recall until a day
+  after it is due, instead of a fixed 7 days.
+- **Episode summaries.** One L4 summary per stretch of work (`HYATLAS_EPISODE_GAP`,
+  30 minutes), instead of one per write. `/api/v1/status` shows open and pending
+  episodes.
+- **History on read.** A hit that replaced an older fact carries it under `history`,
+  and the plugin shows "was: … (until …)".
+- Superseded rows record how they were retired (`superseded_how`: replaced,
+  updated, restated or merged).
+
+### Security
+
+- **No HyAtlas program reads another application's credentials any more.** The
+  sample launcher read Hermes' `auth.json` to get a Nous Portal token, and the
+  server could be pointed at that file (`HYATLAS_LLM_KEY_FILE`). Reading another
+  program's credentials and then calling the internet is the pattern
+  behaviour-based antivirus treats as credential theft: on 2026-10-17 Bitdefender
+  quarantined a Hermes session's whole process tree, including the HyAtlas server,
+  its settings and every file it had written. Now:
+  - the server accepts its key over localhost (`POST /api/v1/llm/key`) and keeps
+    it in memory only; `/api/v1/status` reports `llm: "awaiting_key"` until then;
+  - the plugin's new `share_llm_key` setting (off by default) asks Hermes for its
+    current Nous key through Hermes's own resolver and hands it over, only when
+    the server's endpoint is the Nous Portal, every 15 minutes or when the server
+    restarts;
+  - the launcher reads no credentials.
+
+### Fixed
+
+- **Usage learning survives restarts.** Since 4.7.0 it shared `usage.json` with the
+  store's write and search counters, so each overwrote the other. It now has its own
+  `usage_learning.json`; an old `usage.json` holding usage entries is read once.
+
+### Changed
+
+- Facts are written with an explicit subject ("The user …", or the named person).
+- Recency counts from the later of when a memory was written and when a reply last
+  used it, so an old memory still in use does not sink.
+- Of two near-identical hits (cosine 0.95, same numbers), the lower one moves to the
+  end of the results.
+- Keyword search matches word forms (tests/test, fixed/fix, broken/break) through a
+  small built-in stemmer.
+- The Now page also reads the owner's newest facts, since summaries now wait for an
+  episode to end.
+
+- A drop made without a reason records "dropped without a recorded reason" when
+  it is written, instead of waiting for the next start to label it.
+- The merged text of a merge and each new schema are embedded once, not twice.
+- Whether vectors carry meaning is now a property of the embedder (the hashed
+  local stub says no), decided once when the store opens.
+
+## [4.7.3] — 2026-10-13
+
+Consolidation quality, from a spot-check of what the 4.7.x backlog retired on the
+live store (1,900 superseded facts).
+
+### Fixed
+
+- **A merge no longer hides a fact under unrelated text.** About 1% of merges
+  folded in a fact the merged text barely resembled (cosine below 0.65), for
+  example "fast strategies lose, hold/trend/rotate survive" into "4 new NVDA-dip
+  pilots promoted". A fact below 0.65 now stays live, and a merge left with fewer
+  than two facts is not made. The pass report counts these as `kept_off_topic`.
+- **The model sees the schemas that matter.** Each call was shown the owner's 20
+  newest schemas, mostly about other topics, so it could neither avoid repeating
+  nor refine the ones that applied. It now gets the schemas nearest the cluster's
+  facts. A new schema that matches a stored one at 0.92 or above (the dedupe
+  floor) is not written, unless it is the refinement replacing that one.
+- **History stays readable.** Deleting a fact that had replaced others now points
+  them at its own successor, or records "the fact that replaced it was later
+  deleted". At start, rows dropped before reasons were recorded get "dropped
+  without a recorded reason". A retracted merge records why.
+- **Paging through `/api/v1/list` returns every row once.** Rows with the same
+  timestamp, which every consolidation pass writes, came back in a different
+  order on each request, so pages skipped and repeated rows. Ties now break by id.
+
+### Added
+
+- `POST /api/v1/admin/restore` (needs `HYATLAS_ADMIN=on`; dry run by default)
+  makes named superseded rows live again, to undo a merge or drop the model got
+  wrong.
+
+### Notes
+
+- The similarity guards stand aside with the `HYATLAS_EMBED_BASE=local` stub,
+  whose hashed vectors carry no meaning.
+
 ## [4.7.2] — 2026-10-13
 
 Fixes from a code review of 4.7.1.

@@ -45,13 +45,20 @@ func parseReader(v string) searchReader {
 // scores low. Each hit keeps its cosine Score; only the order comes from the fusion.
 // Both inputs must be sorted best first.
 func fuseHits(vec, kw []SearchHit, minScore float64, limit int) []SearchHit {
+	return fuseHitsWeighted(vec, kw, minScore, limit, 1, 1)
+}
+
+// fuseHitsWeighted is fuseHits with a weight on each ranking's contribution, so a
+// query's intent (see classifyQuery) can lean on keyword search for identifiers or
+// on meaning for "how" and "why" questions.
+func fuseHitsWeighted(vec, kw []SearchHit, minScore float64, limit int, wVec, wKw float64) []SearchHit {
 	type fused struct {
 		hit  SearchHit
 		rank float64
 	}
 	byID := map[string]*fused{}
 	var order []string
-	add := func(h SearchHit, rank int) {
+	add := func(h SearchHit, rank int, weight float64) {
 		f, ok := byID[h.ID]
 		if !ok {
 			f = &fused{hit: h}
@@ -60,7 +67,7 @@ func fuseHits(vec, kw []SearchHit, minScore float64, limit int) []SearchHit {
 		} else if h.Score > f.hit.Score {
 			f.hit.Score = h.Score
 		}
-		f.rank += 1.0 / float64(rrfK+rank)
+		f.rank += weight / float64(rrfK+rank)
 	}
 	rank := 0
 	for _, h := range vec {
@@ -68,10 +75,10 @@ func fuseHits(vec, kw []SearchHit, minScore float64, limit int) []SearchHit {
 			continue
 		}
 		rank++
-		add(h, rank)
+		add(h, rank, wVec)
 	}
 	for i, h := range kw {
-		add(h, i+1)
+		add(h, i+1, wKw)
 	}
 	out := make([]fused, 0, len(order))
 	for _, id := range order {
@@ -188,11 +195,22 @@ const recencyFloor = 0.92
 // rerankRecency reorders hits so newer memories win close calls. Each hit keeps its
 // reciprocal-rank weight from its incoming position and is scaled by a recency factor
 // between recencyFloor and 1.0, so age only decides between hits that are already
-// close in rank. The half-lives
-// follow how fast each kind of memory goes stale. Hits with no timestamp, a timestamp
-// in the future, or a durable layer keep factor 1.0. The input slice and the Score
-// fields are not changed.
+// close in rank. The half-lives follow how fast each kind of memory goes stale. Hits
+// with no timestamp, a timestamp in the future, or a durable layer keep factor 1.0. The
+// input slice and the Score fields are not changed.
 func rerankRecency(hits []SearchHit, now time.Time) []SearchHit {
+	return rerankRecencyUsed(hits, now, nil)
+}
+
+// rerankRecencyUsed is rerankRecency with idle time counted. A memory that is still
+// being used is not old in the sense that matters, so its age is measured from the
+// later of its creation and the last time lastUsed reports it was used. A zero time,
+// a time after now, or a nil lastUsed falls back to the creation timestamp alone.
+//
+// Why: a fact written months ago that the agent relies on every week is current, but
+// a pure creation age sinks it below newer, unused noise. Measuring from the last use
+// lets recency reward a memory for staying in use, not only for being new.
+func rerankRecencyUsed(hits []SearchHit, now time.Time, lastUsed func(id string) time.Time) []SearchHit {
 	if len(hits) == 0 {
 		return hits
 	}
@@ -202,9 +220,14 @@ func rerankRecency(hits []SearchHit, now time.Time) []SearchHit {
 		w := 1.0 / float64(rrfK+i+1)
 		if half := recencyHalfLife(h); half > 0 {
 			if c := gmtCreated(h.Meta["ts"]); c > 0 {
-				created := time.Unix(c, 0)
-				if created.Before(now) {
-					age := now.Sub(created).Hours() / half.Hours()
+				ref := time.Unix(c, 0)
+				if lastUsed != nil {
+					if u := lastUsed(h.ID); !u.IsZero() && !u.After(now) && u.After(ref) {
+						ref = u
+					}
+				}
+				if ref.Before(now) {
+					age := now.Sub(ref).Hours() / half.Hours()
 					w *= recencyFloor + (1-recencyFloor)*math.Pow(0.5, age)
 				}
 			}
@@ -222,20 +245,28 @@ func rerankRecency(hits []SearchHit, now time.Time) []SearchHit {
 	return out
 }
 
-// dropStaleIntentions removes L7 intentions older than ttl. An intention is "what the
-// user is trying to do right now"; weeks later it is history, and recall presenting it
-// as current misleads the agent. The row is not deleted, only left out of search. An
-// intention with an unknown timestamp is kept, because there is no evidence it is old.
-// A ttl of zero or less keeps everything. Order is unchanged.
+// dropStaleIntentions removes L7 intentions that are no longer current. An intention
+// is "what the user is trying to do right now"; recall presenting history as current
+// misleads the agent. The row is not deleted, only left out of search.
+//
+// An intention with a valid due_at (a normalised YYYY-MM-DD or YYYY-MM) is kept until
+// the end of its due span plus one day, and is dropped after that regardless of ttl:
+// a plan due in three weeks must not vanish after seven days, and one due yesterday is
+// history. An intention without a valid due_at is kept while it is younger than ttl. A
+// ttl of zero or less turns off only that ttl rule, not a due_at. An intention with an
+// unknown timestamp is kept, because there is no evidence it is old. Order is unchanged.
 func dropStaleIntentions(hits []SearchHit, ttl time.Duration, now time.Time) []SearchHit {
-	if ttl <= 0 {
-		return hits
-	}
 	out := make([]SearchHit, 0, len(hits))
 	for _, h := range hits {
 		if h.Layer == memory.L7Intention {
-			if c := gmtCreated(h.Meta["ts"]); c > 0 && now.Sub(time.Unix(c, 0)) > ttl {
-				continue
+			if _, to, ok := eventDateRange(h.Meta[metaDueAt], now.Location()); ok {
+				if !now.Before(to.Add(24 * time.Hour)) {
+					continue
+				}
+			} else if ttl > 0 {
+				if c := gmtCreated(h.Meta["ts"]); c > 0 && now.Sub(time.Unix(c, 0)) > ttl {
+					continue
+				}
 			}
 		}
 		out = append(out, h)

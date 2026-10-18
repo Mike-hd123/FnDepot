@@ -118,9 +118,8 @@ type flakyEmbedder struct {
 	fail  atomic.Bool
 }
 
-// Unwrap exposes the inner embedder, so the consolidator can tell its vectors
-// carry no meaning.
-func (f *flakyEmbedder) Unwrap() Embedder { return f.inner }
+// Semantic passes on whether the inner embedder's vectors carry meaning.
+func (f *flakyEmbedder) Semantic() bool { return isSemantic(f.inner) }
 
 func (f *flakyEmbedder) Embed(ctx context.Context, text string) ([]float32, error) {
 	if f.fail.Load() {
@@ -184,7 +183,7 @@ func TestPartialMergeKeepsReplacementLive(t *testing.T) {
 	rep := &Report{}
 	absorbed := append(srv.store.GetMany([]string{a}), DocIndex{ID: "ghost-not-stored"})
 	live := map[string]bool{a: true, "ghost-not-stored": true}
-	id := c.applyMerge(scopeKey{user: "alice", agent: "a1"}, "merged text", "consolidated",
+	id := c.applyMerge(scopeKey{user: "alice", agent: "a1"}, "merged text", nil, "consolidated",
 		absorbed, time.Now().UTC().Format(time.RFC3339), live, rep, fail, fail)
 	if id == "" {
 		t.Fatal("replacement retracted although one original was marked")
@@ -210,7 +209,7 @@ func TestMergeWithNothingMarkedIsRetracted(t *testing.T) {
 	srv := newTestServer(t, "m", "http://127.0.0.1:1/v1")
 	c := NewConsolidator(srv.store, nil, time.Hour, 0, 200)
 	var errs []string
-	id := c.applyMerge(scopeKey{user: "alice", agent: "a1"}, "merged text", "consolidated",
+	id := c.applyMerge(scopeKey{user: "alice", agent: "a1"}, "merged text", nil, "consolidated",
 		[]DocIndex{{ID: "ghost-1"}, {ID: "ghost-2"}}, time.Now().UTC().Format(time.RFC3339),
 		map[string]bool{}, &Report{}, func(m string) { errs = append(errs, m) }, func(m string) { errs = append(errs, m) })
 	if id != "" {
@@ -293,5 +292,29 @@ func TestOldFormatWatermarkRunsOwnerOnce(t *testing.T) {
 	}
 	if n := len(log.all()); n != 1 {
 		t.Errorf("calls = %d, want 1: an old-format watermark must not skip the owner", n)
+	}
+}
+
+// An experience never merges with an ordinary fact: the merge is refused and both
+// rows stay live.
+func TestMergeRefusesExperienceWithFact(t *testing.T) {
+	srv := newTestServer(t, "m", "http://127.0.0.1:1/v1")
+	fact := seedSourced(t, srv.store, "alice", "a1", "ra-1", "alice likes tea")
+	exp := newID()
+	if err := srv.store.Add(memory.L3Fact, exp, "Task: x. Solution: y.", map[string]string{
+		"user_id": "alice", "agent_id": "a1", "source_layer_label": experienceLabel,
+		"ts": time.Now().UTC().Format(time.RFC3339),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c := NewConsolidator(srv.store, nil, time.Hour, 0, 200)
+	id := c.applyMerge(scopeKey{user: "alice", agent: "a1"}, "merged", nil, "consolidated",
+		srv.store.GetMany([]string{fact, exp}), time.Now().UTC().Format(time.RFC3339),
+		map[string]bool{fact: true, exp: true}, &Report{}, func(string) {}, func(string) {})
+	if id != "" {
+		t.Fatalf("mixed merge was applied: %s", id)
+	}
+	if got := liveRows(t, srv.store, memory.L3Fact, "alice", "a1"); len(got) != 2 {
+		t.Errorf("live = %d rows, want 2", len(got))
 	}
 }

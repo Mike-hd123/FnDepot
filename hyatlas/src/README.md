@@ -6,6 +6,8 @@
 
 HyAtlas v4.0 is a complete rewrite of the HyAtlas memory system in pure Go. It replaces the Python floor (venv, zvec, Kuzu, FastAPI, HTTP embed subprocess) with a single binary: an embedded Chromem vector store, in-process BGE-small embeddings via onnxruntime-go, and LLM fact extraction, where `HYATLAS_MODE` sets how much the server reasons and `HYATLAS_SYNC_EXTRACT` sets whether a write waits for extraction. The 8-layer memory model (Profile · Raw · Fact · Summary · Knowledge · Schema · Intention · Entity) is implemented, including L4 Summary extraction, which was dormant in v3.5.
 
+**Current release:** [v4.9.0](https://github.com/tuancookiez-hub/HyAtlas-Memory/releases/tag/v4.9.0). The last Python release was [v3.5.0](https://github.com/tuancookiez-hub/HyAtlas-Memory/releases/tag/v3.5.0) (Zvec/Kuzu); it is no longer maintained. [CHANGELOG.md](CHANGELOG.md) has the full history.
+
 **Previous floor:** [HyAtlas v3.5.0](https://github.com/tuancookiez-hub/HyAtlas-Memory/releases/tag/v3.5.0) — Python/Zvec/Kuzu. See [V3_V4_COMPARISON.md](V3_V4_COMPARISON.md) for the full side-by-side and [CHANGELOG.md](CHANGELOG.md) for the migration history.
 
 ![v3.5 → v4.0.1](assets/hyatlas-v3.5-to-v4.0.1.png)
@@ -40,10 +42,6 @@ install by starting the server and probing `/healthz`.
   built instead only when that tag is missing and `HYATLAS_VERSION` is not set, and
   the installer warns about it. If you set `HYATLAS_VERSION` and the tag is missing,
   the install fails.
-- **Until the v4.5.0 release assets are published**, the installer finds no prebuilt
-  binary and builds from source. It clones the `v4.5.0` tag, or the default branch if
-  that tag does not exist yet, with a warning. The default branch is not used when
-  `HYATLAS_VERSION` is set.
 - **Go 1.26 or newer** is required for source builds. A plain `go build` with an
   older Go and the default `GOTOOLCHAIN=auto` fetches the toolchain that `go.mod`
   names (1.26.5). The installer does not do that: it stops on an older `go`.
@@ -67,7 +65,7 @@ Useful env vars (installer only):
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `HYATLAS_VERSION` | Release tag to install. A source build clones this tag (see above) | `v4.5.0` |
+| `HYATLAS_VERSION` | Release tag to install. A source build clones this tag (see above) | `v4.9.0` |
 | `HYATLAS_INSTALL_DIR` | Where the binary goes | `~/.local/bin` (Windows: `%LOCALAPPDATA%\hyatlas`) |
 | `HYATLAS_MODEL_DIR` | Where the installer caches the model (source builds) | `~/.hyatlas/models` (Windows: `%LOCALAPPDATA%\hyatlas\models`) |
 | `HYATLAS_MODE` | Extraction mode written to the Hermes `.env`: `lite` \| `pro` \| `ultra`. Any other exported value stops the installer with an error and nothing is written | `ultra` (asked interactively) |
@@ -163,7 +161,7 @@ default configuration is not fully local:
 | What | Goes where | Default | How to keep it local |
 |---|---|---|---|
 | **Memory text** (each write's text, sent for extraction) | The extraction LLM. Each write is one request, and a failed call or unparseable reply is retried once. From the Hermes plugin, a write is one turn: the user's message and the assistant's text only. Tool calls, tool output, system messages and Hermes compaction summaries are not sent. Each message is capped at 4,000 characters and the turn at 12,000. One extraction call sends at most 16,000 bytes of the write's text (the stored raw row keeps the full text) | **Nowhere** — no endpoint is shipped, so an unconfigured server makes no LLM call and reports `unconfigured` | Already opt-in: set `HYATLAS_LLM_BASE`/`_MODEL`/`_KEY` to choose where it goes. Point them at a local OpenAI-compatible server to keep it on-machine, or use `HYATLAS_MODE=lite` |
-| **Stored facts and schema patterns** (ultra only) | The same LLM, by the consolidation pass. One request per owner (`user_id`/`agent_id` pair) that is due: its facts changed since its last pass, or not every window of its facts has been covered since that change. An owner with one fact, or with nothing due, makes no request. Each request carries up to `HYATLAS_CONSOLIDATE_BATCH` (50) facts of that owner, each cut to 400 characters with its fact and turn IDs, plus up to 20 existing schema patterns cut to 200 characters. Facts that a pass merges or drops are superseded: kept and hidden from search, not deleted. Each drop is stored with its reason | Nowhere until an endpoint is configured | Use `pro` or `lite` |
+| **Stored facts and schema patterns** (ultra only) | The same LLM, by the consolidation pass. One request per owner (`user_id`/`agent_id` pair) that is due: one of its topic clusters has changed members since the cluster's last successful call. An owner with one fact, or with nothing due, makes no request. Each request covers one cluster and carries up to `HYATLAS_CONSOLIDATE_BATCH` (50) facts of that owner, each cut to 400 characters with its fact and turn IDs, plus up to 20 existing schema patterns cut to 200 characters. Facts that a pass merges or drops are superseded: kept and hidden from search, not deleted. Each drop is stored with its reason | Nowhere until an endpoint is configured | Use `pro` or `lite` |
 | **Embeddings** (each memory's text, and each search query) | In-process BGE-small (onnxruntime-go) | **Local** — `HYATLAS_EMBED_BASE=bge`, no network | Already local. If you set `HYATLAS_EMBED_BASE` to a URL, the text goes there instead, in every mode, including `lite` |
 | Stored memories, vector index, graph | `HYATLAS_GO_DATA` (default `./data`) | **Local** | Already local |
 | Telemetry / usage reporting | — | **None.** The only outbound HTTP the server makes is to the LLM and embedding endpoints you configure | — |
@@ -184,13 +182,16 @@ The three modes form a ladder of reasoning scope, not of latency:
 | Mode | LLM calls | Reasoning scope | Layers | Consolidation |
 |---|---|---|---|---|
 | `lite` | none | — | **1 / 8** — L2 Raw only | no |
-| `pro` | one per write | within one turn | **6 / 8** — L1, L2, L3, L4, L7, L8 | no |
+| `pro` | one per write, plus one per episode summary | within one turn | **6 / 8** — L1, L2, L3, L4, L7, L8 | no |
 | `ultra` *(default)* | one per write **+** periodic batch | **across memories and time** | **8 / 8** at steady state (7 / 8 with `HYATLAS_CONSOLIDATE_GRAPH=off`) | **yes** |
 
 The two systems own disjoint layers:
 
-- **System1 (per turn)** — L1 Profile, L2 Raw, L3 Fact, L4 Summary, L7 Intention.
-  What one turn can actually evidence.
+- **System1 (per turn)** — L1 Profile, L2 Raw, L3 Fact, L7 Intention, L8 Entity pages.
+  What one turn can actually evidence. L4 Summary comes from **episodes**: the
+  writes of one owner with no gap longer than `HYATLAS_EPISODE_GAP` (30 minutes)
+  form one stretch of work, which gets one summary when it ends. That costs one LLM
+  call per episode, not per write.
 - **System2 (slow path)** — L5 Knowledge, L6 Schema. A relation worth keeping is
   corroborated by more than one turn, and a schema is a *recurring* pattern, so
   neither can come from a single turn. Ultra is the only mode that runs System2,
@@ -215,6 +216,9 @@ Ultra-only tuning:
 | `HYATLAS_CONSOLIDATE_EVERY` | `6h` | how often the slow path runs |
 | `HYATLAS_CONSOLIDATE_BATCH` | `50` | max facts per owner per consolidation call |
 | `HYATLAS_CONSOLIDATE_GRAPH` | on | `off` (also `false`, `0`, `no`) stops consolidation writing L5 knowledge edges and the cross-session arc; the prompt then does not ask for them. Each edge is also stored as a searchable L5 memory ("Foxtrot uses Postgres 16") |
+| `HYATLAS_CONSOLIDATE_PARALLEL` | `2` | calls run at once (1 to 4) |
+| `HYATLAS_CONSOLIDATE_CATCHUP` | `20m` | interval between passes while clusters are still due |
+| `HYATLAS_CONSOLIDATE_RECLUSTER` | *(unset = never)* | rebuild an owner's clusters after this long |
 | `HYATLAS_RAW_RETENTION` | *(unset = never delete)* | age after which uncited L2 Raw is deleted |
 
 Durations are Go durations (`30m`, `6h`, `2160h`) or a plain number of seconds.
@@ -222,8 +226,7 @@ Go has no `d` unit, so write 90 days as `2160h`. A value that does not parse is
 logged and treated as unset, so raw decay stays off.
 
 `HYATLAS_CONSOLIDATE_BATCH` caps the facts one owner sends per call. An owner with
-more facts than the cap is consolidated in successive windows across passes, not in
-one call.
+more facts than the cap is split into several clusters, each its own call.
 
 `HYATLAS_RAW_RETENTION` is opt-in because it deletes. An L2 raw row is kept if a
 live graph edge cites it (as its primary source or any of its sources), or if a
@@ -244,9 +247,9 @@ curl -X POST http://127.0.0.1:19528/api/v1/digest
 ```
 
 The response wraps the pass in `report`: `digest_ok: true`, then `report` with
-`facts_in`, `owners_run`, `owners_unchanged`, `skipped_owners`, `merged`, `edges`,
-`dropped`, `schemas`, `arc`, `pruned_raw`, `protected_raw`, `duration_ms` and
-`errors`. `edges` counts distinct L5 edges created. Re-citing an existing edge adds
+`facts_in`, `owners_run`, `owners_unchanged`, `skipped_owners`, `clusters_run`,
+`clusters_pending`, `merged`, `edges`, `dropped`, `schemas`, `arc`, `pruned_raw`,
+`protected_raw`, `duration_ms` and `errors`. `edges` counts distinct L5 edges created. Re-citing an existing edge adds
 evidence and is not counted.
 
 `/api/v1/status` carries `consolidations` (the number of completed passes) and
@@ -258,14 +261,26 @@ still reports as run with zero changes, which is what distinguishes it from a pa
 that never happened. An owner whose facts have not changed since its last successful
 pass counts under `owners_unchanged` and is not sent to the LLM again.
 
-An owner is due when its facts changed since its last successful pass, and also
-when not every window of its facts has been covered since that change. An owner
-with more facts than `HYATLAS_CONSOLIDATE_BATCH` is walked one window per pass. After
-a change, a pass alternates between the newest window and the next window of the
-walk, until every window has been covered. A walk window that fails three passes in a
-row is skipped, and the skip is listed in `errors`. A retry of the newest window after
-a change is not counted toward that skip unless it is also the walk position. A failed LLM call, merge or supersede
-makes the owner retry on the next pass. A failed arc, schema, L5 edge or L1 mirror
+Facts are consolidated in **topic clusters** of up to `HYATLAS_CONSOLIDATE_BATCH`
+facts, built once per owner and kept in `consolidate_state.json`. An owner here is a
+person: user IDs grouped by `HYATLAS_USER_ALIASES` are consolidated together, so a
+contradiction between facts written under two of their IDs meets in one call. A new fact joins the
+cluster of its nearest neighbour (similarity 0.55 and up) when that cluster has room,
+otherwise the newest time-ordered cluster. A cluster is due only when its members
+changed since its last successful call, so after the first full coverage a pass
+handles just the clusters that received new facts. A pass runs due clusters across
+owners, up to `HYATLAS_CONSOLIDATE_PARALLEL` (2) calls at once, and starts no call
+when less time is left in its 10-minute budget than a call takes: 1.25 times the
+median of recent successful calls, at least 3 minutes. While clusters are still due
+(`clusters_pending` > 0) the next pass runs after `HYATLAS_CONSOLIDATE_CATCHUP` (20m)
+instead of `HYATLAS_CONSOLIDATE_EVERY`, and a server started with work pending begins
+with a catch-up pass. How long the first coverage takes depends on the model: on a
+free model with 25-fact clusters a pass ran 7 clusters in 9 minutes, about half a
+day for ~150 clusters. Progress is saved after every cluster. A cluster that fails
+three passes in a row is skipped until its members change or 24 hours pass, and the
+skip is listed in `errors`; when two or more calls of a pass fail and none succeeds,
+the provider is taken to be down and no cluster is charged. A failed LLM call, merge or supersede makes the cluster
+retry on the next pass. A failed arc, schema, L5 edge or L1 mirror
 write is listed in `errors` but does not cause a retry, because the facts were
 already reconciled.
 
@@ -286,11 +301,69 @@ When the Hermes plugin spawns this server it passes an explicitly allowlisted
 environment — OS essentials plus `HYATLAS_*` only — rather than a copy of the
 agent's environment, so provider API keys the agent holds do not reach the
 server process. The plugin forwards only the non-secret LLM endpoint and model
-settings, and only when you have set them in the plugin config. It never forwards
-the LLM key, which reaches the server only if you export `HYATLAS_LLM_KEY` (or
-`HYATLAS_LLM_KEY_FILE`) yourself.
+settings, and only when you have set them in the plugin config. It forwards no
+LLM key at spawn time. A key reaches the server only if you export
+`HYATLAS_LLM_KEY` yourself, or if you turn on the plugin's `share_llm_key`
+setting: then Hermes hands its current Nous Portal key to the running server over
+localhost (`POST /api/v1/llm/key`), only when the server's endpoint is the Nous
+Portal, and the server keeps it in memory only. Until a key arrives,
+`/api/v1/status` reports `llm: "awaiting_key"` and writes are stored without
+extraction.
 
-**All configuration is via environment variables** — the binary takes no CLI flags:
+**Neither the server nor its launcher reads another program's credential file.**
+Earlier versions of the sample launcher read Hermes' `auth.json`; a program that
+opens another application's credentials and then calls the internet is what
+credential stealers do, and behaviour-based antivirus (Bitdefender, for one) can
+quarantine it together with every file it wrote. `share_llm_key` replaces that.
+
+**Optional: a local memory model (Hy-Memory-30B-A3B).** If you want extraction
+and consolidation to stay on your machine, Tencent's
+[Hy-Memory-30B-A3B](https://huggingface.co/tencent/Hy-Memory-30B-A3B) (Apache-2.0)
+is a good fit. It is trained for exactly this job, writing long-term memory:
+deciding what to keep and how new facts update old ones. Tencent's model card
+scores it level with large general models as a memory writer. It is a
+mixture-of-experts model with about 30B parameters in total and about 3B active
+per token, so it runs faster than its size suggests. **It is heavy**, though:
+
+| Setup | Build | Needs |
+|---|---|---|
+| **Minimum** | Q4_0 / Q4_K_M GGUF (17–18 GB) | 24 GB of RAM and a modern 6-core CPU with AVX2. No GPU needed: with about 3B parameters active per token it runs on the CPU, roughly 8–15 tokens/s on DDR4 |
+| Comfortable | Q4_K_M GGUF | 32 GB of RAM plus a 6–8 GB GPU, with the experts kept in system RAM (about 1.5–2× faster) |
+| Full speed | Q4_K_M GGUF | 24 GB+ of VRAM, with the whole model on the GPU |
+| Higher precision | Q8_0 GGUF (about 32 GB) | 48 GB of VRAM, or 64 GB of RAM |
+| Full weights | BF16 (vLLM, SGLang), about 60 GB | Data-centre GPUs |
+
+The model stays loaded the whole time, so on a 24–32 GB machine it takes most of
+the memory. Builds below 4 bits (Q2, Q1, TQ1, 4–9 GB) load on 12–16 GB of RAM, but
+they lose too much accuracy for memory writing: wrong facts and broken JSON.
+
+Serve it from any OpenAI-compatible server and point HyAtlas at it. For example,
+with llama.cpp and a community GGUF:
+
+```bash
+llama-server -m Hy-Memory-30B-A3B-Q4_K_M.gguf --port 8080 -c 32768 --n-cpu-moe 48 --jinja --chat-template-kwargs '{"reasoning_effort":"no_think"}'
+```
+```bash
+export HYATLAS_LLM_BASE="http://127.0.0.1:8080/v1"
+export HYATLAS_LLM_MODEL="hy-memory"
+export HYATLAS_LLM_KEY="local"   # any non-empty value; a local server ignores it
+```
+
+Notes:
+- `--n-cpu-moe` keeps that many layers' experts in system RAM. Raise it until
+  the model fits your VRAM, and lower it for speed.
+- The model card runs it with `reasoning_effort: "no_think"`. Set that on the
+  server as shown, because HyAtlas does not send it per request.
+- To try it without giving up a hosted model, set it as the fallback instead
+  (`HYATLAS_LLM_FALLBACK_BASE`, `HYATLAS_LLM_FALLBACK_MODEL`). It then answers
+  only when the primary fails.
+- Consolidation prompts are several thousand tokens. On a mid-range desktop
+  with the experts in RAM, expect minutes per consolidation call. That is fine
+  for a background pass, but slower than a hosted model.
+- It was trained on the Mem0, MemOS and Hy-Memory prompt formats. HyAtlas uses
+  its own, so check a few consolidation passes before relying on it.
+
+**All configuration is via environment variables** — the binary reads no settings from its command line:
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -306,8 +379,11 @@ the LLM key, which reaches the server only if you export `HYATLAS_LLM_KEY` (or
 | `HYATLAS_MODE` | `ultra` | `lite` \| `pro` \| `ultra`. An unrecognised value is fatal at startup. See the mode table above. |
 | `HYATLAS_SYNC_EXTRACT` | *(follows the mode)* | `on` \| `off`. Whether a write waits for extraction. An unrecognised value is fatal at startup. |
 | `HYATLAS_CONSOLIDATE_EVERY` | `6h` | Ultra only: interval between slow-path passes. Must be positive in ultra (zero or negative is fatal at startup); use `pro` to run without the pass. |
-| `HYATLAS_CONSOLIDATE_BATCH` | `50` | Ultra only: max facts per owner per consolidation call. Larger owners are consolidated in successive windows. |
+| `HYATLAS_CONSOLIDATE_BATCH` | `50` | Ultra only: max facts per owner per consolidation call. Larger owners are split into several clusters, one call each. |
 | `HYATLAS_CONSOLIDATE_GRAPH` | on | Ultra only: `off` (also `false`, `0`, `no`) stops consolidation writing L5 knowledge edges and the cross-session arc, and the prompt then does not ask for them. Each edge is stored in the graph (drawn by the dashboard and the Desktop starmap) and as a searchable L5 memory; edges from older versions are indexed for search at startup. |
+| `HYATLAS_CONSOLIDATE_PARALLEL` | `2` | Ultra only: how many consolidation calls run at once (1 to 4) |
+| `HYATLAS_CONSOLIDATE_CATCHUP` | `20m` | Ultra only: the interval between passes while clusters are still due |
+| `HYATLAS_CONSOLIDATE_RECLUSTER` | *(unset = never)* | Ultra only: rebuild an owner's topic clusters after this long; clusters whose members are unchanged keep their progress |
 | `HYATLAS_RAW_RETENTION` | *(unset = never delete)* | Ultra only: age after which an L2 raw row cited by no live edge or fact is deleted |
 | `HYATLAS_USER_ALIASES` | *(unset = no aliases)* | Groups of user IDs that are one person, for search: groups separated by `;`, IDs in a group by `,`, e.g. `"221727702992945152,default,hermes-memory-archive"`. A search for any ID in a group covers the whole group |
 | `HYATLAS_MIN_SCORE` | `0.60` | Search drops vector hits below this cosine similarity. `0` disables the floor. A request may override it with `min_score` |
@@ -316,49 +392,91 @@ the LLM key, which reaches the server only if you export `HYATLAS_LLM_KEY` (or
 | `HYATLAS_LLM_BASE` | *(unset)* | OpenAI-compatible LLM endpoint. **Memory text is sent here once you set it** — see *Privacy* above. Unset means no LLM call at all. |
 | `HYATLAS_LLM_MODEL` | *(unset)* | LLM model name. Base, model and key must all be set for extraction to run. |
 | `HYATLAS_LLM_KEY` | (empty) | LLM bearer token |
-| `HYATLAS_LLM_KEY_FILE` | (empty) | Read the key live from this file on every call (rotating creds, e.g. Hermes auth.json). Accepts `providers.nous.agent_key` / `access_token` JSON, or a plain-text token. Wins over `HYATLAS_LLM_KEY`, which becomes the fallback if the file cannot be read. |
+| `HYATLAS_LLM_KEY_FILE` | (empty) | Read the key live from this file on every call, for a rotating key file of your own. Accepts `providers.nous.agent_key` / `access_token` JSON, or a plain-text token. Wins over `HYATLAS_LLM_KEY`, which becomes the fallback if the file cannot be read. Do not point it at another program's credential file (such as Hermes' `auth.json`): antivirus flags that as credential theft. For a Hermes login, use the plugin's `share_llm_key` instead, whose key wins over both. |
+| `HYATLAS_RECENCY` | on | `off` stops newer memories winning close calls in search (see *Search*) |
+| `HYATLAS_INTENTION_TTL` | `168h` (7 days) | How long an L7 intention without a due date stays in search results. Older intentions are kept but not returned. `0` returns them all. An intention with a due date stays until a day after it is due, then drops out |
+| `HYATLAS_SNAPSHOT_EVERY` | `24h` | How often the server zips its data directory (first one a minute after start). `0` or `off` turns snapshots off |
+| `HYATLAS_SNAPSHOT_KEEP` | `7` | How many snapshots to keep; older ones are deleted |
+| `HYATLAS_SNAPSHOT_DIR` | `<data>-snapshots` | Where snapshots go: a folder next to the data directory by default; do not point it inside the data directory |
+| `HYATLAS_RECONCILE` | `off` | `on`: after extraction, one more LLM call compares the new facts with similar stored ones (cosine 0.70 or more) and updates or replaces them. Doubles the LLM calls per write: meant for a local model, not a hosted free tier |
+| `HYATLAS_EPISODE_GAP` | `30m` | pro and ultra: a gap between an owner's writes longer than this ends an episode of work, which then gets one L4 summary. `0` or `off` writes no episode summaries |
+| `HYATLAS_NOW_EVERY` | `15m` | How often an owner's Now page may be rebuilt after writes (pro and ultra only). `0` or `off` rebuilds after every write |
+| `HYATLAS_USAGE_LEARNING` | on | `off` stops search learning from which recalled memories replies actually used |
+| `HYATLAS_LLM_FALLBACK_MODEL` | *(unset)* | A second model, tried only when a call to the primary fails (error, empty reply or timeout). The primary then gets two thirds of the call's time. Unset means no fallback |
+| `HYATLAS_LLM_FALLBACK_BASE` | *(the primary's)* | OpenAI-compatible endpoint for the fallback model |
+| `HYATLAS_LLM_FALLBACK_KEY` | *(see purpose)* | Key for the fallback endpoint. Unset reuses the primary key or key file only when the fallback is on the primary's host; a fallback on another host gets no key rather than the primary's |
+| `HYATLAS_EXTRACT_TIMEOUT` | `300s` | How long one extraction call may take |
 
-**Windows batch runner** (`scripts/hyatlas-v4-start.bat`) is a developer script
-with hard-coded paths (`F:\HyAtlas-Memory-Go`, and a Hermes `auth.json` under one
-user's profile). Edit those paths before using it. It sets the variables above for a
-local run and reads the Nous Portal agent key from Hermes `auth.json`:
-```bat
-scripts\hyatlas-v4-start.bat
-```
+The binary reads no settings from the command line. It answers only `--version`
+and `--help`; any other argument is refused instead of starting a second server.
+
+**Snapshots.** The server backs itself up: every `HYATLAS_SNAPSHOT_EVERY` it writes
+`hyatlas-<UTC time>.zip` of the whole data directory to `HYATLAS_SNAPSHOT_DIR`,
+pausing writes while it copies, and keeps the newest `HYATLAS_SNAPSHOT_KEEP`. To
+restore, stop the server, replace the data directory with a snapshot's contents,
+and start it again.
 
 ---
 
 ## Architecture
+
+```mermaid
+flowchart TD
+  A["POST /api/v1/add"] --> RAW["Embed + store L2 raw"]
+  RAW --> CTX["Gather context: 5 related facts (>= 0.70),<br/>open intentions, entity pages"]
+  CTX --> X["Extract (LLM, one call): facts with dates,<br/>replaces / updates, intention with due date,<br/>intentions done, entity pages, task experiences"]
+  X -.-> RC["Reconcile (LLM, opt-in, local models):<br/>update / replace similar stored facts"]
+  X --> P["Promote: L3 facts (0.92 restatement fold),<br/>L1 mirror, L7 intention, L8 pages"]
+  P --> NOW["Now page (LLM),<br/>at most every 15 min"]
+  P --> EP["Episode summary (LLM),<br/>after a 30-min gap"]
+  P --> ST[("chromem vectors L1-L8,<br/>long-fact clauses, doc index")]
+  EP --> ST
+  KEY["Hermes plugin hands over its key<br/>(localhost, memory only)"] -.-> X
+
+  T["Ticker: 6h, catch-up while due"] --> CL["Topic clusters (0.55),<br/>only changed clusters"]
+  CL --> C["Consolidate (LLM, per cluster): merges,<br/>drops + reason, schemas, L5 edges, arc"]
+  C --> G["Guards: merge >= 0.65, schema dup >= 0.92,<br/>schemas keep their evidence, restore"]
+  G --> ST
+  C --> KG["L5 graph with evidence"]
+
+  Q["POST /api/v1/search"] --> F["Vector (+ long-fact clauses) and stemmed keyword,<br/>fused by rank, weighted by the kind of query"]
+  F --> F2["Dates in the query, entity boost,<br/>graph-assisted recall, idle-time recency,<br/>usage feedback, near-duplicate demotion"]
+  F2 --> OUT["Now -> pages -> profile (+ schemas behind the facts)<br/>-> proactive -> experiences -> normal,<br/>with event dates and replaced versions"]
+```
+
+Lite mode keeps only the raw write and search: no LLM call at all. Pro adds extraction,
+episodes and the Now page. Ultra adds consolidation, which is what fills L5 and L6.
+Every LLM step goes to the endpoint you configure; nothing else leaves the machine.
 
 | Layer | What it holds |
 |---|---|
 | **L1 Profile** | User preferences, style, constraints (mirrors L3 facts labelled `user_preferences`) |
 | **L2 Raw** | Every incoming memory as-is |
 | **L3 Fact** | LLM-extracted factual atoms |
-| **L4 Summary** | LLM-extracted session summaries (**enabled in v4; was dormant in v3.5**) |
+| **L4 Summary** | One summary per episode of work (writes with no gap over `HYATLAS_EPISODE_GAP`), plus one rolling arc per owner from consolidation |
 | **L5 Knowledge** | Entity/relation graph (JSON-persisted). Built by the ultra slow path from relations corroborated across at least two turns, each with evidence citations |
 | **L6 Schema** | Recurring patterns generalised by the ultra slow path |
 | **L7 Intention** | LLM-extracted current goal / next step |
+| **L8 Entity** | One page per thing that matters (a project, tool, person, place): its current state plus a dated history. Written by each extraction; a changed value moves the old one into history |
 
 ### Stack
 
 - **Vector store:** [Chromem-go](https://github.com/philippgille/chromem-go) v0.7.0 — embedded, disk-persisted, no server process
 - **Embeddings:** `bge/bge.go` — BGE-small-en-v1.5 (384-dim) via onnxruntime-go (cgo). WordPiece tokenizer, mean-pool, L2-normalize. No Python.
-- **LLM extraction:** Via any OpenAI-compatible endpoint. One structured call per write (pro, ultra) fills L3 Fact, L4 Summary, L7 Intention and, for user preferences, L1 Profile from the L2 Raw entry. Blocking or background follows `HYATLAS_SYNC_EXTRACT`. L5 and L6 come from the separate ultra consolidation pass.
+- **LLM extraction:** Via any OpenAI-compatible endpoint. One structured call per write (pro, ultra) fills L3 Fact, L7 Intention, L8 entity pages and, for user preferences, L1 Profile from the L2 Raw entry. The call is given today's date and shown the owner's few nearest existing facts and open intentions, so it can date a fact (`event_at`) or an intention (`due_at`), mark a fact whose value changed as replaced, fold new detail or a repeat of the same event into an existing fact as updated (with a count), and mark an intention as moved on or done; those rows are superseded, not deleted, and record how (`superseded_how`). An intention is written only for a goal beyond the one exchange, and not again for a turn that just continues an open one. The plugin shows each recalled memory with its date. Blocking or background follows `HYATLAS_SYNC_EXTRACT`. L5 and L6 come from the separate ultra consolidation pass.
 - **Graph:** `graph/graph.go` — exact-match traversal over JSON-persisted nodes and relations, scoped per owner
 - **HTTP:** Standard Go `net/http`. No framework.
 
 ### Differences from v3.5 (historical)
 
 This table lists differences that the code in this repository shows. It does not
-include benchmark numbers. The v3.5 comparison and its measurements are in
-[V3_V4_COMPARISON.md](V3_V4_COMPARISON.md).
+include benchmark numbers.
 
 | | v3.5 (Python) | v4 (Go) |
 |---|---|---|
 | Runtime | venv, zvec, Kuzu, FastAPI, HTTP embed subprocess | One binary, no Python |
 | Release binary | — | About 160 MB, embedded (model included). A plain build is small and needs a model folder |
-| Listening port | see V3_V4_COMPARISON.md | `19528` by default |
+| Listening port | `19527` | `19528` by default |
 | L4 Summary | Dormant | Active |
 | Restart | — | Reloads the doc index and graph from the data directory |
 
@@ -430,6 +548,8 @@ if you depend on that. Every route is behind the Host/Origin guard described abo
 | `POST` or `DELETE` | `/api/v1/delete_all` | Query or body: `id`, `layer` (`*` = all), `user_id`, `agent_id`, `all` (`true`), `confirm` (`wipe-all`, the older spelling of `all`). Other methods return 405. A call with no scope (no `id`, `layer`, `user_id`, `agent_id`, or `all`) returns 400. Returns `deleted_count`. |
 | `POST` | `/api/v1/reprocess` | Body: `ids` (explicit raw IDs; extracted rows are re-extracted too), or `max` (default 200). Without `ids`, takes up to `max` raw rows that extraction has not reached, oldest first (by `ts`, then `id`). Extracted rows are dropped before the cut, so they do not use up `max`. Returns `reprocessed`, `failed`, `skipped`. `skipped` is 0 on both paths. In `lite` it extracts nothing: `skipped` is the number of rows it would have processed, and `note` says so. |
 | `GET` | `/api/v1/digest` | Slow-path state. Returns `digest_ok: true`, `runs`, `last`, `last_at`, `graph_nodes`, `graph_edges`. In `lite` or `pro` it returns `digest_ok: false` with a `reason`. |
+| `GET` | `/api/v1/now` | Query: `user_id`, `agent_id`. Returns `now`: the owner's Now page (`text`, `updated`) or `null`. |
+| `POST` | `/api/v1/feedback` | Body: `recalled_ids` (the memory IDs a recall returned), `reply` (the assistant's reply), `query` (optional: the recall's query, whose words do not count as use), `user_id`, `agent_id`. Counts which recalled memories the reply used. Returns `ok`, `shown`, `used`. The Hermes plugin sends this after every turn. |
 | `POST` | `/api/v1/digest` | Runs one slow-path pass now (ultra only). Returns `digest_ok` and `report` (fields in *Ultra-only tuning* above). A pass already running returns `digest_ok: false` with a `reason`. The pass is bounded by a 10-minute timeout, and a client that disconnects does not cancel it. |
 
 **Stubs.** These endpoints exist for the v3.5-shaped dashboard and return fixed values:
@@ -497,6 +617,46 @@ hits scoring below the floor are dropped, so an off-topic query can return nothi
 Hits whose text repeats another hit's (case and whitespace ignored) are dropped. Of
 an L3 fact and its L1 Profile copy, the L1 copy is kept.
 
+**Time counts.** Newer memories win close calls: each hit's ranking weight fades with
+age (counted from the later of when it was written and when a reply last used it, so
+an old memory still in use does not sink) to no less than 92% of its value (enough to move it about five places), on a half-life that follows how fast that kind of
+memory goes stale — 3 days for intentions, 30 days for project state, summaries, raw
+turns and graph relations, 180 days for preferences, decisions and lessons, and never
+for L1 Profile and L6 Schema. Relevance still decides anything that is not close.
+`HYATLAS_RECENCY=off` turns this off. L7 intentions older than
+`HYATLAS_INTENTION_TTL` (7 days) are left out of results altogether: an intention
+is what the user is doing now, and weeks later it is history. An intention with a
+due date ("the interview next Tuesday") stays until a day after it is due instead.
+
+**Dates in the query.** A query that names a time is read for it: `today`,
+`yesterday`, `N days ago`, `last 3 days` / `past 2 weeks`, `this week`, `last week`,
+`this month`, `last month`, `last monday`, `oct 5` / `5 october`, `in november` /
+`november 2026`, `2026-10-05` and `2026-10`. Facts dated in that window (by the
+`event_at` extraction gives them, or else by when they were written) that the
+search did not find yet are added, and hits outside the window move down a few
+places. Extraction gives a fact `event_at` when the input says or implies when it
+happened ("yesterday" is resolved against the write date).
+
+**Fewer repeats.** Of two hits that say the same thing (cosine 0.95 or more and the
+same numbers), the lower one moves to the end of the results.
+
+**Long facts.** A fact over 300 characters (consolidation merges make many) is also
+indexed by its sentences, up to 6, in a separate search-only collection. A query about
+one part of it finds the whole fact at that sentence's score, instead of losing to
+shorter facts. Existing facts are indexed in the background at start.
+
+**The kind of query.** A query with an identifier (`HYATLAS_SYNC_EXTRACT`, `19528`)
+leans on keyword search; a "how / why / prefer" question leans slightly on meaning.
+
+**Entities and the graph.** A query naming one of the owner's entity pages (by name or
+alias) moves hits about it up a few places, and up to 3 facts that mention something
+the knowledge graph links to it may pass a floor 0.10 lower.
+
+**Schemas and intentions get a slot.** Consolidation records which facts support each
+schema (`evidence`). When the results include such facts, the schema behind them gets
+a place in the profile channel. An open intention that ranked just below the cut gets
+a place in the proactive channel.
+
 With an owner filter (`user_id`, aliases included), memories that have no owner at
 all are also returned: rows written before owners were recorded, which in an older
 store is most of the knowledge graph. The graph endpoints already show them under
@@ -511,15 +671,89 @@ is not capped.
 Response shape:
 ```json
 {
+  "now": {"text": "...", "updated": "2026-10-12T06:10:00Z"},
   "memories": {
+    "pages": [...],
     "profile": [...],
     "proactive": [...],
+    "experiences": [...],
     "normal": [...]
   }
 }
 ```
 
+`experiences` holds task experiences: reusable lessons extraction records when a
+turn shows a task actually solved, as "Task: … Solution: … Environment: …", with a
+`confidence` (high, medium, low). They are L3 facts labelled `experience`; a repeat
+of the same lesson updates the stored one.
+
+`now` is present when the search names an owner who has a Now page (the freshest
+page among the owner's aliases). `pages` holds L8 entity pages, at most 2 in a
+search over all layers.
+
+Each hit has `memory_id`, `content`, `score`, `layer`, `gmt_created` (when it was
+written, unix seconds) and the owner. Two fields appear only when they apply:
+
+- `event_date`: when the fact happened or is due (`YYYY-MM-DD` or `YYYY-MM`).
+- `history`: up to two older versions this fact replaced, newest first, each
+  `{"content", "date", "how": "replaced"}`. Only contradictions are listed: a fact
+  that extended or restated an older one already carries what it said.
+
+### Working memory, entity pages and learning
+
+Three parts of 4.7.0 change what recall is made of, not only how it is ranked.
+
+- **Now page.** One short page per owner (at most 12 lines: active work, open
+  threads, what is blocked, recent decisions), rebuilt in the background from the
+  owner's open intentions, recent summaries and newest facts at most every `HYATLAS_NOW_EVERY`
+  (15 minutes) after writes. The plugin puts it first in every recall, so the agent
+  always knows what is going on. pro and ultra only.
+- **Entity pages (L8).** One page per thing that matters, with its current state and
+  a dated history. Extraction is shown the owner's 3 most related pages and can set
+  attributes and add events; a changed value moves the old one into history
+  (`extraction model: poolside → stepfun step-5-preview`), so two contradicting
+  statements cannot both be current. A page is matched by name with version labels
+  ignored ("HyAtlas v4" is "hyatlas"). Each update re-indexes the page and
+  supersedes its previous version.
+- **Usage learning.** After a turn the plugin sends what it recalled, the query it
+  recalled with, and the reply. A recalled memory whose distinctive words (or an
+  identifier such as `19528`) appear in the reply counts as used; words that were
+  already in the query do not count, because a reply naturally repeats the
+  question. Memories written under an alias of the caller's user ID count too. Once a memory has been recalled 3 times, its
+  ranking weight moves within ±6% by how often it was used, so memories the agent
+  never uses sink and the ones it relies on rise. `HYATLAS_USAGE_LEARNING=off`
+  turns it off.
+
+The slow path also groups facts by topic (see *Ultra-only tuning*): each cluster is a
+fact and its nearest neighbours (similarity 0.55 and up), so two statements about the
+same thing meet in one call however far apart in time they were written, and only
+clusters that changed are sent again. Graph edges that restate
+an edge between the same entities (one endpoint equal, the other the same name with
+extra words, similarity 0.80 and up, same numbers) are not indexed again.
+
+### LLM key hand-over
+
+`POST /api/v1/llm/key` with `{"key": "..."}` gives the server the key for its LLM
+endpoint, kept in memory only and never logged or echoed. It wins over
+`HYATLAS_LLM_KEY` and `HYATLAS_LLM_KEY_FILE`; `{"key": ""}` clears it. The Hermes
+plugin's `share_llm_key` setting uses it to supply Hermes's Nous Portal login, so
+no program but Hermes opens Hermes's credential file. A restarted server has no
+key until it is handed over again and reports `llm: "awaiting_key"` meanwhile;
+the plugin checks once a minute. A key with spaces or line breaks is refused
+(400).
+
 ### Maintenance (admin)
+
+**Backlog pass** (4.7.0): `POST /api/v1/admin/backlog` with `{"dry_run": true}` (the
+default) starts a background job over every owner's facts, grouped by topic: one LLM
+call per group finds facts that a newer fact contradicts and proposes entity pages.
+It writes `<data>/backlog_plan.json` and changes nothing. `GET /api/v1/admin/backlog`
+reports progress and, when done, a summary with sample pairs. `{"dry_run": false}`
+applies the saved plan without any LLM call: each planned fact is checked to still be
+live, then superseded by its newer fact (reversible), and the pages are written. The
+plan is then renamed so it cannot be applied twice. Groups whose LLM call failed are
+listed in the plan; after an apply, `{"dry_run": true, "only_failed": true}` retries
+just those groups (refused while an unapplied plan exists).
 
 Two `POST` endpoints for stores written before 4.5.0. Both are refused with 403
 unless the server runs with `HYATLAS_ADMIN=on`. Both are dry runs unless the body
@@ -536,8 +770,14 @@ says `{"dry_run": false}`.
   `HYATLAS_DEDUPE_SCORE`) by the newer one. Superseded facts are kept and hidden,
   so this is reversible. With `"layer": "l5_knowledge"` it does the same for the L5
   search documents of graph relations (an older graph holds many near-identical
-  ones); the graph itself is not changed. Response: `layer`, `owners`, `facts`,
+  ones); the graph itself is not changed. With `"layer": "l6_schema"` it merges
+  schemas that restate each other. Response: `layer`, `owners`, `facts`,
   `duplicates`, `sample`, and when applied, `rows_superseded`.
+- `POST /api/v1/admin/restore` makes superseded rows live again, undoing a merge
+  or drop the model got wrong. The body names them: `{"ids": ["m…", "m…"]}`. Each
+  restored row loses `invalid_at`, `superseded_by` and `drop_reason` and gets
+  `restored_at`. Response: `requested`, `superseded`, `rows` (what would be or was
+  restored), and when applied, `restored`.
 
 **Warning: `compact_raw` is irreversible. The removed text is gone.** Read the dry
 run's `sample` before you apply it.
@@ -663,6 +903,11 @@ except `request_timeout`, which the wizard does not write there. Set that one in
 plugin README's settings table overrides them. The defaults (`127.0.0.1:19528`,
 `auto_start: false`) work with no config at all.
 
+`auto_start` is opt-in and off by default. With `auto_start: true`, the plugin starts the server as soon as Hermes loads it (in
+the background, so loading never waits), as well as when a session begins. A Hermes
+gateway that starts at logon therefore brings the server up after a reboot without
+anything else to set up.
+
 If `server_host` is a DNS name, the server refuses it with 403 unless the server's
 `HYATLAS_ALLOWED_HOSTS` lists that name. See *Who may talk to it* above.
 
@@ -687,9 +932,7 @@ from `register(ctx)`.
 
 HyAtlas v4 is a **binary replacement** for the Python v3.5 floor. The memory data formats are incompatible (zvec → Chromem, Kuzu → JSON graph). The HTTP routes are not identical: v4 adds endpoints (`/api/v1/digest`, `/api/v1/graph-as-of`, `/api/v1/learning/graph`) and changes some defaults, such as owner scoping on graph reads. The API table above is the reference.
 
-**If you need to keep v3.5 running while testing v4**, use different ports. v4 listens on `localhost:19528` by default (`HYATLAS_GO_PORT` changes it). See [V3_V4_COMPARISON.md](V3_V4_COMPARISON.md) for the v3.5 side.
-
-The full v3.5 → v4 side-by-side (architecture, performance, reliability, API compatibility) is in [V3_V4_COMPARISON.md](V3_V4_COMPARISON.md).
+**If you need to keep v3.5 running while testing v4**, use different ports. v3.5 listened on `19527`; v4 listens on `localhost:19528` by default (`HYATLAS_GO_PORT` changes it). v3.5 is no longer maintained, and there is no tool that converts its data, so memories stored by v3.5 must be written again through v4's `/api/v1/add` if you want them.
 
 ---
 
