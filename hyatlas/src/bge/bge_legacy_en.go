@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"unicode/utf8"
 )
 
 const (
@@ -34,9 +35,23 @@ func loadVocab(path string) (map[string]int64, error) {
 	return vocab, nil
 }
 
+// longestToken returns the rune length of the longest vocab entry. No longer
+// substring can match, so wordpiece never needs to try one (ported from
+// upstream v5.0.0: bounds the scan for one huge token such as a pasted hash).
+func longestToken(vocab map[string]int64) int {
+	n := 0
+	for w := range vocab {
+		if l := utf8.RuneCountInString(w); l > n {
+			n = l
+		}
+	}
+	return n
+}
+
 // tokenizeV1 does BERT-style lowercase WordPiece to input_ids + attention_mask.
-// Mirrors the original v4 bge.go path.
-func tokenizeV1(vocab map[string]int64, text string, maxLen int) ([]int64, []int64) {
+// Mirrors the original v4 bge.go path. maxTok is the vocab's longest entry
+// (see longestToken); <=0 falls back to the unbounded legacy scan.
+func tokenizeV1(vocab map[string]int64, text string, maxLen, maxTok int) ([]int64, []int64) {
 	text = strings.ToLower(strings.TrimSpace(text))
 	words := strings.Fields(text)
 	if len(words) == 0 {
@@ -44,7 +59,7 @@ func tokenizeV1(vocab map[string]int64, text string, maxLen int) ([]int64, []int
 	}
 	ids := []int64{enCLSID}
 	for _, w := range words {
-		for _, piece := range wordpieceV1(vocab, w, 200) {
+		for _, piece := range wordpieceV1(vocab, w, 200, maxTok) {
 			ids = append(ids, piece)
 		}
 	}
@@ -61,7 +76,9 @@ func tokenizeV1(vocab map[string]int64, text string, maxLen int) ([]int64, []int
 }
 
 // wordpieceV1 greedily splits a word into subword pieces using the vocab.
-func wordpieceV1(vocab map[string]int64, word string, maxPieces int) []int64 {
+// maxTok bounds the substring scan (no vocab entry is longer), so one huge
+// word cannot turn the scan quadratic.
+func wordpieceV1(vocab map[string]int64, word string, maxPieces, maxTok int) []int64 {
 	if id, ok := vocab[word]; ok {
 		return []int64{id}
 	}
@@ -70,7 +87,11 @@ func wordpieceV1(vocab map[string]int64, word string, maxPieces int) []int64 {
 	allPieces := make([]int64, 0, len(candidates))
 	for idx < len(candidates) {
 		best := -1
-		for end := len(candidates); end > idx; end-- {
+		hi := len(candidates)
+		if maxTok > 0 && idx+maxTok < hi {
+			hi = idx + maxTok
+		}
+		for end := hi; end > idx; end-- {
 			sub := strings.ToLower(string(candidates[idx:end]))
 			if _, ok := vocab[sub]; ok {
 				best = end

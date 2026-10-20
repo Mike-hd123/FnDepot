@@ -49,6 +49,7 @@ type BGE struct {
 	vocab      map[string]int64
 	hidden     int
 	maxSeq     int
+	maxTok     int // rune length of the longest vocab entry (en legacy path)
 	mu         sync.Mutex
 }
 
@@ -66,7 +67,7 @@ func (b *BGE) EmbedOne(text string) ([]float32, error) {
 	if b.tok != nil {
 		ids, mask = b.tok.Encode(text, b.maxSeq)
 	} else {
-		ids, mask = tokenizeV1(b.vocab, text, b.maxSeq)
+		ids, mask = tokenizeV1(b.vocab, text, b.maxSeq, b.maxTok)
 	}
 	if len(ids) == 0 {
 		ids = []int64{-1}
@@ -337,6 +338,7 @@ func New(baseDir, modelName string) (*BGE, error) {
 			return nil, verr
 		}
 		b.vocab = v
+		b.maxTok = longestToken(v)
 	} else {
 		sess.Destroy()
 		_ = ort.DestroyEnvironment()

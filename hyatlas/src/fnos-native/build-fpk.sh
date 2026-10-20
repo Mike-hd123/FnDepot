@@ -1,5 +1,5 @@
 #!/bin/bash
-# HyAtlas v4.9.0-1 fpk 构建（同步上游 v4.7.3→v4.9.0：事件日期 event_at/event_date、查询时间窗、更新计数、意图到期日、episode 摘要(取代每写一条产一条 L4)、读时带历史 history、superseded_how、用量学习独立存 usage_learning.json、程序不再读别的应用凭证 + POST /api/v1/llm/key 运行时交 key、任务经验 experiences 通道、schema 证据链、长事实按句索引 l3_clause、实体加成与图谱辅助召回、查询类型自适应权重、召回配额与 schema/意图槽位、可选写后对齐 HYATLAS_RECONCILE 默认 off；详见 fnos-native/manifest 的 changelog 字段）
+# HyAtlas 5.0.0-1 fpk 构建（同步上游 v4.9.1→v5.0.0：检索显式流水线 + MMR、别名进 store 层、catch-up 补抽、写路径单次 embedding + 倒排关键词索引、可逆 forget、/flush + 优雅停机、typed retire、链接事实与周期事件 series；fork 定制全保留，持久层换上游 1s flushLoop；详见 fnos-native/manifest 的 changelog 字段）
 #
 # 输入来源：
 #   - fpk 控制层（cmd/config/wizard/manifest/ICON）：本目录归档原件
@@ -26,15 +26,17 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-OUT="${1:-/vol2/1000/download/hyatlas-4.9.1-1-x86.fpk}"
-VER="4.9.1-1"   # 本包版本，manifest 校验与身份闸提示共用（上游版本 + fork 修订号）
+OUT="${1:-/vol2/1000/download/hyatlas-5.0.0-1-x86.fpk}"
+VER="5.0.0-1"   # 本包版本，manifest 校验与身份闸提示共用（上游版本 + fork 修订号）
 REF_FPK="/vol2/1000/workspace/hy450-sync/out/hyatlas-4.5.0-2-x86.fpk"   # 242,218,811B 实测存在；其内层模型三件套 sha 与 SHA_ONNX/SHA_ORT/SHA_TOK 逐件相同
 
 # 4.9.0-1 是**上游同步版**（v4.7.3→v4.9.0，Go 源码与前端 embed 均有改动），本轮**重编**，
 # 不允许复用旧二进制：REUSE_BIN 默认置 0（要复用必须显式 REUSE_BIN=1 且那是打包层修订）。
+# 5.0.0-1 重编注意：go build 必须带 -buildvcs=false，否则 git 仓库内构建会盖 VCS 戳，
+# 两份不同挂载路径的产物因 .git 有无不一致（4.9.1-1 出货件 buildinfo 无 vcs 键，与本闸对齐）。
 # SHA_BIN 取自出包前置门禁 rebuild-twice.sh 的权威值：/vol2 与 /vol1 两份不同挂载路径
 # 重编逐字节一致（go1.26.5，CGO_ENABLED=1，-trimpath，GOAMD64=v1）。
-SHA_BIN="1cb6d4cc5b20ede70d2de6c19797669cd5a2a4225f999fad26fde2fa2a41b7fe"   # 实测：v4.9.1 合并树 + fork 关思考补丁(-trimpath,无 -s -w)；15,795,272B
+SHA_BIN="bb3376bab085b4a568c48ad9ce2bd15e1c69c96509cea66cac2bc371e5459ae3"   # 实测：v5.0.0 合并树 + fork 定制保留(-trimpath -buildvcs=false,无 -s -w)；16,873,936B
 REUSE_BIN="${REUSE_BIN:-0}"   # 1 = 本轮为打包层修订，允许复用 bin/ 现有二进制（非重编）；重编发布时置 0
 SHA_ONNX="8a3f371a7e535e25d3d5a0ff0c0501a605ef0b62577800d2bf4b1fc76d6cbcf1"
 SHA_ORT="99458e9d185dfa1a9b5f6510790ede3bedc25dea378adb904ce292b517eeaecf"

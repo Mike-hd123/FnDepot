@@ -209,10 +209,10 @@ func TestPromoteDedupeOffKeepsBoth(t *testing.T) {
 // different text alone.
 func TestPromoteDedupeKeepsDifferentFacts(t *testing.T) {
 	srv := newTestServer(t, "m", "http://127.0.0.1:1/v1")
-	promoteExtractionCtx(srv.store, &Extraction{Facts: []Fact{{Data: "alice prefers dark mode", Layer: "user_preferences"}}},
-		ExtractContext{}, "alice", "a1", "r1", 0.999)
-	promoteExtractionCtx(srv.store, &Extraction{Facts: []Fact{{Data: "bob builds rockets in ohio", Layer: "user_preferences"}}},
-		ExtractContext{}, "alice", "a1", "r2", 0.999)
+	promoteExtractionCtx(srv.store, &Extraction{Facts: []Fact{{Data: "alice prefers dark mode", Layer: "user_preferences"}}}, ExtractContext{},
+		"alice", "a1", "r1", 0.999)
+	promoteExtractionCtx(srv.store, &Extraction{Facts: []Fact{{Data: "bob builds rockets in ohio", Layer: "user_preferences"}}}, ExtractContext{},
+		"alice", "a1", "r2", 0.999)
 
 	live, _ := sqLive(t, srv, memory.L3Fact, false)
 	if len(live) != 2 {

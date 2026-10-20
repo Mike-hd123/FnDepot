@@ -14,9 +14,11 @@ package bgeemb
 
 import (
 	"context"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -199,4 +201,27 @@ func truncate(s string) string {
 		return s[:24] + "..."
 	}
 	return s
+}
+
+// TestTokenizeLongTokenIsBounded checks that one huge token (a hash or a pasted
+// blob) is split in bounded time and still fills the sequence correctly.
+// Ported from upstream v5.0.0 to the fork's legacy-en tokenizer API.
+func TestTokenizeLongTokenIsBounded(t *testing.T) {
+	vocab := map[string]int64{"ab": 1000, "##ab": 1001, "a": 1002, "##a": 1003}
+	maxTok := longestToken(vocab)
+	if maxTok != 4 {
+		t.Fatalf("longestToken = %d, want 4", maxTok)
+	}
+	word := strings.Repeat("ab", 500000) // one million runes
+	ids, mask := tokenizeV1(vocab, word, enMaxSeq, maxTok)
+	if len(ids) != enMaxSeq || len(mask) != enMaxSeq {
+		t.Fatalf("got %d ids, %d mask, want %d", len(ids), len(mask), enMaxSeq)
+	}
+	if ids[0] != enCLSID || ids[len(ids)-1] != enSEPID || ids[1] != 1000 || ids[2] != 1001 {
+		t.Errorf("unexpected ids: %v", ids[:4])
+	}
+	short, _ := tokenizeV1(vocab, "ab ab", enMaxSeq, maxTok)
+	if want := []int64{enCLSID, 1000, 1000, enSEPID}; fmt.Sprint(short) != fmt.Sprint(want) {
+		t.Errorf("short text: got %v, want %v", short, want)
+	}
 }
