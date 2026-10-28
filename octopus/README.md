@@ -1,11 +1,21 @@
 # octopus.fpk — Octopus 安装包
 
-- 版本：0.13.12-2（2026-10-15）
-- 打包时间：2026-10-14
+- 版本：0.13.13-1（2026-10-28）
+- 打包时间：2026-10-28
 - 上游项目：[bestruirui/octopus](https://github.com/bestruirui/octopus)
-- 上游 commit：`3d1ff13`（tag v0.13.12，2026-10-14 11:22 +0800）
-- 源码：本目录 `src/`（上游 v0.13.12 源码）+ `src/fnos/`（fnOS 打包层：cmd/manifest/config/gateway/ui/wizard）
+- 上游 commit：`8aa58b0`（tag v0.13.13，2026-10-23 08:53 +0800）
+- 源码：本目录 `src/`（上游 v0.13.13 源码）+ `src/fnos/`（fnOS 打包层：cmd/manifest/config/gateway/ui/wizard）
 - 打包方式：fnOS `fnpack build`（v1.2.4，`/usr/local/bin/fnpack`）
+
+## v3/0.13.13-1（2026-10-28，本地补丁号归零重开）
+
+同步上游 **v0.13.13**（2026-10-23，patch，仅 3 文件 +5/−3）：
+
+- **CVE-2026-111943 安全修复**：`axonhub/llm` 依赖升级（`go.mod` go 1.26.4→1.26.10、`looplj/axonhub/llm` `c7573e4`→`128e5d7`，`go.sum` 补两行），`main.go` Version 标记 v0.13.13。
+
+二进制为上游官方 CI 产物原样（`octopus-linux-amd64` sha256 `5aa65ffd7882b73042e96faee7841ae0225a9494b6b5ce612bf5a7675bb9a230`；反解 Version=v0.13.13 / Commit 8aa58b0 / Built 2026-10-23 08:53:12 +0800；与 Release `SHA256SUMS` 中 `octopus-linux-amd64.zip` 条目 `24ccfddf…` 解出件一致）。**`internal/conf` 与 `main.go` 逐字节未变，无 breaking change、无配置键变更**，src 全量核对无残留差异。
+
+本地 fnOS 打包层零变更（share 合规 / 监听开关 / sidecar / 卸载双选全部原样），v3 为纯上游同步。
 
 ## v1/0.13.12-1（2026-10-14，本地补丁号归零重开）
 

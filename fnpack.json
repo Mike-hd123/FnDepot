@@ -198,7 +198,7 @@
     },
     "octopus": {
       "display_name": "Octopus 网关",
-      "desc": "LLM API 聚合网关：Go 单二进制 + 内嵌前端 + SQLite 存储，多渠道/多模型管理，支持单渠道多 Key，原生宿主机运行，端口 8081。默认只监听 127.0.0.1（可经 listen.conf 切 0.0.0.0 供局域网直连）。上游项目：bestruirui/octopus（v0.13.12）。",
+      "desc": "LLM API 聚合网关：Go 单二进制 + 内嵌前端 + SQLite 存储，多渠道/多模型管理，支持单渠道多 Key，原生宿主机运行，端口 8081。默认只监听 127.0.0.1（可经 listen.conf 切 0.0.0.0 供局域网直连）。上游项目：bestruirui/octopus（v0.13.13）。",
       "platform": [
         "x86"
       ],
@@ -268,12 +268,23 @@
               "size": 22688851
             }
           }
+        },
+        "0.13.13-1": {
+          "changelog": "0.13.13-1（2026-10-29）：同步上游 v0.13.13（2026-10-23，commit 8aa58b0）——CVE-2026-111943 安全修复：axonhub/llm 依赖升级（go.mod go 1.26.4→1.26.10、looplj/axonhub/llm c7573e4→128e5d7，go.sum 补两行），main.go Version 标记 v0.13.13；仅 3 文件 +5/−3，internal/conf 与 main.go 逐字节未变（无 breaking change、无配置键变更），src 全量核对无残留差异。二进制=上游官方 CI 产物原样。本机已装机实测：v0.13.12-2→0.13.13-1 升级后模型网关调用正常（chat 模型调用 200）、数据/密钥随 share 保留。保留本地 sidecar 补丁（API 前缀改写默认关、运行时 entry chunk cache-bust、gw-debug.log 诊断）与监听地址开关（OCTOPUS_LISTEN_HOST / listen.conf）。",
+          "updated_at": "2026-10-29T06:30:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/octopus-v0.13.13-1/octopus-0.13.13-1-x86.fpk",
+              "sha256": "e7229d40cf45d85be705eeb7a17691f686aa9f3f0c7edb5b30084593e98418f5",
+              "size": 22726398
+            }
+          }
         }
       }
     },
     "ezbookkeeping": {
       "display_name": "记账",
-      "desc": "EZBookkeeping 家庭记账：本地优先、SQLite 存储，支持多账本/预算/报表/账单导入(微信/支付宝/信用卡)，移动端触屏优化。上游项目：mayswind/ezbookkeeping。",
+      "desc": "EZBookkeeping 家庭记账：本地优先、SQLite 存储，支持多账本/预算/报表/账单导入(微信/支付宝/信用卡)，移动端触屏优化。上游项目：mayswind/ezbookkeeping（v2.1.1）。",
       "platform": [
         "x86"
       ],
@@ -322,12 +333,23 @@
               "size": 24388822
             }
           }
+        },
+        "2.1.1-1": {
+          "changelog": "2.1.1-1（2026-10-29）：同步上游 v2.1.0+v2.1.1（80 commits/287 文件）。①洞察报表新增 AI 生成自定义图表，配置节 llm 改名 ai（本机现役 ini 该节全默认值，升级后在 share ini 同步改名即可，无功能影响）；②新小组件：账户未对账交易、记账按钮默认动作可配+移动端背景色自定义、交易日历热力图离群值独立配色、日历/列表月日合计可切、Overview 默认交易标签筛选；③导入健壮性：部分交易创建失败不再整体回滚、失败明细可见、DSV 自定义脚本修复、按列分隔符自动定标签分隔符、坐标小数分隔符修复；④修复：定时交易在夏令时时区日期错位 #566、/transactions/get.json 余额修改交易 #715、周起始日变更重算周范围 #726、下拉方向键导航、暗色模式 hover 与移动端底部安全区；⑤TOTP 禁时间偏移、防并发重用；⑥汇率源扩充；⑦移动端标签选择器顶部显示已选。本仓库 2.0.1-2（share 合规）未装机，本次升级一并落地：数据真身 @appdata→data-share「ezbookkeeping」幂等迁移（源不删）。装机实测：2.0.1-1→2.1.1-1 升级后端口 8580、SPA 出页、87 笔交易完好、ini [ai] 节生效。",
+          "updated_at": "2026-10-29T06:30:00+08:00",
+          "packages": {
+            "all": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/ezbookkeeping-v2.1.1-1/ezbookkeeping-2.1.1-1-x86.fpk",
+              "sha256": "1d0acd4c63376ab7439729198d34cfaafea702faa2a1f92676ca003a7e3ffcc1",
+              "size": 24531853
+            }
+          }
         }
       }
     },
     "vikunja": {
       "display_name": "待办",
-      "desc": "自托管待办管理面板 —— Vikunja v2.7.0，Go 单二进制静态链接，SQLite 存储，原生宿主机运行。桌面/手机统一走端口直连 :3456（v13 起 install_callback 自动把 fnOS entry 切到端口模式，无 /app 路径前缀，无 WS 426）。Hermes 全自动读写（API token）。",
+      "desc": "自托管待办管理面板 —— Vikunja v2.7.1，Go 单二进制静态链接，SQLite 存储，原生宿主机运行。桌面/手机统一走端口直连 :3456（v13 起 install_callback 自动把 fnOS entry 切到端口模式，无 /app 路径前缀，无 WS 426）。Hermes 全自动读写（API token）。",
       "platform": [
         "x86"
       ],
@@ -375,6 +397,17 @@
               "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/vikunja-v2.7.0-2/vikunja-2.7.0-2-x86.fpk",
               "sha256": "ba94a1c3a3e7363a2efa997f1faf3bbba8cb81d4c661b7862d9a6d8f4de045c2",
               "size": 48917477
+            }
+          }
+        },
+        "2.7.1-2": {
+          "changelog": "2.7.1-2（2026-10-29）：迁移脚本数据安全修复——WAL 模式下 db-wal/db-shm 必须与主库一起搬（2026-10-28 实测：只拷主库丢未 checkpoint 写入 22→10，本次经源保留+手工 wal/shm 合并恢复）。成品 2.7.1-1 未含此修复；2.7.1-2 起 install/upgrade_callback 均带 wal/shm 拷贝。本机现役 2.7.1-1 数据已合并完好（22 任务、integrity_check ok、Hermes token 鉴权 200），无需重装。二进制=上游官方 v2.7.1 linux-amd64-full 原样（ELF sha256 517b6b3d…，zip 自带 .sha256 强校验）。",
+          "updated_at": "2026-10-29T06:30:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/vikunja-v2.7.1-2/vikunja-2.7.1-2-x86.fpk",
+              "sha256": "2ab92e458cec35b8c9774916351825d3f6968c6a9f12a69ee615dcafd361a767",
+              "size": 49296553
             }
           }
         }

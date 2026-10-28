@@ -3,7 +3,7 @@
 > 项目说明见 [README.md](./README.md)。本文件只讲 agent 该做什么 / 红线 / 坑。
 
 ## 定位
-上游 [mayswind/ezbookkeeping](https://github.com/mayswind/ezbookkeeping) 的 fnOS 发行：**家庭记账**，本机唯一账本事实源（minibill 已退役）。当前发布 **2.0.0-1**。
+上游 [mayswind/ezbookkeeping](https://github.com/mayswind/ezbookkeeping) 的 fnOS 发行：**家庭记账**，本机唯一账本事实源（minibill 已退役）。当前发布 **2.1.1-1**（2026-10-28，同步上游 v2.1.0+v2.1.1；注意本机现役曾长期停在 2.0.1-1，share 合规版 2.0.1-2 一直未装机，2.1.1-1 起一并落地）。
 
 ## 架构
 - `src/` — 上游源码 fork + fnOS 打包层（**manifest/build.sh/cmd 都在 src/ 里**，与其它应用目录布局不同）

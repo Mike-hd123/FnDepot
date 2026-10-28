@@ -2,22 +2,22 @@
 # build-fpk.sh — Vikunja fnOS fpk 构建（下载上游官方 release + fnpack 打包）
 #
 # 参考结构：emby-in-one/build.sh + octopus/src/build-fpk.sh 的骨架拼装套路
-# 上游：https://github.com/go-vikunja/vikunja  版本：v2.7.0
+# 上游：https://github.com/go-vikunja/vikunja  版本：v2.7.1
 # 产物：vikunja-<VERSION>-x86.fpk
 #
 # 用法：bash build-fpk.sh [VERSION] [输出路径]
-#   VERSION 默认 2.7.0-2（对应上游 v2.7.0；本地修订号 2 = share 合规修复）
+#   VERSION 默认 2.7.1-1（对应上游 v2.7.1；跨上游版本修订号归 1）
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-VERSION="${1:-2.7.0-2}"
+VERSION="${1:-2.7.1-1}"
 OUT="${2:-/vol2/1000/download/vikunja-${VERSION}-x86.fpk}"
 ARCH="x86"
-UPSTREAM="v2.7.0"   # 上游 tag（与本地 VERSION 解耦，方便测试）
+UPSTREAM="v2.7.1"   # 上游 tag（与本地 VERSION 解耦，方便测试）
 
-# sha256 断言（README 里 2.7.0-1 记录：ELF sha256 9745ad79…）
-EXPECTED_ELF_SHA="9745ad79a0f6836a59e12357f2afa6de3d94a3ae2dd011d222d258fb6b6fc0f1"
-EXPECTED_ZIP_SHA="569861fd690f9ffc812e39e20be3943b882d4549a19e556e47066e71e29ca1b9"
+# sha256 断言（v2.7.1 起上游 zip 自带 .sha256 做强校验，此处不再硬编期望值）
+EXPECTED_ELF_SHA=""
+EXPECTED_ZIP_SHA=""
 
 STAGING="$(mktemp -d)"
 trap 'rm -rf "$STAGING"' EXIT
@@ -27,15 +27,32 @@ echo "  Vikunja fnOS fpk 构建"
 echo "  Version: ${VERSION}  Upstream: ${UPSTREAM}  Arch: ${ARCH}"
 echo "=========================================="
 
-# ── 1. 下载上游官方 release（zip 内自带 .sha256，不硬编断言防断链）──
+# ── 1. 下载上游官方 release（优先本地缓存；zip 内自带 .sha256，不硬编断言防断链）──
 ZIP="${STAGING}/vikunja-${UPSTREAM}-linux-amd64-full.zip"
 SHA_REMOTE="${STAGING}/vikunja-${UPSTREAM}-linux-amd64-full.zip.sha256"
 URL="https://github.com/go-vikunja/vikunja/releases/download/${UPSTREAM}/vikunja-${UPSTREAM}-linux-amd64-full.zip"
+CACHE="${HERE}/vikunja-${UPSTREAM}-linux-amd64-full.zip"
 
-echo "[1/7] 下载上游 ${UPSTREAM} linux-amd64-full ..."
-curl -fsSL -o "$ZIP" "$URL"
+if [ -f "$CACHE" ]; then
+  echo "[1/7] 使用本地缓存: $CACHE"
+  cp "$CACHE" "$ZIP"
+else
+  echo "[1/7] 下载上游 ${UPSTREAM} linux-amd64-full ..."
+  # 网络对大文件不稳（HTTP/2 半途断流实测），断点续传循环直到拿全
+  for _try in 1 2 3 4 5 6 7 8; do
+    curl --http1.1 -fsSL -C - -m 240 -o "$ZIP" "$URL" && break
+    _rc=$?
+    echo "  下载中断 rc=$_rc，重试 $_try/8 ..."
+    sleep 2
+  done
+  curl --http1.1 -fsSL -C - -m 240 -o "$ZIP" "$URL" || { echo "FATAL: 下载失败"; exit 1; }
+  cp "$ZIP" "$CACHE"   # 留缓存，重打包不再拉
+fi
 ls -lh "$ZIP"
 echo "  zip sha256: $(sha256sum "$ZIP" | cut -d' ' -f1)"
+unzip -q "$ZIP" -d "${STAGING}/extracted-check" -x 'vikunja-v*linux-amd64' 2>/dev/null || true
+unzip -tq "$ZIP" >/dev/null || { echo "FATAL: zip 完整性校验失败"; exit 1; }
+rm -rf "${STAGING}/extracted-check"
 
 # ── 2. 解包 zip，提取 ELF ──
 echo "[2/7] 解包 zip ..."

@@ -76,7 +76,8 @@ mkdir -p "${APPDATA}/logs"
 # ── 幂等迁移：老 @appdata 有数据、且 share 目标为空，才 cp -a（源永不删、绝不 mv）──
 # vikunja.db 是用户待办的唯一事实源，迁移必须极端保守。
 MIGLOG="${APPDATA}/migrate.log"
-for pair in "vikunja.db:${DATA_DIR}/vikunja.db" "files:${DATA_DIR}/files" "logs:${DATA_DIR}/logs"; do
+# 注意：WAL 模式下 db-wal/db-shm 必须一起搬（2026-10-28 实测：只拷主库会丢未 checkpoint 的写入）。
+for pair in "vikunja.db:${DATA_DIR}/vikunja.db" "vikunja.db-wal:${DATA_DIR}/vikunja.db-wal" "vikunja.db-shm:${DATA_DIR}/vikunja.db-shm" "files:${DATA_DIR}/files" "logs:${DATA_DIR}/logs"; do
   OLD_NAME="${pair%%:*}"; NEW_PATH="${pair#*:}"
   OLD_PATH="${APPDATA}/${OLD_NAME}"
   if [ -e "${OLD_PATH}" ] && [ ! -e "${NEW_PATH}" ]; then
