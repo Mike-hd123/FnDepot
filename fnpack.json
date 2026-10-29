@@ -80,6 +80,17 @@
               "size": 15651585
             }
           }
+        },
+        "1.6.0-2": {
+          "changelog": "1.6.0-2（2026-10-29）：合并上游 v1.6.0（14 commits / 17 files），本地 7 项定制逐项核对全部保留（ipvlan woc-lan 单网卡 / WOC_DATA_DIR 主机 bind 数据 / 移动端不自动抢焦点 / 电源下拉重启+关机 / PANEL_ALLOWED_HOSTS host-guard+图标三路径+安装向导 / WOC_VERSION 强制跟 fnOS 包版本（TRIM_APPVER 去 -N）/ data-share 合规）。上游要点：① 实例镜像 KasmVNC 换官方 1.5.2 发布包（base 镜像里的自编译版停在 2024-12）——断线后 lastActiveAt 报错只能整页刷新已修、网络抖动自动重连、编码更省 CPU，面板侧同步修幽灵会话；② >1MB 大图粘贴永久卡死剪贴板根治（#165/#159，QQ Ctrl+V 黑屏不再需要重启），另修「按住粘贴键稍久粘出两三张图」；③ 创建实例改后台进行 + 失败可视化（#129）：卡片显示创建中与镜像拉取进度，失败写明哪一步/为什么/怎么办并可一键重试，拉取停滞 2 分钟判失败，面板启动不再被拉镜像拖住；④ 无感输入提速（#155，回到 1.5.0 手感）；⑤ 新增内置浏览器崩溃诊断包（#166，本版只诊断未修根因）。⚠️ 行为变化：同一实例同一时间只在一处显示（KasmVNC 多连接泄漏内存 kasmtech/KasmVNC#371），换设备/标签页打开即接管，原页面点「在这里继续使用」才接回、不自动抢；应用内复制的图片不再自动同步到本机剪贴板。docker/woc-ime.pl 随上游删除：1.6.0 的 KasmVNC web 客户端改 Vite 产物，中文输入补丁由上游新 woc-www-patch.sh 内联完成（含命中数断言），成品中文仍走面板 xclip/xdotool 通道，中文输入不退化。应用体本轮由 panel 源码全量重建（build-app.sh，md5 c969b475…，已同步 manifest checksum 并晋升为定档 app.tgz，定档路径两次重建逐字节一致）。回滚：把面板运行环境 WOC_VERSION 设回 1.5.2 重启应用并「一键升级全部实例」，回滚前先删「创建失败」的实例卡片。⑩ 升级保留旧 env 卡 WOC_VERSION：fnOS 升级/重装会保留旧安装写入的 WOC_VERSION（如 1.5.2），cmd/main 原「未设置才默认」写法让旧值覆盖 → 面板自报版本与实例镜像 tag 错配（1.6.0 面板 + 1.5.2 镜像，实测踩中）；已改强制从 TRIM_APPVER 派生（去 -N 本地后缀），面板与实例镜像 tag 始终跟包版本一致。",
+          "updated_at": "2026-10-29T15:31:25+08:00",
+          "packages": {
+            "all": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/wechat-on-cloud-v1.6.0-2/wechat-on-cloud-1.6.0-2-x86.fpk",
+              "sha256": "aa5b9787b7c66e75e598569e33d64322b4af35eb7edac5734014b776ba2cf639",
+              "size": 15627928
+            }
+          }
         }
       }
     },

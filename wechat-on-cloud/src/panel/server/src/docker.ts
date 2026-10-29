@@ -11,6 +11,7 @@ import { randomBytes } from 'node:crypto';
 import Docker from 'dockerode';
 import { tarArchive, tarEntry, tarFileStream, tarSingleFile, openTarStream, scanArchive, sniffArchive } from './tar.js';
 import { instanceAppType, getDesktopDark, getOrphanScanDirs, listInstances, setInstanceLanIP, type Instance } from './store.js';
+import { describeHostCpu, describeHostMemPolicy, summarizeMinidump } from './crash-diag.js';
 
 // 实例镜像引用。版本耦合（架构守则 R1）：面板与实例镜像同一 release 同步出包、按同版本号
 // 互相验证——正式版面板把 :latest 改写为与自身相同的版本 tag（如 1.4.1），保证
@@ -288,7 +289,9 @@ export async function ensureWocLan(inst: Instance): Promise<void> {
     const nets: Record<string, any> = info?.NetworkSettings?.Networks || {};
     if (nets[WOC_LAN_NET]) return; // 已挂，跳过（connect 非幂等）
     const lanIP = await instanceLanIP(inst);
-    await docker.getNetwork(WOC_LAN_NET).connect({ Container: containerName, IPAMConfig: { IPv4Address: lanIP } });
+    // dockerode 的 NetworkConnectOptions 类型没有 IPAMConfig（运行时 docker engine 支持，
+    // 上游 ensureNetwork 同样用 as any 传 EndpointConfig）——1.6.0 起补 as any，让 tsc --noEmit 归零。
+    await docker.getNetwork(WOC_LAN_NET).connect({ Container: containerName, IPAMConfig: { IPv4Address: lanIP } } as any);
     appendInstanceLog(containerName.replace(/^woc-wx-/, ''), `已挂 ${WOC_LAN_NET} (${lanIP}) 业务网卡（微信备份同广播域）`);
   } catch (e: any) {
     appendPanelLog('WARN', `实例 ${containerName} 挂 ${WOC_LAN_NET} 失败：${e?.message || e}`);
@@ -646,7 +649,8 @@ function envList(inst: Instance): string[] {
 }
 
 // 确保微信镜像在本地存在；缺失则从 GHCR 拉取（首次新建实例时镜像通常还没拉过）。
-async function ensureImage(): Promise<void> {
+// instId：为哪个实例拉的——拉取的开始 / 结束也记进该实例的持久日志，用户在「实例日志」里就能看到卡在拉镜像（#129）。
+async function ensureImage(instId?: string): Promise<void> {
   await resolveInstanceImage(); // 版本兜底：若耦合的版本 tag 不可达则先回退 :latest
   try {
     await docker.getImage(WECHAT_IMAGE).inspect();
@@ -657,10 +661,12 @@ async function ensureImage(): Promise<void> {
   // 首次新建实例常卡在这一步（NAS 直连 docker.io 拉取超时，见 README）。这里前后都打日志：
   // 若诊断包里只见"开始拉取"而无"完成/失败"，即可定位为拉取卡死。
   appendPanelLog('INFO', `本地无实例镜像 ${WECHAT_IMAGE}，开始拉取（首次较慢；NAS 直连 docker.io 可能超时）…`);
+  if (instId) appendInstanceLog(instId, `本地没有实例镜像，开始拉取 ${WECHAT_IMAGE}（约 1~2GB，首次较慢）`);
   const t0 = Date.now();
   try {
     await pullImage();
     appendPanelLog('INFO', `实例镜像拉取完成 ${WECHAT_IMAGE}（耗时 ${Math.round((Date.now() - t0) / 1000)}s）`);
+    if (instId) appendInstanceLog(instId, `实例镜像拉取完成（耗时 ${Math.round((Date.now() - t0) / 1000)}s）`);
     return;
   } catch (e: any) {
     appendPanelLog('ERROR', `实例镜像拉取失败 ${WECHAT_IMAGE}（耗时 ${Math.round((Date.now() - t0) / 1000)}s）：${e?.message || e}`);
@@ -671,14 +677,96 @@ async function ensureImage(): Promise<void> {
       try {
         await docker.getImage(fb).inspect();
         appendPanelLog('WARN', `改用本地已有的 ${fb} 重建（注意：它可能是较旧的镜像；网络恢复后请重新「升级实例」拿到 ${WECHAT_IMAGE}）`);
+        if (instId) appendInstanceLog(instId, `拉取 ${WECHAT_IMAGE} 失败，改用本地已有的 ${fb}（可能较旧，网络恢复后可「升级实例」）`);
         WECHAT_IMAGE = fb;
         return;
       } catch {
         /* 本地也没有 :latest → 无可兜底，抛出原错误 */
       }
     }
-    throw e;
+    throw provisionError('pull', e, WECHAT_IMAGE);
   }
+}
+
+// ---------- 创建失败的人话（#129） ----------
+// 创建实例失败时，用户此前只看到原始 docker 报错，拉取卡住时更是什么都看不到（实例日志里只有「实例创建」+ 一个 404）。
+// 这里按失败环节 + 原始报错归类，说清「哪一步、为什么、怎么办」：summary 进卡片，advice 进卡片提示和实例日志，
+// raw 原样留在 message 和实例日志里供排查。message 仍以原始报错结尾，面板日志 / 重启失败提示等老调用方照常可用。
+export type ProvisionStage = 'pull' | 'volume' | 'create' | 'start';
+export class ProvisionError extends Error {
+  constructor(
+    readonly stage: ProvisionStage,
+    readonly summary: string,
+    readonly advice: string,
+    readonly raw: string,
+  ) {
+    super(`${summary}：${raw}`);
+  }
+}
+
+const STAGE_LABEL: Record<ProvisionStage, string> = {
+  pull: '拉取实例镜像失败',
+  volume: '准备数据目录失败',
+  create: '创建容器失败',
+  start: '启动容器失败',
+};
+
+function provisionError(stage: ProvisionStage, e: any, image = WECHAT_IMAGE): ProvisionError {
+  if (e instanceof ProvisionError) return e;
+  const raw = String(e?.message || e || '未知错误').trim();
+  const m = raw.toLowerCase();
+  const retry = '再点卡片上的「重试创建」';
+  let reason = '';
+  let advice = '';
+  if (/connect (econnrefused|enoent).*docker\.sock|econnrefused.*2375|socket hang up/.test(m)) {
+    reason = '面板连不上 Docker';
+    advice = `检查 docker.sock 是否挂进了面板容器（加固部署则看 socket-proxy 是否在运行），${retry}。`;
+  } else if (/no space left on device/.test(m)) {
+    reason = '宿主磁盘空间不足';
+    advice = `清理宿主磁盘（可先在「管理 → 系统」清掉残留的容器和数据卷），${retry}。`;
+  } else if (stage === 'pull') {
+    // NAS 界面里的「加速」一般只管用户在界面上手动拉的镜像，面板经 docker.sock 触发的拉取直连镜像源（见 README FAQ）
+    const pullTips =
+      `面板经 Docker 直连镜像源，NAS 界面里的「加速」一般管不到。任选其一后点「重试创建」：` +
+      `① 在 NAS 的 Docker 镜像页（或宿主 docker pull）手动拉取 ${image}，面板会直接复用；` +
+      `② 把 .env 的 WOC_IMAGE_PREFIX 换成能连上的源（如 ghcr.nju.edu.cn/gloridust），docker compose up -d 重建面板；` +
+      `③ 给 Docker 配镜像加速器（daemon.json 的 registry-mirrors）。`;
+    if (e?.stalled) {
+      reason = `${Math.round(PULL_STALL_MS / 60000)} 分钟没有任何下载进度，网络卡住了`;
+      advice = pullTips;
+    } else if (/toomanyrequests|rate limit/.test(m)) {
+      reason = '镜像源限流，拉取次数超限';
+      advice = `Docker Hub 对匿名拉取按出口 IP 限次。等一段时间再点「重试创建」，或把 .env 的 WOC_IMAGE_PREFIX 换成别的源（如 ghcr.io/gloridust、ghcr.nju.edu.cn/gloridust），docker compose up -d 重建面板。`;
+    } else if (/manifest unknown|not found|does not exist|pull access denied|denied|unauthorized|no matching manifest/.test(m)) {
+      reason = /no matching manifest/.test(m) ? '镜像源上没有适合本机 CPU 架构的版本' : '镜像源上找不到这个镜像，或需要登录';
+      advice =
+        `核对 .env 的 WOC_IMAGE_PREFIX / WOC_VERSION 有没有写错，或换一个源（docker.io/gloridust、ghcr.io/gloridust、ghcr.nju.edu.cn/gloridust），` +
+        `docker compose up -d 重建面板后点「重试创建」。`;
+    } else {
+      reason = '连不上镜像源：网络受限、被墙或代理有问题';
+      advice = pullTips;
+    }
+  } else if (stage === 'volume') {
+    advice = `检查 .env 里 WOC_DATA_ROOT 指向的宿主目录是否存在、可写，改正后 docker compose up -d 重建面板，${retry}。`;
+  } else if (/minimum memory limit/.test(m)) {
+    reason = 'WOC_INSTANCE_MEM_GB 设得太小';
+    advice = `把 .env 里的 WOC_INSTANCE_MEM_GB 调大（建议 3~4）或留空，docker compose up -d 重建面板后点「重试创建」。`;
+  } else if (/error gathering device information|no such file or directory/.test(m) && /\/dev\//.test(m)) {
+    reason = '指定的设备在宿主上不存在';
+    advice = `检查 .env 里的 WOC_VIDEO_DEVICES / WOC_DRI_DEVICES，改正或留空后 docker compose up -d 重建面板，${retry}。`;
+  } else if (/network .*not found/.test(m)) {
+    reason = '实例要接入的 Docker 网络不存在';
+    advice = `检查 .env 里的 WOC_DOCKER_NETWORK（留空即由面板自动处理），docker compose up -d 重建面板后点「重试创建」。`;
+  }
+  if (!advice) advice = '点卡片上的「重试创建」再试一次；仍然失败请在「管理 → 系统」导出诊断包，附在 issue 里反馈。';
+  const summary = reason ? `${STAGE_LABEL[stage]}（${reason}）` : STAGE_LABEL[stage];
+  return new ProvisionError(stage, summary, advice, raw);
+}
+
+// 给调用方（创建流程）统一取「环节 + 人话 + 原始报错」；非 ProvisionError（如 ensureNetwork 等意外）归为创建容器失败。
+export function describeProvisionError(e: any): { summary: string; advice: string; raw: string } {
+  const pe = e instanceof ProvisionError ? e : provisionError('create', e);
+  return { summary: pe.summary, advice: pe.advice, raw: pe.raw };
 }
 
 // 当前镜像引用对应的 :latest 形式；已是 latest / 无 tag 则返回 null（无可回退）。
@@ -821,7 +909,7 @@ async function runInstanceNow(inst: Instance, opts?: { keepImage?: boolean }): P
   // 也避免"离线 + 本地无 :latest"时连重启都失败。
   // 必须先确保目标镜像在本地、再删旧容器：此前先删后拉，升级时拉不到新镜像（面板刚更新、本地只有旧版本号的镜像、
   // 网络又不通）就会把旧容器删掉却建不出新的，实例直接没了；现在拉取失败时旧容器原样保留。
-  if (!imageOverride) await ensureImage();
+  if (!imageOverride) await ensureImage(inst.id);
   if (info) {
     try {
       // 删除前先把旧容器最后日志快照进持久日志，否则随容器删除就看不到"上次为何停/崩"。
@@ -831,7 +919,9 @@ async function runInstanceNow(inst: Instance, opts?: { keepImage?: boolean }): P
       /* 已被移走，正常 */
     }
   }
-  await ensureInstanceVolume(inst, imageOverride || WECHAT_IMAGE);
+  await ensureInstanceVolume(inst, imageOverride || WECHAT_IMAGE).catch((e) => {
+    throw provisionError('volume', e);
+  });
   // 摄像头设备（探测不到则为空数组 → 仅摄像头不可用，音频/麦克风照常）
   const vids = videoDevices();
   const dris = ENABLE_GPU ? driDevices() : [];
@@ -889,9 +979,13 @@ async function runInstanceNow(inst: Instance, opts?: { keepImage?: boolean }): P
   } else {
     (createOpts as any).MacAddress = mac;
   }
-  const container = await docker.createContainer(createOpts);
+  const container = await docker.createContainer(createOpts).catch((e) => {
+    throw provisionError('create', e);
+  });
   try {
-    await container.start();
+    await container.start().catch((e) => {
+      throw provisionError('start', e);
+    });
     appendInstanceLog(inst.id, '容器已启动');
     // 单网卡固化（NAS 定制）：启动后挂 woc-lan ipvlan 业务网卡（微信备份同广播域）。
     // v1.5.0 起实例只挂此网（woc-net bridge 已删）。网络不存在则自动创建。
@@ -1660,50 +1754,103 @@ export async function wechatStatus(inst: Instance): Promise<WechatStatus> {
 
 // 拉取微信镜像（首次部署/更新镜像用）。
 // 并发合并：创建实例/单实例升级/一键升级可能同时触发拉取，同一时刻只跑一个（后来者共享结果；
-// 其 onProgress 不再接收进度，可接受——进度只影响创建向导的百分比显示）。
+// 其 onProgress 不再接收进度——要看进度用 imagePullProgress()，它对所有调用方都有效）。
 let pullInFlight: Promise<void> | null = null;
 export function pullImage(onProgress?: (line: any) => void): Promise<void> {
   if (pullInFlight) return pullInFlight;
   pullInFlight = doPullImage(onProgress).finally(() => {
     pullInFlight = null;
+    pullState = null;
     invalidateRemoteImageCache(); // 本地镜像可能已更新 → 远端新版检测缓存作废
   });
   return pullInFlight;
 }
 
+// 正在进行的拉取的进度（#129）：创建实例时卡片要能看出「正在拉镜像、拉到哪了」，否则几分钟的拉取看起来和卡死一样。
+// 按层累计 Downloading 事件的 current/total；某层的 total 要等它开始下载才知道，所以总量会随拉取推进变大。
+let pullState: { image: string; startedAt: number; layers: Map<string, { cur: number; total: number }> } | null = null;
+export function imagePullProgress(): { image: string; startedAt: number; downloadedMB: number; totalMB: number } | null {
+  if (!pullState) return null;
+  let cur = 0;
+  let total = 0;
+  for (const l of pullState.layers.values()) {
+    cur += l.cur;
+    total += l.total;
+  }
+  const mb = (b: number) => Math.round(b / 1048576);
+  return { image: pullState.image, startedAt: pullState.startedAt, downloadedMB: mb(cur), totalMB: mb(total) };
+}
+function trackPullEvent(ev: any): void {
+  if (!pullState || typeof ev?.id !== 'string') return;
+  const pd = ev.progressDetail || {};
+  const layer = pullState.layers.get(ev.id);
+  if (ev.status === 'Downloading' && Number(pd.total) > 0) {
+    pullState.layers.set(ev.id, { cur: Number(pd.current) || 0, total: Number(pd.total) });
+  } else if (layer && /^(Download complete|Verifying Checksum|Extracting|Pull complete)/.test(String(ev.status || ''))) {
+    layer.cur = layer.total;
+  }
+}
+
+// 无进度超时：NAS 直连 docker.io 常卡死，旧版会让"创建实例"请求无限 hang（issue #99）。N 分钟内没有任何进度就中止，
+// 让创建带清晰错误失败、用户可重试/删除。默认 5 分钟，WOC_PULL_STALL_MIN 可调（最少 2）。
+const PULL_STALL_MS = 1000 * 60 * Math.max(2, Number(process.env.WOC_PULL_STALL_MIN) || 5);
+
 async function doPullImage(onProgress?: (line: any) => void): Promise<void> {
-  // 无进度超时：NAS 直连 docker.io 常卡死（拉取流僵住、永不结束），旧版会让"创建实例"请求无限 hang，
-  // 前端一直转圈、还删不掉（issue #99）。这里只要 N 分钟内没有任何进度就中止拉取，让创建带清晰错误快速失败、
-  // 用户可重试/删除。默认 5 分钟，WOC_PULL_STALL_MIN 可调。
-  const STALL_MS = 1000 * 60 * Math.max(2, Number(process.env.WOC_PULL_STALL_MIN) || 5);
+  pullState = { image: WECHAT_IMAGE, startedAt: Date.now(), layers: new Map() };
   return await new Promise((resolve, reject) => {
-    docker.pull(WECHAT_IMAGE, (err: any, stream: NodeJS.ReadableStream) => {
-      if (err) return reject(err);
-      let done = false;
-      let timer: ReturnType<typeof setTimeout>;
-      const finish = (e: any) => {
-        if (done) return;
-        done = true;
-        clearTimeout(timer);
-        e ? reject(e) : resolve();
-      };
-      const arm = () => {
-        clearTimeout(timer);
-        timer = setTimeout(() => {
-          try {
-            (stream as any).destroy?.();
-          } catch {
-            /* ignore */
-          }
-          finish(new Error(`拉取镜像 ${Math.round(STALL_MS / 60000)} 分钟无进度，判定网络卡死并中止（建议配置国内镜像源或预拉取，详见 README）`));
-        }, STALL_MS);
-      };
+    const ac = new AbortController();
+    let stream: any = null;
+    let done = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const finish = (e: any) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      e ? reject(e) : resolve();
+    };
+    const arm = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        // 断开这次 API 请求：守护进程随之取消这次拉取（也免得它和用户下一次「重试创建」叠在一起）
+        ac.abort();
+        try {
+          stream?.destroy?.();
+        } catch {
+          /* ignore */
+        }
+        finish(
+          Object.assign(new Error(`拉取镜像 ${Math.round(PULL_STALL_MS / 60000)} 分钟无进度，判定网络卡死并中止（建议配置国内镜像源或预拉取，详见 README）`), {
+            stalled: true,
+          }),
+        );
+      }, PULL_STALL_MS);
+    };
+    // 计时必须从发出请求就开始，而不是等 docker.pull 的回调：守护进程连上了镜像源、却迟迟拿不到镜像清单时，
+    // 它一个字节都不回，回调根本不会来（#129 用不应答的假仓库实测：停滞超时设 2 分钟，旧版挂了 8 分钟仍无任何报错，创建请求一直悬着）。
+    arm();
+    docker.pull(WECHAT_IMAGE, { abortSignal: ac.signal }, (err: any, s?: NodeJS.ReadableStream) => {
+      if (done) {
+        (s as any)?.destroy?.();
+        return;
+      }
+      if (err || !s) return finish(err || new Error('Docker 没有返回拉取进度'));
+      stream = s;
       arm();
+      // 只有「真的有进展」（某层的状态或已下载字节数变了）才重置超时，不能来一条事件就算：新版守护进程
+      // （containerd 镜像存储，Docker 29 起新装默认）下载僵住时仍每 0.1 秒重发一条字节数不变的 Downloading，
+      // 按旧判据停滞检测永远不会触发（#129 实测：Docker 29.5 上下载僵住 4 分钟、超时设 2 分钟，一直没报错）。
+      const lastByLayer = new Map<string, string>();
       docker.modem.followProgress(
-        stream,
+        s,
         (e: any) => finish(e),
         (ev: any) => {
-          arm(); // 每有进度就重置超时
+          const id = String(ev?.id ?? '');
+          const key = `${ev?.status ?? ''}|${ev?.progressDetail?.current ?? ''}`;
+          if (lastByLayer.get(id) !== key) {
+            lastByLayer.set(id, key);
+            arm();
+          }
+          trackPullEvent(ev);
           onProgress?.(ev);
         },
       );
@@ -1722,6 +1869,118 @@ function buildTarGz(entries: { name: string; content: string | Buffer }[]): Buff
   return zlib.gzipSync(tarArchive(entries.map((e) => tarEntry(e.name, Buffer.isBuffer(e.content) ? e.content : Buffer.from(e.content, 'utf8')))));
 }
 
+// ---------- 诊断包：内置浏览器崩溃定位（#166） ----------
+// 微信内置浏览器（WeChatAppEx，Chromium 内核）崩溃时 crashpad 把转储写进这里（completed/ pending/ new/ 下的 *.dmp）。
+// autostart 在实例启动时删掉 1 天前的，所以这里看到的是「本次启动以来 + 最近 1 天」的。
+const CRASH_DIRS = ['/config/.xwechat/crashinfo'];
+const CRASH_LIST_MAX = 20; // 列出最近的这么多份（时间/大小/子目录）
+const CRASH_PARSE_MAX = 5; // 其中最近的这么多份解析摘要
+const CRASH_READ_CAP = 16 * 1024 * 1024; // 每份最多读这么多字节（渲染进程转储通常几百 KB～几 MB），面板内存有界
+
+// 实例里的运行资源：/dev/shm 与 cgroup 限制（Chromium 共享内存/线程数/内存耗尽都会走主动崩溃），实例里 glibc 判定的
+// CPU 级别（微信实际看到的），微信与内置浏览器内核版本，正在跑的内置浏览器进程（按 --type 分组，只取类型与 RSS，不取命令行）。
+const RUNTIME_SCRIPT = String.raw`
+echo '[/dev/shm]'
+df -kP /dev/shm 2>/dev/null | awk 'NR==2{printf "容量 %.0f MiB · 已用 %.0f MiB · 剩余 %.0f MiB（%s）\n",$2/1024,$3/1024,$4/1024,$5}'
+echo "文件数: $(find /dev/shm -xdev -mindepth 1 2>/dev/null | wc -l)"
+echo
+echo '[cgroup 限制]'
+cg=/sys/fs/cgroup
+if [ -f $cg/cgroup.controllers ]; then
+  for f in memory.max memory.current memory.peak memory.swap.max pids.max pids.current; do [ -r $cg/$f ] && echo "$f = $(cat $cg/$f)"; done
+  for f in memory.events pids.events; do [ -r $cg/$f ] && echo "$f: $(tr '\n' ' ' < $cg/$f)"; done
+else
+  for f in memory/memory.limit_in_bytes memory/memory.usage_in_bytes memory/memory.max_usage_in_bytes memory/memory.failcnt pids/pids.max pids/pids.current; do [ -r $cg/$f ] && echo "$f = $(cat $cg/$f)"; done
+fi
+echo "ulimit: -v $(ulimit -v) · -n $(ulimit -n) · -u $(ulimit -u) · -s $(ulimit -s)"
+echo
+echo '[CPU 级别（实例里 glibc 判定）]'
+lv=$(for l in /lib64/ld-linux-x86-64.so.2 /lib/ld-linux-aarch64.so.1; do [ -x "$l" ] && "$l" --help 2>/dev/null | grep -E '^[[:space:]]+x86-64-v[0-9]'; done \
+  | sed -E 's/^[[:space:]]*(x86-64-v[0-9])[[:space:]]*\(supported.*/\1 支持/; t; s/^[[:space:]]*(x86-64-v[0-9]).*/\1 不支持/' | tr '\n' ' ')
+[ -n "$lv" ] && echo "$lv" || echo '（无 x86-64 级别信息：非 x86，或 glibc 过旧）'
+echo
+echo '[微信]'
+[ -f /config/wechat/.woc-version ] && echo "版本: $(cat /config/wechat/.woc-version)"
+x=/config/wechat/opt/wechat/RadiumWMPF/runtime/WeChatAppEx
+[ -f "$x" ] && echo "内置浏览器内核: $(head -c 67108864 "$x" | grep -a -o -m1 'Chrome/[0-9][0-9.]*' | head -n1)"
+echo '内置浏览器进程（WeChatAppEx，按 --type 分组）:'
+for p in /proc/[0-9]*; do
+  e=$(readlink "$p/exe" 2>/dev/null) || continue
+  case "$e" in */WeChatAppEx*) ;; *) continue ;; esac
+  t=$(tr '\0' '\n' < "$p/cmdline" 2>/dev/null | sed -n 's/^--type=//p' | head -n1)
+  [ -n "$t" ] || t=browser
+  echo "$t|$(awk '/^VmRSS/{print $2}' "$p/status" 2>/dev/null)|$e"
+done | awk -F'|' '{c++; n[$1]++; r[$1]+=$2; x[$3]=1} END {if (!c) print "  （未运行）"; for (k in n) printf "  %s × %d · RSS 合计 %d MiB\n", k, n[k], r[k]/1024; for (e in x) print "  可执行文件: " e}'
+true
+`;
+
+async function describeInstanceRuntime(inst: Instance): Promise<string> {
+  // 以 abc（应用的运行用户）执行：读别人进程的 /proc/<pid>/exe 要同 uid 或 CAP_SYS_PTRACE，容器里的 root 默认没有后者
+  const out = (await execCapture(inst, ['bash', '-c', RUNTIME_SCRIPT])).trimEnd();
+  return out.replace(/wxid_[A-Za-z0-9_-]+/g, 'wxid_***'); // 兜底：路径里万一带微信号，一律打码
+}
+
+// 读实例里一个文件的前 max 字节（复用 streamRegularFile：exec cat、自己拆帧）。读够即断开 cat，面板内存不随文件变大。
+async function readInstanceFileHead(inst: Instance, absPath: string, max: number): Promise<{ buf: Buffer; size: number }> {
+  const { size, stream } = await streamRegularFile(inst, absPath);
+  const parts: Buffer[] = [];
+  let got = 0;
+  await new Promise<void>((resolve, reject) => {
+    stream.on('data', (b: Buffer) => {
+      if (got >= max) return;
+      const take = b.subarray(0, max - got);
+      parts.push(take);
+      got += take.length;
+      if (got >= max) {
+        (stream as any).destroy?.();
+        resolve();
+      }
+    });
+    stream.on('end', resolve);
+    stream.on('close', resolve);
+    stream.on('error', reject);
+  });
+  return { buf: Buffer.concat(parts), size };
+}
+
+// 崩溃转储：数量/大小/时间 + 最近几份的摘要（信号、崩溃模块+偏移、崩溃处指令字节；解析见 crash-diag.ts）。
+// ⚠️ 绝不把转储本体放进诊断包：里面有崩溃进程的内存，可能含聊天内容；诊断包会被公开贴到 GitHub。
+async function describeCrashDumps(inst: Instance): Promise<string> {
+  const script = String.raw`now=$(date +%s); find "$@" -type f -printf '%T@\t%s\t%p\n' 2>/dev/null | sort -rn | awk -F'\t' -v now="$now" -v max=${CRASH_LIST_MAX} '
+    { n++; b += $2; if ($3 ~ /\.dmp$/) { d++; db += $2; if (now - $1 < 86400) d24++; if (d <= max) printf "D\t%d\t%s\t%s\n", $1, $2, $3 } }
+    END { printf "T\t%d\t%d\t%d\t%d\t%d\n", n, b, d, db, d24 }'`;
+  const raw = await execCapture(inst, ['bash', '-c', script, 'bash', ...CRASH_DIRS], 'root');
+  const mib = (n: number) => (n < 1048576 ? `${Math.ceil(n / 1024)} KiB` : `${(n / 1048576).toFixed(n < 10485760 ? 1 : 0)} MiB`);
+  const dumps: { mtime: number; size: number; path: string }[] = [];
+  let total = [0, 0, 0, 0, 0];
+  for (const line of raw.split('\n')) {
+    const f = line.split('\t');
+    if (f[0] === 'T') total = f.slice(1).map((v) => Number(v) || 0);
+    else if (f[0] === 'D' && f.length >= 4) dumps.push({ mtime: Number(f[1]) || 0, size: Number(f[2]) || 0, path: f.slice(3).join('\t') });
+  }
+  const [nFiles, nBytes, nDumps, dumpBytes, d24] = total;
+  if (!nFiles) return '（没有崩溃转储：内置浏览器未崩溃过，或转储已被实例启动时的 1 天清理删掉——复现一次崩溃后马上导出）';
+  let s = `共 ${nFiles} 个文件 / ${mib(nBytes)}；其中转储(.dmp) ${nDumps} 个 / ${mib(dumpBytes)}，最近 24 小时内 ${d24} 个\n`;
+  s += '（只给摘要，不含转储本体与任何内存内容；崩溃处指令字节只在地址落在已加载模块里时给出，那是公开二进制本身的字节）\n';
+  for (let i = 0; i < dumps.length; i++) {
+    const d = dumps[i];
+    const dir = CRASH_DIRS.find((x) => d.path.startsWith(x + '/'));
+    const rel = dir ? d.path.slice(dir.length + 1) : d.path.split('/').pop() || '';
+    // 文件名是 crashpad 的随机报告 id，只留前 8 位便于对照
+    const shown = rel.replace(/([0-9a-f]{8})[0-9a-f-]{20,}(\.dmp)$/i, '$1…$2');
+    s += `[${i + 1}] ${new Date(d.mtime * 1000).toISOString().replace('.000Z', 'Z')} 写入 · ${mib(d.size)} · ${shown}\n`;
+    if (i >= CRASH_PARSE_MAX) continue;
+    try {
+      const { buf, size } = await readInstanceFileHead(inst, d.path, CRASH_READ_CAP);
+      for (const l of summarizeMinidump(buf, size > buf.length)) s += `    ${l}\n`;
+    } catch (e: any) {
+      s += `    解析失败：${e?.message || e}\n`;
+    }
+  }
+  if (nDumps > dumps.length) s += `……另有 ${nDumps - dumps.length} 份更早的转储未列出\n`;
+  return s.trimEnd();
+}
+
 // 汇总诊断包：系统信息 + 面板全局日志 + 每个实例（容器状态 + 持久日志 + 实时日志）+ 全部 woc-* 容器清单。
 // 日志按 sinceMs 时间裁剪。给排查"首个实例创建卡死 / 打开实例黑屏不可用 / 升级失败"等问题用。
 export async function buildDiagnostics(instances: Instance[], sinceMs: number, meta: Record<string, string>): Promise<Buffer> {
@@ -1736,12 +1995,14 @@ export async function buildDiagnostics(instances: Instance[], sinceMs: number, m
       `时间范围: 最近 ${meta.range || '24h'}`,
       '',
       '内容：',
-      '  system.txt        系统/Docker/镜像信息',
+      '  system.txt        系统/Docker/镜像信息 + 宿主 CPU 型号与指令集 + 内核内存策略',
       '  panel.log         面板全局运维日志（创建/删除/升级/启停/镜像拉取/错误）',
       '  containers.txt    所有 woc-* 容器清单（含残留/未登记）',
-      '  instances/<id>.log 每个实例：容器状态 + 持久日志 + 应用安装状态/日志 + 桌面服务（nginx/KasmVNC）+ 实时容器日志',
+      '  instances/<id>.log 每个实例：容器状态与实际运行参数 + 持久日志 + 应用安装状态/日志 + 桌面服务（nginx/KasmVNC）',
+      '                    + 运行资源（/dev/shm、cgroup 限制、微信与内置浏览器版本）+ 崩溃转储摘要 + 实时容器日志',
       '',
       '把本压缩包发给维护者即可协助排查（不含密码/密钥等敏感信息）。',
+      '崩溃转储只给摘要（信号、崩溃模块与偏移、崩溃处指令字节），不含转储文件本身，也不含任何内存/聊天内容。',
     ].join('\n'),
   });
 
@@ -1767,6 +2028,15 @@ export async function buildDiagnostics(instances: Instance[], sinceMs: number, m
   } catch (e: any) {
     sys += `Docker info: 获取失败 ${e?.message || e}\n`;
   }
+  // 宿主 CPU 与内核内存策略（#166：内置浏览器崩溃页只给「SIGILL」，要靠这里判断是不是指令集/虚拟机/内存记账问题）。
+  // /proc/cpuinfo、/proc/sys/vm、/proc/meminfo 不随容器隔离，面板读到的就是实例所在宿主的。
+  sys += '\n宿主 CPU（/proc/cpuinfo）:\n';
+  try {
+    sys += describeHostCpu(readFileSync('/proc/cpuinfo', 'utf8'));
+  } catch (e: any) {
+    sys += `读取失败 ${e?.message || e}\n`;
+  }
+  sys += describeHostMemPolicy();
   try {
     const img: any = await docker.getImage(WECHAT_IMAGE).inspect();
     sys += `\n实例镜像 ${WECHAT_IMAGE}: ${String(img.Id).slice(0, 19)} · 创建 ${img.Created}\n`;
@@ -1805,7 +2075,16 @@ export async function buildDiagnostics(instances: Instance[], sinceMs: number, m
           /* stats 偶发不可用，忽略 */
         }
       }
-      c += `镜像: ${String(info.Image).slice(0, 19)} · 健康: ${s.Health?.Status ?? 'n/a'}\n\n`;
+      c += `镜像: ${String(info.Image).slice(0, 19)} · 健康: ${s.Health?.Status ?? 'n/a'}\n`;
+      // 容器【实际】的运行参数（不是面板配置）：在面板之外手动 docker run / 被 NAS 的 Docker 界面改过的容器，
+      // shm 可能是 docker 默认的 64MB、安全选项/设备也不同——Chromium 内核在这些差异下会崩（#166）。
+      const hc = info.HostConfig || {};
+      const gib = (n: number) => (n >= 1073741824 ? `${(n / 1073741824).toFixed(1)}GiB` : `${Math.round(n / 1048576)}MiB`);
+      c += `运行参数: shm=${hc.ShmSize ? gib(hc.ShmSize) : '默认(64MiB)'} · 安全选项=${(hc.SecurityOpt || []).join(',') || '默认'}`;
+      c += ` · AppArmor=${info.AppArmorProfile || '无'} · 特权=${hc.Privileged ? '是' : '否'} · IPC=${hc.IpcMode || '?'}`;
+      c += ` · 内存上限=${hc.Memory ? gib(hc.Memory) : '不限'} · pids上限=${hc.PidsLimit && hc.PidsLimit > 0 ? hc.PidsLimit : '不限'}\n`;
+      const devs = (hc.Devices || []).map((d: any) => d.PathOnHost).filter(Boolean);
+      c += `设备: ${devs.join(', ') || '无'}${hc.CapAdd?.length ? ` · CapAdd=${hc.CapAdd.join(',')}` : ''}\n\n`;
     } catch (e: any) {
       c += `===== 容器状态 =====\n无法读取（容器可能未创建/已删除）：${e?.message || e}\n\n`;
     }
@@ -1836,6 +2115,16 @@ export async function buildDiagnostics(instances: Instance[], sinceMs: number, m
       c += `===== 桌面服务（nginx / KasmVNC） =====\n${desk}\n\n`;
     } catch (e: any) {
       c += `===== 桌面服务（nginx / KasmVNC） =====\n获取失败（容器可能未运行）：${e?.message || e}\n\n`;
+    }
+    try {
+      c += `===== 运行资源（/dev/shm、cgroup 限制、微信版本、内置浏览器进程） =====\n${await describeInstanceRuntime(inst)}\n\n`;
+    } catch (e: any) {
+      c += `===== 运行资源 =====\n获取失败（容器可能未运行）：${e?.message || e}\n\n`;
+    }
+    try {
+      c += `===== 崩溃转储（${CRASH_DIRS.join(' ')}） =====\n${await describeCrashDumps(inst)}\n\n`;
+    } catch (e: any) {
+      c += `===== 崩溃转储 =====\n获取失败（容器可能未运行）：${e?.message || e}\n\n`;
     }
     try {
       c += `===== 本次容器日志（实时 tail 300） =====\n${(await instanceLogs(inst, 300)).trimEnd() || '（无）'}\n`;
@@ -2087,8 +2376,16 @@ export async function snapshotContainerLog(inst: Instance, reason: string): Prom
 // Ctrl+V，这时用户往往还按着 Ctrl：xdotool 按完后用它自己的虚拟键盘（XTEST）把 Ctrl 按回去，而用户松手是从 VNC 键盘
 // 来的，XTEST 这边的 Ctrl 就一直按着。下一次 xdotool 再按 Ctrl 被当成重复按键吞掉，应用收到的是光秃秃的 v——
 // 实测粘完图片接着打中文，发出去的是「v」。先 keyup 一遍既能清掉这种残留（包括旧版本留下的），又不会再按回去。
-const XDO_RELEASE_MODS = 'xdotool keyup Control_L Control_R Shift_L Shift_R Alt_L Alt_R Meta_L Meta_R Super_L Super_R ISO_Level3_Shift';
-const xdoKey = (key: string) => `${XDO_RELEASE_MODS}\nxdotool key ${key}`;
+// 松开这一步必须带 --delay 0（#155）：xdotool 每发一个键默认要 sleep 12ms（--delay 的默认值），11 个修饰键逐个
+// 松开就是白等 ~130ms——实测这一行 159ms，1.5.1 起每次打字、回车、退格都因此多等 ~160ms，无感输入的队列又是串行的，
+// 「你好」+ 空格 + 回车一串要多等 ~440ms。松开没按着的键，X server 直接丢弃、应用一个事件都收不到（实测），没有
+// 需要等的；真按着的残留照样被松开。真正的按键（key）保持默认节奏，与一直以来的一样。
+// 松开与按键串在同一个 xdotool 进程里（xdotool 支持命令串联），省一次进程启动。
+// 不改成「只松开组合键里的修饰键 / 一段时间内只松一次」：带 --delay 0 后全松一遍只多 ~2.5ms，还不如判断时间窗要跑的
+// date + stat（~2.7ms）贵；只松组合里的修饰键，残留的 Ctrl 会混进回车、退格（Chromium 里实测 Ctrl+退格删掉一整个词、
+// 回车不换行）；时间窗内又出现的残留也清不掉（实测照样出「v」）。
+const XDO_RELEASE_MODS = 'Control_L Control_R Shift_L Shift_R Alt_L Alt_R Meta_L Meta_R Super_L Super_R ISO_Level3_Shift';
+const xdoKey = (key: string) => `xdotool keyup --delay 0 ${XDO_RELEASE_MODS} key ${key}`;
 
 const X_PRELUDE = [
   'set -e',
@@ -2116,6 +2413,11 @@ if [ ! -e "$D/saved.type" ] || [ $(( $(date +%s) - $(stat -c %Y "$D/saved.type")
     if printf '%s\\n' "$tg" | grep -qxF "$t"; then ty=$t; break; fi
   done
   if [ "$ty" != none ] && ! timeout 2 xclip -o -selection clipboard -t "$ty" > "$D/saved.data" 2>/dev/null; then ty=none; fi
+  # 超过 ~1MB 的内容不保存、也就不归还（#165 #159）：归还要用 xclip 重新持有它，超过 ~1MB 时 xclip 走 INCR 分段，
+  # 而 KasmVNC 剪贴板一换主人就去取（图片按 DLP_ClipTypes，文字总会取）却从不把 INCR 收完，xclip 就此卡死，之后应用
+  # 一读剪贴板就挂住（浏览器 / QQ 无响应，要重启应用）。新实例镜像去掉了 image/png，但大段文字照样会卡，所以按大小、
+  # 不分类型。代价只是：打完字后剪贴板里是刚打的那段字，而不是用户之前复制的那个大块内容。
+  if [ "$ty" != none ] && [ "$(stat -c %s "$D/saved.data" 2>/dev/null || echo 0)" -gt 1000000 ]; then ty=none; rm -f "$D/saved.data"; fi
   echo "$ty" > "$D/saved.type"
 else
   touch "$D/saved.type"
@@ -2145,8 +2447,10 @@ function cancelClipRestore(id: string): boolean {
   clipTimers.delete(id);
   return true;
 }
+// 打字 / 单键 / 归还这几条每打一个词都要跑，用 sh（实例里是 dash）而不是 bash：脚本全是 POSIX，dash 启动更轻。
+// 开发机上实测差别 ≤1ms，但有用户在自己的机器上测得 bash -c true 73ms、sh -c true 36ms（#155）；行为不变，就用 sh。
 async function restoreClipboard(inst: Instance): Promise<void> {
-  await execCapture(inst, ['bash', '-c', [...X_PRELUDE, CLIP_RESTORE].join('\n')]).catch(() => {});
+  await execCapture(inst, ['sh', '-c', [...X_PRELUDE, CLIP_RESTORE].join('\n')]).catch(() => {});
 }
 function scheduleClipRestore(inst: Instance): void {
   cancelClipRestore(inst.id);
@@ -2174,7 +2478,7 @@ export async function typeInInstance(inst: Instance, text: string): Promise<void
   await withClipLock(inst.id, async () => {
     cancelClipRestore(inst.id);
     try {
-      await execCapture(inst, ['bash', '-c', cmd]);
+      await execCapture(inst, ['sh', '-c', cmd]);
     } finally {
       scheduleClipRestore(inst);
     }
@@ -2210,9 +2514,47 @@ const PASTE_IMAGE_TYPES: Record<string, string> = {
   'image/webp': 'webp',
   'image/bmp': 'bmp',
 };
-export async function pasteImageInInstance(inst: Instance, mime: string, content: Buffer): Promise<void> {
+//
+// ⚠️ 大于约 1MB 的 PNG 会卡死容器剪贴板（#165，#159 的 QQ 黑屏同源）：xclip 单次最多直接交出
+// XExtendedMaxRequestSize/4 ≈ 1,048,575 字节，更大的走 INCR 分段，INCR 进行中不理会任何别的请求、也不超时。KasmVNC
+// 的 Xvnc 在剪贴板一变就按 DLP_ClipTypes（默认 text/html,image/png）来取内容准备同步给浏览器，却从不把 INCR 收完——
+// xclip 就此卡住，应用按 Ctrl+V 读剪贴板跟着卡：Chromium 内核的应用（浏览器实例、QQ）页面无响应，且之后每次粘贴都卡、
+// 要重启应用才恢复；换了新内容旧 xclip 也不退出。有无 VNC 客户端连着都一样。实测 1,040,000 字节正常、1,060,000 字节
+// 必卡；同样 3MB 的 image/jpeg、image/gif 不卡（Xvnc 不取）。新实例镜像启动 Xvnc 时去掉了 image/png（docker/Dockerfile），
+// 从根上不再卡，这类实例放行原图；旧实例（没「升级实例」）PNG 必须小于 PASTE_IMAGE_PNG_MAX——服务端拒收并回原因码，
+// 前端据此压缩后重试（见 web/src/pasteImage.ts）。其它类型照旧。
+export const PASTE_IMAGE_PNG_MAX = 1_000_000;
+export const PASTE_IMAGE_PNG_TOO_BIG =
+  'PNG 图片超过 1MB：放进容器剪贴板会让应用卡死（KasmVNC 取剪贴板的缺陷）。请刷新面板页面后重试（新版会自动压缩），或改用「文件」发送';
+
+// 该实例的 KasmVNC 是否已不再去取 image/png 剪贴板（即大 PNG 不会卡死）。直接看正在跑的 Xvnc 的启动参数，而不是猜镜像版本：
+// 自构建镜像、未来换了启动脚本的 base 镜像都能如实判断。按「容器 id + 启动时间」缓存——升级实例 / 重启都会换掉它们。
+// 判断不了（容器没起、Xvnc 不在、exec 失败）一律按「没修复」处理：最坏只是多压缩一次，绝不会因此卡死应用。
+const largePngSafeCache = new Map<string, boolean>();
+export async function instanceAcceptsLargePng(inst: Instance): Promise<boolean> {
+  try {
+    const info: any = await docker.getContainer(inst.containerName).inspect();
+    const key = `${info.Id}@${info.State?.StartedAt}`;
+    const hit = largePngSafeCache.get(key);
+    if (hit !== undefined) return hit;
+    // 进程名：新镜像经 /usr/local/bin/Xvnc 软链启动 1.5.x 的 Xkasmvnc，仍叫 Xvnc；两个名字都认，免得换启动方式后失灵
+    const out = await execCapture(inst, ['sh', '-c', 'p=$(pgrep -x "Xvnc|Xkasmvnc" | head -1); [ -n "$p" ] && tr "\\0" " " < /proc/$p/cmdline']);
+    const m = out.match(/-DLP_ClipTypes\s+(\S+)/);
+    const safe = !!m && !m[1].split(',').includes('image/png');
+    if (out.trim()) {
+      if (largePngSafeCache.size > 200) largePngSafeCache.clear();
+      largePngSafeCache.set(key, safe); // 只缓存拿到了 Xvnc 参数的结果，免得把「Xvnc 还没起来」当成定论
+    }
+    return safe;
+  } catch {
+    return false;
+  }
+}
+
+export async function pasteImageInInstance(inst: Instance, mime: string, content: Buffer, allowLargePng = false): Promise<void> {
   const ext = PASTE_IMAGE_TYPES[mime];
   if (!ext) throw new Error('不支持的图片类型');
+  if (mime === 'image/png' && content.length > PASTE_IMAGE_PNG_MAX && !allowLargePng) throw new Error(PASTE_IMAGE_PNG_TOO_BIG);
   const name = `woc-paste-${Date.now()}.${ext}`;
   await withClipLock(inst.id, async () => {
     cancelClipRestore(inst.id); // 有意换成这张图，之前打字借用的剪贴板不再归还
@@ -2221,8 +2563,25 @@ export async function pasteImageInInstance(inst: Instance, mime: string, content
       ...X_PRELUDE,
       CLIP_DISCARD,
       "find /tmp -maxdepth 1 -name 'woc-paste-*' -mmin +10 -delete 2>/dev/null || true",
+      // 先清掉还活着的 xclip 持有者：正常情况下它们一失去选区就退出，但卡在 INCR 里的（见上，旧版本留下的）永远不退、
+      // 各自攥着整张图；这里本来就要换成新内容，清掉没有损失
+      "pkill -f '^xclip .*-i /tmp/' 2>/dev/null || true",
       // 同 typeInInstance：xclip 常驻后台持有选区，必须重定向 fd，否则 docker exec 要等它退出（~2s）
       `xclip -selection clipboard -t ${mime} -i /tmp/${name} >/dev/null 2>&1`,
+      // 按 Ctrl+V 之前确认剪贴板读得出这张图：万一仍卡住（别的 X 服务器上限、别的配置），这时按下去应用会跟着卡死，
+      // 不如放弃这次粘贴、清掉卡住的 xclip，明确报错。xclip 后台化时选区请求可能还没发出去，读不到就稍等重试；
+      // 读取超时（rc=124）才是卡住
+      'n=0',
+      'while :; do',
+      '  tg=$(timeout 2 xclip -o -selection clipboard -t TARGETS 2>/dev/null) && rc=0 || rc=$?',
+      `  if printf '%s\\n' "$tg" | grep -qxF '${mime}'; then break; fi`,
+      '  n=$((n + 1))',
+      '  if [ "$rc" = 124 ] || [ "$n" -ge 20 ]; then',
+      `    pkill -f '^xclip .*-i /tmp/${name}' 2>/dev/null || true`,
+      "    echo '容器剪贴板没有响应，已放弃这次粘贴（图片可能太大，请改用「文件」发送）' >&2; exit 3",
+      '  fi',
+      '  sleep 0.05',
+      'done',
       xdoKey('ctrl+v'),
     ].join('\n');
     await execCapture(inst, ['bash', '-c', cmd]);
@@ -2244,13 +2603,13 @@ export async function keyInInstance(inst: Instance, key: string): Promise<void> 
     xdoKey(key),
   ].join('\n');
   if (!/^ctrl\+v$/i.test(key)) {
-    await execCapture(inst, ['bash', '-c', cmd]);
+    await execCapture(inst, ['sh', '-c', cmd]);
     return;
   }
   // 粘贴：打字借用的剪贴板若还没归还，先归还再按，免得贴出刚打的字
   await withClipLock(inst.id, async () => {
     if (cancelClipRestore(inst.id)) await restoreClipboard(inst);
-    await execCapture(inst, ['bash', '-c', cmd]);
+    await execCapture(inst, ['sh', '-c', cmd]);
   });
 }
 

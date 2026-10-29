@@ -70,6 +70,29 @@ export interface InstanceWithStatus extends PanelInstance {
   runtime: RuntimeState;
   wechat: WechatStatus;
   imageVersion?: string | null; // 实例镜像版本（CI 发布版如 "1.4.0"；自构建为镜像短 id；容器缺失为 null）
+  provision?: ProvisionInfo; // 容器还没建成时才有（#129）
+}
+
+// 实例容器的创建状态（#129）。creating：后台创建中，step=pulling 在拉实例镜像（downloadedMB/totalMB 为已知层的累计，
+// 总量随拉取推进变大）、container 在建容器；failed：创建失败，error（哪一步、为什么）/ hint（怎么办）只下发给管理员。
+export interface ProvisionInfo {
+  state: 'creating' | 'failed';
+  since?: number;
+  step?: 'pulling' | 'container';
+  downloadedMB?: number;
+  totalMB?: number;
+  at?: string;
+  error?: string;
+  hint?: string;
+}
+const fmtMB = (mb: number) => (mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`);
+// 创建中的一句话进度，卡片 / 主页 / 桌面页共用
+export function provisionProgressText(p: ProvisionInfo): string {
+  if (p.step !== 'pulling') return '正在创建容器…';
+  const got = p.downloadedMB || 0;
+  const total = p.totalMB || 0;
+  if (!got) return '正在拉取实例镜像（首次约 1~2GB，连接镜像源中…）';
+  return `正在拉取实例镜像 · 已下载 ${fmtMB(got)}${total > got ? ` / ${fmtMB(total)}` : ''}`;
 }
 
 export interface VolEntry {
@@ -146,6 +169,20 @@ function uploadHttpError(status: number): string {
   return `上传失败（HTTP ${status}）`;
 }
 
+// 粘贴图片的超时：30 秒起步，再按 32KB/s（约 256kbps 的慢上行）给足传输时间。压缩后的图不到 1MB，约一分钟；
+// 原样上传的大 GIF 相应放宽。不设超时的话，网络卡住时请求一直挂着，界面停在「正在粘贴」。
+export function pasteImageTimeoutMs(size: number): number {
+  return 30_000 + Math.ceil(size / 32_768) * 1000;
+}
+// 面板自己的错误都带 JSON（走不到这里）；没有 JSON 的 413 / 502 / 504 是反向代理回的
+export function pasteImageHttpError(status: number, size: number): string {
+  if (status === 413) {
+    return `图片（${fmtUploadSize(size)}）被反向代理拒收（HTTP 413）：反代限制了上传大小，nginx 默认只放行 1MB，请把 client_max_body_size 调大（如 50m）`;
+  }
+  if (status === 502 || status === 504) return `粘贴图片失败（HTTP ${status}）：反向代理超时，或面板正在重启`;
+  return `粘贴图片失败（HTTP ${status}）`;
+}
+
 // 原始二进制上传（File 直传 application/octet-stream），带上传进度（fetch 拿不到上传进度，这里用 XHR）
 async function rawUpload(url: string, file: Blob, onProgress?: UploadProgress): Promise<any> {
   // 先发个普通请求探路：登录已失效、或反代身份网关要重新认证（apiFetch 会整页重载去认证）时，在这里就拦下，
@@ -204,6 +241,11 @@ async function waitVolumeJob(id: string, job: string, onStage?: (stage: string) 
   }
 }
 
+// 本页面的「查看者」标识，每次整页加载生成一个。同一实例同一时间只在一处显示：面板据此认出被别处接管的页面，
+// 挡住它的自动重连和输入（见服务端「单连接」）。用 getRandomValues 而不是 randomUUID：后者只在 HTTPS 下有。
+export const VIEWER_ID = Array.from(crypto.getRandomValues(new Uint8Array(12)), (b) => b.toString(16).padStart(2, '0')).join('');
+const viewerHeader = { 'x-woc-viewer': VIEWER_ID };
+
 async function req<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
   // 仅在有 body 时声明 JSON content-type：否则 Fastify 对「空 body + application/json」会报 400
   const headers = opts.body ? { 'content-type': 'application/json', ...opts.headers } : opts.headers;
@@ -222,6 +264,22 @@ async function req<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
     throw new Error((data as any).error || `请求失败 (${res.status})`);
   }
   return data as T;
+}
+
+// 粘贴图片失败时带上「为什么失败」，前端据此决定要不要压缩后重试（见 pasteImage.ts 的 pasteImageWithFallback）
+export interface PasteError extends Error {
+  status?: number; // HTTP 状态码（面板或反代）
+  code?: string; // 面板给的原因码：png_too_big / clipboard_stuck
+  kind?: 'network' | 'timeout';
+}
+// 本页面被别处打开的页面接管了（见 controlStatus）
+export interface Superseded {
+  by: string; // 「用户名（设备）」
+  at: number;
+}
+
+function pasteError(message: string, extra: Partial<PasteError>): PasteError {
+  return Object.assign(new Error(message), extra);
 }
 
 export const api = {
@@ -266,7 +324,7 @@ export const api = {
   // 微信实例
   listInstances: () => req<{ instances: InstanceWithStatus[] }>('/api/instances'),
   createInstance: (name: string, allowedUserIds: string[] = [], reuseVolume?: string, appType: AppType = 'wechat', dataDir?: string) =>
-    req<{ instance: PanelInstance }>('/api/admin/instances', {
+    req<{ instance: PanelInstance; started?: boolean }>('/api/admin/instances', {
       method: 'POST',
       body: JSON.stringify({ name, allowedUserIds, reuseVolume: reuseVolume || undefined, appType, dataDir: dataDir || undefined }),
     }),
@@ -325,7 +383,8 @@ export const api = {
   },
   instanceWechatInstall: (id: string) => req(`/api/admin/instances/${id}/wechat/install`, { method: 'POST' }),
   instanceWechatUpdate: (id: string) => req(`/api/admin/instances/${id}/wechat/update`, { method: 'POST' }),
-  instanceStart: (id: string) => req(`/api/admin/instances/${id}/start`, { method: 'POST' }),
+  // started=true：容器不存在，已转为后台重新创建（进度看 provision），不是「已启动」
+  instanceStart: (id: string) => req<{ ok: boolean; started?: boolean }>(`/api/admin/instances/${id}/start`, { method: 'POST' }),
   instanceStop: (id: string) => req(`/api/admin/instances/${id}/stop`, { method: 'POST' }),
   instanceRestart: (id: string) => req(`/api/admin/instances/${id}/restart`, { method: 'POST' }),
   // 单实例升级：异步（后端登记后立即返回），轮询 upgradeStatus().upgradingIds 直到该 id 移出。
@@ -355,16 +414,36 @@ export const api = {
     assertUploadSize(file, UPLOAD_LIMITS.transfer);
     return rawUpload(`/api/instances/${id}/upload?name=${encodeURIComponent(file.name)}`, file, onProgress);
   },
-  // 本机剪贴板图片 → 容器 X 剪贴板 → Ctrl+V（issue #91）
+  // 本机剪贴板图片 → 容器 X 剪贴板 → Ctrl+V（issue #91）。调用方先用 fitPasteImage 把图压到 1MB 以内（#165）。
+  // 每条失败路径都要落到一个能看懂、能照着做的错误上，且有超时：此前反代回 413 时只报「粘贴图片失败」，
+  // 网络卡住时请求可以一直挂着。
   pasteImage: async (id: string, file: Blob) => {
-    const res = await apiFetch(`/api/instances/${id}/paste-image?type=${encodeURIComponent(file.type)}`, {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: { 'content-type': 'application/octet-stream' },
-      body: file,
-    });
-    if (!res.ok) throw new Error(((await res.json().catch(() => ({}))) as any).error || '粘贴图片失败');
-    return res.json();
+    const ctl = new AbortController();
+    const ms = pasteImageTimeoutMs(file.size);
+    const timer = setTimeout(() => ctl.abort(), ms);
+    let res: Response;
+    try {
+      res = await apiFetch(`/api/instances/${id}/paste-image?type=${encodeURIComponent(file.type)}`, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/octet-stream', ...viewerHeader },
+        body: file,
+        signal: ctl.signal,
+      });
+    } catch (e: any) {
+      if (ctl.signal.aborted) {
+        throw pasteError(`粘贴图片超时（${Math.round(ms / 1000)} 秒没传完）：网络太慢或反向代理卡住了上传，可改用「文件」发送`, { kind: 'timeout' });
+      }
+      if (/重新验证/.test(e?.message || '')) throw e; // apiFetch：反代身份网关要重新认证，页面正在重载
+      // 反代按大小拒收时，有的会在浏览器还在上传时直接断开连接，前端看到的是网络错误而不是 413
+      throw pasteError('粘贴图片失败：连接中断（网络断开，或反向代理限制了上传大小 / 时长）', { kind: 'network' });
+    } finally {
+      clearTimeout(timer);
+    }
+    const data: any = await res.json().catch(() => null);
+    if (!res.ok) throw pasteError(data?.error || pasteImageHttpError(res.status, file.size), { status: res.status, code: data?.code });
+    if (!data?.ok) throw new Error('粘贴结果未知（收到的不是面板的响应），请刷新页面后重试');
+    return data;
   },
   downloadFileUrl: (id: string, name: string) => `/api/instances/${id}/download?name=${encodeURIComponent(name)}`,
   deleteFile: (id: string, name: string) => req(`/api/instances/${id}/files?name=${encodeURIComponent(name)}`, { method: 'DELETE' }),
@@ -401,14 +480,20 @@ export const api = {
     await waitVolumeJob(id, job, onStage);
   },
 
-  // 多端协作：操作控制权
-  controlStatus: (id: string) => req<{ free: boolean; mine: boolean; holder: string | null }>(`/api/instances/${id}/control`),
-  controlBeat: (id: string) => req<{ mine: boolean; holder: string }>(`/api/instances/${id}/control/beat`, { method: 'POST' }),
-  controlTake: (id: string) => req<{ mine: boolean; holder: string }>(`/api/instances/${id}/control/take`, { method: 'POST' }),
-  typeInInstance: (id: string, text: string) => req(`/api/instances/${id}/type`, { method: 'POST', body: JSON.stringify({ text }) }),
+  // 操作控制权；superseded 非空 = 本页面已被别处打开的页面接管（同一实例同一时间只在一处显示）
+  controlStatus: (id: string) =>
+    req<{ free: boolean; mine: boolean; holder: string | null; superseded?: Superseded | null }>(`/api/instances/${id}/control`, {
+      headers: viewerHeader,
+    }),
+  controlBeat: (id: string) => req<{ mine: boolean; holder: string }>(`/api/instances/${id}/control/beat`, { method: 'POST', headers: viewerHeader }),
+  controlTake: (id: string) => req<{ mine: boolean; holder: string }>(`/api/instances/${id}/control/take`, { method: 'POST', headers: viewerHeader }),
+  typeInInstance: (id: string, text: string) =>
+    req(`/api/instances/${id}/type`, { method: 'POST', headers: viewerHeader, body: JSON.stringify({ text }) }),
   // 本机剪贴板文字粘进应用（粘贴桥判断本机比容器新时用；贴完留在容器剪贴板）
-  pasteText: (id: string, text: string) => req(`/api/instances/${id}/paste-text`, { method: 'POST', body: JSON.stringify({ text }) }),
-  keyInInstance: (id: string, key: string) => req(`/api/instances/${id}/key`, { method: 'POST', body: JSON.stringify({ key }) }),
+  pasteText: (id: string, text: string) =>
+    req(`/api/instances/${id}/paste-text`, { method: 'POST', headers: viewerHeader, body: JSON.stringify({ text }) }),
+  keyInInstance: (id: string, key: string) =>
+    req(`/api/instances/${id}/key`, { method: 'POST', headers: viewerHeader, body: JSON.stringify({ key }) }),
 
   // 桌面壁纸
   listBackgrounds: (id: string) => req<{ backgrounds: string[] }>(`/api/admin/instances/${id}/backgrounds`),

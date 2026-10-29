@@ -183,7 +183,11 @@ do_start() {
   export HOST="${HOST:-0.0.0.0}"
   export SOCK_PATH="${SOCK_PATH:-${APP_DIR}/app.sock}"
   export PANEL_DATA="${PANEL_DATA:-${DATA_DIR}/accounts.json}"
-  export WOC_VERSION="${WOC_VERSION:-1.5.2}"  # 面板版本=上游语义化版本；fnOS 包版本(TRIM_APPVER)的 -N 本地修订号不喂进代码
+  # 面板版本强制跟随 fnOS 包版本（TRIM_APPVER 去掉 -N 本地后缀），不继承 wizard 保存的旧值：
+  # fnOS 升级/重装会保留旧安装写入的 WOC_VERSION 环境变量（如 1.5.2），若用「未设置才默认」的
+  # :- 写法，旧值会覆盖，导致面板版本与实例镜像 tag 错配（1.6.0 面板 + 1.5.2 镜像）。强制赋值
+  # 后面板与实例镜像 tag 始终与包版本一致，wizard 的「镜像版本」字段仅作展示。
+  export WOC_VERSION="$(echo "${TRIM_APPVER:-1.6.0-2}" | sed -E 's/-[0-9]+$//')"
   export PANEL_ALLOWED_HOSTS="${PANEL_ALLOWED_HOSTS:-*.mike-hd123.fnos.net}"
   # docker 权限检测：非 root 运行时若无 docker 组，实例管理不可用
   if ! id -nG 2>/dev/null | tr ' ' '\n' | grep -qx docker 2>/dev/null; then

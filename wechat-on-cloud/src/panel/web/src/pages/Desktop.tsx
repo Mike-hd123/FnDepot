@@ -1,15 +1,17 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { api, appProfile } from '../api';
+import { api, appProfile, fmtUploadSize, provisionProgressText, VIEWER_ID, type Superseded } from '../api';
+import { browserImageCodec, fitPasteImage, pasteImageWithFallback } from '../pasteImage';
 import { useUI } from '../ui';
 import { useAuth } from '../auth';
 import { useInstances } from '../AppShell';
 import { VncAudio } from '../vncAudio';
 
 // KasmVNC noVNC 页面；反代按实例隔离：/desktop/<id>/* → 对应容器，注入凭据。
+// ws 地址带上本页的查看者标识（noVNC 先解码 path 再拼进地址），面板据此做「同一实例只在一处显示」，转发前会去掉。
 function desktopUrl(id: string) {
   return (
-    `/desktop/${id}/vnc/index.html?autoconnect=1&path=desktop/${id}/websockify&resize=remote` +
+    `/desktop/${id}/vnc/index.html?autoconnect=1&path=desktop/${id}/websockify%3Fwoc_viewer%3D${VIEWER_ID}&resize=remote` +
     '&reconnect=true&reconnect_delay=2000&clipboard_up=true&clipboard_down=true&clipboard_seamless=true'
   );
 }
@@ -177,13 +179,21 @@ function installSeamlessIme(
 // 本机截图 / 图片直接粘进应用（issue #91，多人反馈）。
 // 背景：noVNC 在 keydown 里 preventDefault，浏览器的粘贴动作连同 paste 事件都被压掉，本机的图片永远到不了容器。
 // 做法：抢在 noVNC 之前截下 Ctrl/Cmd+V（只 stopImmediatePropagation，不 preventDefault），让浏览器照常派发
-// 带剪贴板数据的 paste 事件——它不依赖异步剪贴板 API，内网 http 访问下同样可用。实测 paste 在按键后同一任务内
-// 到达（约 4ms），早于 setTimeout(0)，所以在定时器里决定走哪条路：
+// 带剪贴板数据的 paste 事件——它不依赖异步剪贴板 API，内网 http 访问下同样可用。等这次按键引起的 paste 到了再决定：
 //   - 本机剪贴板有图片、且它比容器剪贴板「新」→ 上传写入容器 X 剪贴板并在容器里按 Ctrl+V（onImage）
 //   - 其余情况 → 在容器里按一次 Ctrl+V（onPlainPaste），粘贴的仍是容器剪贴板，与以前完全一致
 //     （例如在微信里复制一条消息再粘到别处——这条最常用的路径不能被改变）
 // 不能把截下的按键「合成事件」还给 noVNC：实测按键松开得快时，重放时修饰键已抬起，远端只收到一个 v。
 // 改由服务端 xdotool 按 Ctrl+V（先松开它自己按住的修饰键，见 docker.ts xdoKey），与用户按多久无关。
+//
+// 一次按键只粘一次（#159「粘贴本机图片会出现两张」）。此前有两处会多粘：
+//   - 按住稍久触发的自动重复（e.repeat）没截、原样交给了 noVNC：macOS 上 KasmVNC 把 Cmd+V 翻译成 Ctrl+V，
+//     每次重复都在应用里再粘一次容器剪贴板（图片还没传完时是上一张图，传完了是同一张）；Windows / Linux 上服务端
+//     按 Ctrl+V 前已松开 Ctrl，重复就成了一串「v」打进输入框。实测按住 0.6 秒：Mac 上粘出 3 张图，Linux 上多出 vvvv。
+//   - 此前在 setTimeout(0) 里决定，前提是 paste 一定在按键的同一任务里到达。Chrome 如此，但菜单驱动粘贴的浏览器
+//     （Safari 的 Cmd+V 要绕一圈 UI 进程）会晚到：定时器先按「没有 paste」粘了容器剪贴板，晚到的 paste 又带着本机
+//     图片再粘一次。现在 paste 一到就当场决定；最多等 PASTE_EVENT_WAIT_MS，等不到才粘容器剪贴板，此后晚到的 paste
+//     只拦下、不再粘。
 //
 // 「谁更新」：本机剪贴板里可能躺着很久以前的截图，而用户刚在微信里复制了一张图——此时应粘容器的。
 // 回到页面（focus）视为可能刚在外面复制/截图 → 本机为新；在桌面里 Ctrl/Cmd+C、X 或右键（微信里复制）→ 容器为新。
@@ -192,6 +202,10 @@ function installSeamlessIme(
 //
 // 文字同理（onLocalText）：本机剪贴板的文字比容器的新（在别处复制后回来直接 Ctrl+V，或局域网 http 下浏览器
 // 根本不同步剪贴板），就把本机文字贴进去；否则按原样在容器里 Ctrl+V，应用内复制粘贴保留应用自己的格式。
+// 等 paste 的上限：Chrome 的 paste 与按键同一任务到达，根本用不到；它只兜「这次按键不会有 paste」（如焦点不在
+// 可编辑处时部分浏览器不派发）和慢浏览器，太长会让这类情况每次粘贴都慢半拍。
+const PASTE_EVENT_WAIT_MS = 400;
+const LATE_PASTE_MS = 2000; // 一次按键做出决定之后，这么久之内到达、又没有按键在等的 paste 视为回声
 function installPasteBridge(
   win: Window,
   doc: Document,
@@ -202,8 +216,9 @@ function installPasteBridge(
     onLocalText: (text: string, localIsFresh: boolean) => boolean;
   },
 ): () => void {
-  type Pending = { handled: boolean; text: string };
-  let pending: Pending | null = null;
+  type Pending = { timer: number };
+  let pending: Pending | null = null; // 已截下、还在等 paste 的那次按键
+  let settledAt = -Infinity; // 上一次按键做出决定的时刻：其后 LATE_PASTE_MS 内到达的 paste 是它的回声
   let localIsFresh = true;
   let lastLocalImage = ''; // 上次在 paste 里见到的本机图片签名
   const isKey = (e: KeyboardEvent, code: string, key: string) =>
@@ -215,37 +230,63 @@ function installPasteBridge(
       localIsFresh = false; // 在应用里复制/剪切 → 容器剪贴板更新（按键照常交给 noVNC）
       return;
     }
-    if (e.repeat || !isKey(e, 'KeyV', 'v')) return;
+    if (!isKey(e, 'KeyV', 'v')) return;
     e.stopImmediatePropagation();
-    const p: Pending = { handled: false, text: '' };
+    // 按住不放的自动重复：截下、什么都不做（见上）。还要 preventDefault：不拦的话浏览器每次重复都执行一次「粘贴」、
+    // 派发 paste（实测按住 0.8 秒来了 4 个），按得够久就会被当成新的粘贴；此前它们落到 noVNC 手里，是 noVNC 拦的
+    if (e.repeat) {
+      e.preventDefault();
+      return;
+    }
+    // 上一次还没等到 paste 又按了一次：上一次按「没有 paste」粘容器剪贴板，按几次就粘几次
+    if (pending) settle(handlers.onPlainPaste);
+    const p: Pending = {
+      timer: win.setTimeout(() => {
+        if (pending === p) settle(handlers.onPlainPaste);
+      }, PASTE_EVENT_WAIT_MS),
+    };
     pending = p;
-    win.setTimeout(() => {
-      if (pending === p) pending = null;
-      if (p.handled) return;
-      if (p.text && handlers.onLocalText(p.text, localIsFresh)) return;
-      handlers.onPlainPaste();
-    }, 0);
+  };
+  // 这次按键有了结论：清掉等待、记下时刻，再执行
+  const settle = (act: () => void) => {
+    if (pending) win.clearTimeout(pending.timer);
+    pending = null;
+    settledAt = Date.now();
+    act();
   };
 
   const onPaste = (e: ClipboardEvent) => {
+    const fromKey = pending !== null;
     // 由我们截下的 Ctrl/Cmd+V 引起的粘贴：一律阻止浏览器默认插入，粘什么只由我们决定。
     // 否则无感模式下焦点在 KasmVNC 的输入框（noVNC_keyboardinput），浏览器会把本机剪贴板文字原样插进去，
     // KasmVNC 再把它当键入发给远端——既改变了粘贴语义，还会把本机剪贴板里的敏感内容打进应用（实测发生过）。
-    if (pending) e.preventDefault();
+    // 等不到 paste 已按容器剪贴板粘过的那次按键，它晚到的 paste（回声）同样拦下，且不再粘第二次。
+    const echo = !fromKey && Date.now() - settledAt < LATE_PASTE_MS;
+    if (fromKey || echo) e.preventDefault();
+    if (echo) return;
     const item = Array.from(e.clipboardData?.items || []).find((i) => i.kind === 'file' && i.type.startsWith('image/'));
     const file = item?.getAsFile();
     if (!file) {
-      if (pending) pending.text = e.clipboardData?.getData('text/plain') || ''; // 交给定时器判断本机 / 容器谁新
+      if (!fromKey) return; // 不是截下的按键引起的（如浏览器菜单里的粘贴）：照旧不管
+      const text = e.clipboardData?.getData('text/plain') || '';
+      // 判断本机 / 容器谁新：本机的新就贴本机文字，否则粘容器剪贴板
+      settle(() => {
+        if (!(text && handlers.onLocalText(text, localIsFresh))) handlers.onPlainPaste();
+      });
       return;
     }
     const sig = `${file.type}:${file.size}`;
     const isNewImage = sig !== lastLocalImage;
     lastLocalImage = sig;
-    if (!localIsFresh && !isNewImage) return; // 同一张旧图、之后在应用里复制过 → 让定时器粘容器剪贴板
+    if (!localIsFresh && !isNewImage) {
+      // 同一张旧图、之后在应用里复制过 → 粘容器剪贴板
+      if (fromKey) settle(handlers.onPlainPaste);
+      return;
+    }
     localIsFresh = true;
     e.preventDefault();
-    if (pending) pending.handled = true;
-    handlers.onImage(file);
+    if (fromKey) settle(() => handlers.onImage(file));
+    else handlers.onImage(file);
   };
 
   const onFocus = () => {
@@ -613,6 +654,8 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
   const uploadBusy = useRef(false);
   const [starting, setStarting] = useState(false);
   const [control, setControl] = useState<{ free: boolean; mine: boolean; holder: string | null } | null>(null);
+  // 本页面已被别处打开的页面接管（同一实例同一时间只在一处显示）：不再显示桌面，等用户点「在这里继续使用」
+  const [superseded, setSuperseded] = useState<Superseded | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false); // 远程页「更多 ⋮」折叠菜单（全部功能收进下拉）
   const [settingsTab, setSettingsTab] = useState<'bg' | 'font'>('bg');
@@ -661,6 +704,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
     setImeText('');
     setProbing(true);
     setMoreOpen(false);
+    setSuperseded(null); // 被接管是按实例算的：换到别的实例先照常连，回来时轮询会再次发现
     recovering.current = false;
   }, [id]);
 
@@ -783,6 +827,8 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
         const r = await api.controlStatus(id);
         if (!alive) return;
         setControl(r);
+        const sup = r.superseded;
+        if (sup) setSuperseded((prev) => prev ?? sup); // 只认第一次，免得每次轮询都重渲染
         if (!r.free && !r.mine) frameRef.current?.blur(); // 只读：移开键盘焦点
       } catch {
         /* ignore */
@@ -795,6 +841,10 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
       window.clearInterval(t);
     };
   }, [showVnc, id]);
+
+  useEffect(() => {
+    if (superseded && id) api.clientLog(id, `本页面已被「${superseded.by}」接管，停止显示桌面`);
+  }, [superseded, id]);
 
   // 续约控制权，节流 2.5s。桌面画面里的真实操作、底部输入条里打字都算（输入条不经过画面，此前不续约，
   // 连着打一会儿字控制权就被别人拿走）。空闲不操作则超时自动释放。
@@ -810,7 +860,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
       /* ignore */
     }
   }, [id]);
-  const readOnly = !!control && !control.free && !control.mine; // 别人在操作：只读
+  const readOnly = !!superseded || (!!control && !control.free && !control.mine); // 别人在操作 / 已被别处接管：只读
 
   // 用户在 VNC 内真实操作（鼠标/键盘/滚轮）时续约控制权（同源 iframe 可监听）。
   // 只读用户的操作已被遮罩拦截/失焦，不会误续约。
@@ -855,15 +905,24 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
     if (!win || !doc) return;
     return installPasteBridge(win, doc, window, {
       onImage: async (file) => {
-        if (pastingImage.current) return;
+        if (pastingImage.current) {
+          toast('上一张图片还在粘贴，请稍候', 'info');
+          return;
+        }
         pastingImage.current = true;
-        toast('正在粘贴本机图片…', 'ok');
         try {
-          await api.pasteImage(id, file);
+          // 先传原图，旧实例 / 反代拒收大图时再压缩重试一次（#165，原因与策略见 pasteImage.ts）
+          toast('正在粘贴本机图片…', 'ok');
+          await pasteImageWithFallback(
+            file,
+            (b) => api.pasteImage(id, b),
+            async (b) => (await fitPasteImage(b, browserImageCodec)).blob,
+            () => toast(`图片较大（${fmtUploadSize(file.size)}），正在压缩后重试…`, 'ok'),
+          );
         } catch (e: any) {
           toast(e?.message || '粘贴图片失败：请确认实例已「升级实例」', 'error');
         } finally {
-          pastingImage.current = false;
+          pastingImage.current = false; // 任何失败都要放开，否则之后的粘贴全被当成「上一张还在粘」吞掉
         }
       },
       // 粘贴容器剪贴板：失败时静默（与以前按键直通 noVNC 一样，不额外打扰）
@@ -917,6 +976,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
   // 仅当本实例处于焦点（标签页可见且窗口聚焦）时出声/收音，失焦立即断开，避免多实例多端串音。
   useEffect(() => {
     if (!showVnc || !id || !soundOn) return; // 声音默认关：未开则完全不连音频桥（回到 1.1.7 无音频的连接行为）
+    if (superseded) return; // 已被别处接管：声音和麦克风跟着桌面一起交出去
     const audio = new VncAudio(id, micOn);
     audioRef.current = audio;
     audio.connect().catch(() => {}); // 加载 socket.io 失败：本次无声，再开一次「声音」会重新加载
@@ -942,7 +1002,7 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
       audioRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [showVnc, id, soundOn]);
+  }, [showVnc, id, soundOn, superseded]);
 
   // 让「点桌面画面」也能解挂起音频出声：浏览器自动播放策略会挂起 AudioContext，需用户手势恢复；但音频桥
   // 的手势监听绑在父窗口上，而用户点的是同源 iframe 内的桌面，事件不冒泡到父窗口 → 故"点画面没用、得重开声音
@@ -972,9 +1032,17 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
   // （旧 ws 已死，重载后干净重连；与 setMode/restartInstance 同理，不会引发新旧 ws 并存卡死 Xvnc）。
   // 与本会话曾撤掉的"激进自动重连"本质不同：那是连接态一抖就重连导致 churn；这里只在【确认致命崩溃】
   // 时重载一次，且 5min 内限 4 次、超限转手动恢复浮层，绝不死循环。
-  const recoverFromFatal = (msg: string) => {
+  const recoverFromFatal = async (msg: string) => {
     if (recovering.current || !id) return;
     recovering.current = true;
+    // 被别处接管后连接被断开，旧客户端可能随即报致命错误：这时整页重载会换个新查看者把对方踢掉、两边互踢，
+    // 所以先问一下面板，被接管了就只盖上「在这里继续使用」
+    const sup = await api.controlStatus(id).then((r) => r.superseded, () => null);
+    if (sup) {
+      setSuperseded(sup);
+      recovering.current = false;
+      return;
+    }
     if (allowAutoRecover(id)) {
       api.clientLog(id, `KasmVNC 致命错误，自动重连：${msg}`);
       toast('桌面连接异常，正在自动重连…', 'error');
@@ -1403,8 +1471,9 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
   const start = async () => {
     setStarting(true);
     try {
-      await api.instanceStart(id);
-      toast('实例已启动', 'ok');
+      const r = await api.instanceStart(id);
+      // 容器不存在时服务端转为后台重新创建（可能要拉镜像）：本页每 3s 刷新状态，建好后自动切换
+      toast(r?.started ? '已开始创建容器…' : '实例已启动', r?.started ? 'info' : 'ok');
       await reload();
     } catch (e: any) {
       toast(e.message || '启动失败', 'error');
@@ -1577,13 +1646,26 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
             </button>
           </div>
         </div>
+      ) : inst.provision?.state === 'creating' ? (
+        <div className="iv-stage iv-center">
+          <div className="iv-notice">
+            <div className="spinner" />
+            <div className="iv-notice-title">实例创建中…</div>
+            <div className="iv-notice-sub">{provisionProgressText(inst.provision)} ——完成后自动刷新，无需手动操作</div>
+          </div>
+        </div>
       ) : offline ? (
         <div className="iv-stage iv-center">
           <div className="iv-notice">
-            <div className="iv-notice-title">{inst.runtime === 'missing' ? '容器尚未创建' : '实例已停止'}</div>
+            <div className="iv-notice-title">
+              {inst.provision?.state === 'failed' ? '实例创建失败' : inst.runtime === 'missing' ? '容器尚未创建' : '实例已停止'}
+            </div>
+            {/* 创建失败（#129）：说清哪一步、为什么、怎么办（原因与建议只下发给管理员） */}
+            {inst.provision?.error && <div className="iv-notice-sub iv-notice-error">{inst.provision.error}</div>}
+            {inst.provision?.hint && <div className="inst-hint iv-notice-hint">{inst.provision.hint}</div>}
             {isAdmin ? (
               <button className="btn btn-primary iv-notice-btn" disabled={starting} onClick={start}>
-                {starting ? '启动中…' : inst.runtime === 'missing' ? '创建并启动' : '启动实例'}
+                {starting ? '启动中…' : inst.provision?.state === 'failed' ? '重试创建' : inst.runtime === 'missing' ? '创建并启动' : '启动实例'}
               </button>
             ) : (
               <div className="iv-notice-sub">请联系管理员启动该实例</div>
@@ -1636,15 +1718,17 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
               旧元素被删时 ws 未必干净关闭 → 实例服务端残留半开连接 → 回到该实例再开新 ws 时新旧并存把 Xvnc 卡死
               （刷新都救不了、要重启容器）。无 key 时切实例只改 src，浏览器会“导航”iframe：旧文档 unload 干净关闭旧 ws，
               再加载新实例。重连仍走整页重载（见 setMode / 重新连接 / restartInstance）。 */}
+          {/* 被别处接管后改成空白页：卸掉 noVNC，停掉它的自动重连（同样只改 src、不加 key） */}
           <iframe
             ref={frameRef}
             className="iv-frame"
-            src={desktopUrl(id)}
+            src={superseded ? 'about:blank' : desktopUrl(id)}
             title={`${appLabel} · 实例桌面`}
             allow="clipboard-read; clipboard-write; microphone; camera; autoplay"
             onLoad={() => {
               setFrameLoaded(true);
               setFrameGen((g) => g + 1); // iframe 页内换文档时也要重挂监听（见 frameGen 定义处）
+              if (superseded) return;
               if (id) api.clientLog(id, 'iframe 已加载（noVNC 页面就绪，开始连 VNC）');
               setTimeout(() => {
                 if (!isTouchDevice()) focusFrame(); // 加载完把键盘焦点交给 VNC（移动端跳过：不自动抢焦点弹输入法）
@@ -1709,7 +1793,25 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
             </div>
           )}
 
-          {control && !control.free && !control.mine && (
+          {superseded && (
+            <div className="iv-lock">
+              <div className="iv-lock-card">
+                <div className="iv-lock-title">已在别处打开</div>
+                <div className="iv-lock-sub">
+                  「{superseded.by}」打开了这个实例。为保证桌面稳定，同一实例同一时间只在一处显示。
+                </div>
+                <button
+                  className="btn btn-primary iv-notice-btn"
+                  onClick={() => window.location.reload()}
+                  title="整页重载、在这里重新连接（另一处会被切到这个提示）"
+                >
+                  在这里继续使用
+                </button>
+              </div>
+            </div>
+          )}
+
+          {!superseded && control && !control.free && !control.mine && (
             <div className="iv-lock">
               <div className="iv-lock-card">
                 <div className="iv-lock-title">「{control.holder}」正在操作</div>
@@ -1898,7 +2000,9 @@ export default function InstanceView({ onOpenMenu }: { onOpenMenu: () => void })
                     }
                   }}
                   placeholder={
-                    readOnly
+                    superseded
+                      ? '这个实例已在别处打开；要在这里用，请点桌面上的「在这里继续使用」'
+                      : readOnly
                       ? `「${control?.holder}」正在操作，你当前为只读；要操作请点桌面上的「申请控制」`
                       : autoEnter
                         ? '中文输入这里 → 回车直接发送到应用（先点好应用的输入框）。Shift+回车换行。'

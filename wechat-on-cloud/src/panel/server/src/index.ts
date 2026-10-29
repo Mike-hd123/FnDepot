@@ -31,6 +31,7 @@ import {
   renameInstance,
   setInstanceIcon,
   setInstanceUsers,
+  setInstanceCreateError,
   publicInstance,
   getDesktopDark,
   setDesktopDark,
@@ -61,6 +62,8 @@ import {
   pruneOldWocImages,
   remoteInstanceImageNewer,
   resolveInstanceImage,
+  describeProvisionError,
+  imagePullProgress,
   removeInstance as removeInstanceContainer,
   instanceRuntime,
   instanceUptimeSec,
@@ -77,6 +80,9 @@ import {
   typeInInstance,
   keyInInstance,
   pasteImageInInstance,
+  PASTE_IMAGE_PNG_MAX,
+  instanceAcceptsLargePng,
+  PASTE_IMAGE_PNG_TOO_BIG,
   pasteTextInInstance,
   listOrphanVolumes,
   listOrphanBindings,
@@ -497,18 +503,64 @@ app.get('/api/instances', async (req, reply) => {
   if (!u) return;
   const visible = userInstances(u);
   const out = await Promise.all(
-    visible.map(async (pub) => {
-      const inst = findInstance(pub.id)!;
+    visible.map(async (inst) => {
       const [runtime, wx, imageVersion] = await Promise.all([
         instanceRuntime(inst),
         wechatStatus(inst),
         instanceImageVersion(inst), // 实例镜像版本（CI label；自构建为短 id）——让用户能自查"到底跑的哪版"
       ]);
-      return { ...pub, runtime, wechat: wx, imageVersion };
+      // 只下发 publicInstance：此前直接展开整条记录，连 kasm 凭据（store 里注明「永不下发前端」）和创建失败的原始报错也带给了浏览器
+      const provision = provisionView(inst, runtime, u.role === 'admin');
+      return { ...publicInstance(inst), runtime, wechat: wx, imageVersion, ...(provision ? { provision } : {}) };
     }),
   );
   return { instances: out };
 });
+
+// ---------- 创建实例（后台进行，#129） ----------
+// 创建要先确保实例镜像在本地：没有就拉（1~2GB，受限网络下几分钟，卡住时要等到停滞超时）。此前创建接口同步等全程：
+// 反代 ~60s 就掐断，前端报个莫名其妙的错；期间卡片只显示「未创建」，实例日志只有「实例创建」加一个 404，
+// 失败原因只进了面板全局日志，用户无从下手（#129）。现在按 R4：登记后立即返回，后台建容器；
+// 卡片经 provision 字段显示「创建中（拉取镜像 已下载 N MB）」，失败则显示原因、怎么办和「重试创建」，原因同时写进该实例的持久日志。
+const provisioning = new Map<string, number>(); // 实例 id → 本次创建开始时间
+const PENDING_CREATE = {
+  summary: '上次创建没有完成（创建途中面板重启了）',
+  advice: '点卡片上的「重试创建」即可，数据不受影响。',
+};
+function startProvision(inst: Instance, what: '创建' | '重试创建'): void {
+  if (provisioning.has(inst.id)) return; // 已在创建中：重复点击不再叠一次
+  provisioning.set(inst.id, Date.now());
+  // 先落一个「未完成」占位：面板若在创建途中重启，重启后卡片能说清这次创建没完成，启动时也不会自动重拉镜像拖住面板
+  setInstanceCreateError(inst.id, PENDING_CREATE);
+  appendInstanceLog(inst.id, `开始${what}容器（本地没有实例镜像时会先拉取，首次可能要几分钟）`);
+  void (async () => {
+    try {
+      await runInstance(inst);
+      setInstanceCreateError(inst.id, null);
+      appendPanelLog('INFO', `${what}实例「${inst.name}」(id=${inst.id}) 成功`);
+    } catch (e: any) {
+      const d = describeProvisionError(e);
+      setInstanceCreateError(inst.id, d);
+      appendInstanceLog(inst.id, `${what}失败：${d.summary}\n  怎么办：${d.advice}\n  原始错误：${d.raw}`);
+      appendPanelLog('ERROR', `${what}实例「${inst.name}」(id=${inst.id}) 失败：${d.summary}：${d.raw}`);
+    } finally {
+      provisioning.delete(inst.id);
+    }
+  })();
+}
+function provisionView(inst: Instance, runtime: string, admin: boolean) {
+  const since = provisioning.get(inst.id);
+  if (since) {
+    const pull = imagePullProgress(); // 拉取是全局的一份：创建期间有拉取在跑，就是这次创建在等它
+    return pull
+      ? { state: 'creating' as const, since, step: 'pulling' as const, downloadedMB: pull.downloadedMB, totalMB: pull.totalMB }
+      : { state: 'creating' as const, since, step: 'container' as const };
+  }
+  // 容器其实在（比如创建途中面板重启、但容器已经建好）就不算失败
+  if (!inst.createError || runtime !== 'missing') return null;
+  // 原因里可能带镜像源地址、宿主路径等部署细节：只给管理员看，子账号只知道「创建失败、请联系管理员」
+  return { state: 'failed' as const, at: inst.createErrorAt, ...(admin ? { error: inst.createError, hint: inst.createErrorHint } : {}) };
+}
 
 // 用户自助「卡死自愈」：当客户端检测到 VNC 多次干净重连仍连不上（多半是实例 KasmVNC 的 ws 接收器卡死——
 // nginx 仍能serve 静态页让 noVNC 显示"正在连接"，但新 ws 永远 accept 不了，刷新/重启面板都无效、只能重启容器），
@@ -580,20 +632,15 @@ app.post('/api/admin/instances', async (req, reply) => {
     }
     reuseVolumeName = reuseVolume;
   }
-  const inst = createInstance(instName, admin.id, allowedUserIds, reuseVolumeName, type, dataDirPath);  appendPanelLog(
+  const inst = createInstance(instName, admin.id, allowedUserIds, reuseVolumeName, type, dataDirPath);
+  appendPanelLog(
     'INFO',
     `创建实例「${inst.name}」(${type}, id=${inst.id}) by ${admin.username}${reuseVolumeName ? ` · 复用卷 ${reuseVolumeName}` : ''}${dataDirPath ? ` · 数据目录 ${dataDirPath}` : ''} → 开始创建容器（镜像缺失会自动拉取，首次较慢）`,
   );
   appendInstanceLog(inst.id, `实例创建（${type}）by ${admin.username}`);
-  try {
-    await runInstance(inst);
-  } catch (e: any) {
-    removeInstanceRecord(inst.id); // 容器起不来则回滚登记
-    appendPanelLog('ERROR', `创建实例「${inst.name}」(id=${inst.id}) 失败：${e?.message || e}`);
-    return reply.code(500).send({ error: '创建容器失败：' + (e?.message || e) });
-  }
-  appendPanelLog('INFO', `创建实例「${inst.name}」(id=${inst.id}) 成功`);
-  return { instance: publicInstance(inst) };
+  // 不再同步等容器建好、失败也不再回滚登记（#129）：后台创建，失败时卡片显示原因 + 重试，见 startProvision
+  startProvision(inst, '创建');
+  return { instance: publicInstance(inst), started: true };
 });
 
 // 列出"未被任何实例引用的 woc-data-* 数据卷"。删除实例时默认保留卷（聊天记录），但 panel 里
@@ -865,11 +912,17 @@ app.delete('/api/admin/instances/:id', async (req, reply) => {
   const purge = (req.query as any)?.purge === '1' || (req.query as any)?.purge === 'true';
   const inst = findInstance(id);
   if (!inst) return reply.code(404).send({ error: '实例不存在' });
+  // 后台创建还在跑时删掉登记，它稍后照样会建出一个没人管的容器：等创建结束（成功或失败）再删
+  if (provisioning.has(id)) {
+    return reply.code(409).send({ error: '实例正在创建，请等它结束后再删除（拉取卡住时几分钟内会自动判定失败）' });
+  }
   appendPanelLog('INFO', `删除实例「${inst.name}」(id=${id})${purge ? ' · 同时清除数据卷' : ' · 保留数据卷'}`);
   const wasDataDir = inst.dataDir || '';
   await removeInstanceContainer(inst, purge);
   removeInstanceRecord(id);
   controlHolders.delete(id);
+  currentViewers.delete(id);
+  supersededViewers.delete(id);
   // 删完立刻强制重扫孤儿目录（带上被删实例的父目录——它已不在现存实例列表里，
   // 不追加的话若它是该父目录下最后一个引用，扫描集合会漏掉这个父目录）。
   await listOrphanBindings(true, wasDataDir ? [wasDataDir] : undefined).catch(() => undefined);
@@ -903,6 +956,13 @@ app.post('/api/admin/instances/:id/start', async (req, reply) => {
   if (!requireAdmin(req, reply)) return;
   const inst = findInstance((req.params as any).id);
   if (!inst) return reply.code(404).send({ error: '实例不存在' });
+  // 容器不存在（创建失败后点「重试创建」/ 容器被手动删了）= 重新创建，可能要拉镜像：和新建一样后台进行、立即返回
+  if (provisioning.has(inst.id)) return { ok: true, started: true }; // 已在创建中：重复点击不再叠一次
+  if ((await instanceRuntime(inst)) === 'missing') {
+    appendPanelLog('INFO', `重新创建实例「${inst.name}」(id=${inst.id}) 的容器`);
+    startProvision(inst, '重试创建');
+    return { ok: true, started: true };
+  }
   try {
     await ensureRunning(inst);
     appendPanelLog('INFO', `启动实例「${inst.name}」(id=${inst.id})`);
@@ -1143,6 +1203,8 @@ app.post('/api/instances/:id/control/beat', async (req, reply) => {
   if (!u) return;
   const id = (req.params as any).id;
   if (!userCanAccess(u, id)) return reply.code(403).send({ error: '无权访问该实例' });
+  const sup = supersededBy(id, viewerOf(req));
+  if (sup) return reply.code(409).send(supersededBusy(sup));
   const now = Date.now();
   const h = controlHolders.get(id);
   if (!h || now - h.at > CONTROL_TTL || h.userId === u.id) {
@@ -1158,9 +1220,11 @@ app.get('/api/instances/:id/control', async (req, reply) => {
   if (!u) return;
   const id = (req.params as any).id;
   if (!userCanAccess(u, id)) return reply.code(403).send({ error: '无权访问该实例' });
+  // 顺带告诉前端：这个页面是否已被别处打开的页面接管（见下方「单连接」）
+  const superseded = supersededBy(id, viewerOf(req));
   const h = controlHolders.get(id);
-  if (!h || Date.now() - h.at > CONTROL_TTL) return { free: true, mine: false, holder: null };
-  return { free: false, mine: h.userId === u.id, holder: h.username };
+  if (!h || Date.now() - h.at > CONTROL_TTL) return { free: true, mine: false, holder: null, superseded };
+  return { free: false, mine: h.userId === u.id, holder: h.username, superseded };
 });
 
 // 主动接管（"申请控制"）：强制把操作权抢过来。
@@ -1169,18 +1233,82 @@ app.post('/api/instances/:id/control/take', async (req, reply) => {
   if (!u) return;
   const id = (req.params as any).id;
   if (!userCanAccess(u, id)) return reply.code(403).send({ error: '无权访问该实例' });
+  const sup = supersededBy(id, viewerOf(req));
+  if (sup) return reply.code(409).send(supersededBusy(sup));
   controlHolders.set(id, { userId: u.id, username: u.username, at: Date.now() });
   return { mine: true, holder: u.username };
 });
+
+// ---------- 单连接：同一实例同一时间只在一处显示（新打开的接管） ----------
+// KasmVNC 的编码缓存（EncCache）只在 ≥2 条连接同时在线时启用，而它会泄漏内存（kasmtech/KasmVNC#371：两条连接、
+// 画面滚动 1 分钟 88→260 MiB；修复截至 1.5.2 还没进正式版）；历史上「新旧两条 ws 并存把 Xvnc 卡死」也出在多连接。
+// 故每个实例同一时间只保留一条桌面连接：实例镜像里 Xvnc 带 -NeverShared（新连接一到就断开旧的），面板这里再按
+// 「查看者」（每次整页加载生成的 VIEWER_ID，随 ws 地址和输入请求带上）把被接管的页面挡在外面——否则它的 noVNC
+// 2 秒后自动重连，又把新页面踢掉，两边无限互踢。被接管的页面经控制权轮询得知后盖上「在这里继续使用」，点了才整页
+// 重载、换个新查看者抢回来，绝不自动抢。面板这层对旧实例镜像（Xvnc 还是 -AlwaysShared）同样生效：接管时直接断开旧连接。
+type Viewer = { id: string; userId: string; username: string; sockets: Set<Socket> };
+type Superseded = { by: string; at: number };
+const currentViewers = new Map<string, Viewer>(); // 实例 id → 当前显示桌面的页面
+const supersededViewers = new Map<string, Map<string, Superseded>>(); // 实例 id → 被接管的页面 → 被谁、何时接管
+const VIEWER_ID_RE = /^[A-Za-z0-9_-]{8,64}$/;
+const SUPERSEDED_KEEP = 32; // 每个实例最多记这么多被接管的页面；忘掉最旧的也只是让它能再连一次、把人踢一次
+
+function viewerOf(req: FastifyRequest): string | null {
+  const v = req.headers['x-woc-viewer'] ?? (req.query as any)?.v;
+  const s = Array.isArray(v) ? v[0] : v;
+  return typeof s === 'string' && VIEWER_ID_RE.test(s) ? s : null;
+}
+function supersededBy(instId: string, viewer: string | null): Superseded | null {
+  return (viewer && supersededViewers.get(instId)?.get(viewer)) || null;
+}
+const supersededBusy = (s: Superseded) => ({
+  error: `「${s.by}」已在别处打开这个实例，这个页面不能再操作；要在这里用，请点「在这里继续使用」`,
+  code: 'superseded',
+});
+
+// 只用来在提示里说清是哪台设备，不做任何判断
+function deviceLabel(ua: string | undefined): string {
+  const s = ua || '';
+  const os = /iPhone/.test(s) ? 'iPhone' : /iPad/.test(s) ? 'iPad' : /Android/.test(s) ? 'Android'
+    : /Macintosh|Mac OS X/.test(s) ? 'Mac' : /Windows/.test(s) ? 'Windows' : /Linux/.test(s) ? 'Linux' : '';
+  const br = /Edg\//.test(s) ? 'Edge' : /Firefox\//.test(s) ? 'Firefox' : /Chrome\//.test(s) ? 'Chrome' : /Safari\//.test(s) ? 'Safari' : '';
+  return [os, br].filter(Boolean).join(' · ') || '另一台设备';
+}
+
+// 新的桌面连接（已过鉴权）：换了页面就把之前那个页面记为「被接管」并断开它的连接；同一页面断线重连照常放行。
+function attachViewer(instId: string, viewer: string, u: User, device: string, socket: Socket): void {
+  let cur = currentViewers.get(instId);
+  if (!cur || cur.id !== viewer) {
+    if (cur) {
+      let m = supersededViewers.get(instId);
+      if (!m) supersededViewers.set(instId, (m = new Map()));
+      m.set(cur.id, { by: `${u.username}（${device}）`, at: Date.now() });
+      if (m.size > SUPERSEDED_KEEP) m.delete(m.keys().next().value!);
+      for (const s of cur.sockets) s.destroy();
+      appendInstanceLog(instId, `[vnc] ${u.username}（${device}）打开了桌面，接管了 ${cur.username} 的页面（同一实例同一时间只在一处显示）`);
+    }
+    cur = { id: viewer, userId: u.id, username: u.username, sockets: new Set() };
+    currentViewers.set(instId, cur);
+    // 操作权跟着显示走：否则新页面要等旧页面的心跳过期（CONTROL_TTL）才能操作
+    controlHolders.set(instId, { userId: u.id, username: u.username, at: Date.now() });
+  }
+  const c = cur;
+  c.sockets.add(socket);
+  socket.once('close', () => c.sockets.delete(socket));
+}
 
 // 输入类接口（/type、/key、/paste-text、/paste-image）同样受控制权约束：此前只在前端盖只读遮罩，只读的一方
 // 仍能用底部输入条、功能键、粘贴把字送进去，和正在操作的人打架。别人持有（TTL 内）就拒绝；否则视同一次操作，
 // 认领 / 续约——转发输入条打字不经过桌面画面，此前不续约，连着打一会儿字控制权就被别人拿走了。
 // 这是协作上的防打架，不是用户之间的安全边界（有访问权限的人本就能直接操作桌面）。
-function claimControl(u: User, id: string): string | null {
+// 已被别处接管的页面（见「单连接」）一律拒绝：同一账号在两处打开时控制权同属一人，挡不住它。
+// 返回拒绝的响应体，null = 可以操作。
+function claimControl(u: User, id: string, req: FastifyRequest): object | null {
+  const sup = supersededBy(id, viewerOf(req));
+  if (sup) return supersededBusy(sup);
   const now = Date.now();
   const h = controlHolders.get(id);
-  if (h && h.userId !== u.id && now - h.at <= CONTROL_TTL) return h.username;
+  if (h && h.userId !== u.id && now - h.at <= CONTROL_TTL) return controlBusy(h.username);
   controlHolders.set(id, { userId: u.id, username: u.username, at: now });
   return null;
 }
@@ -1194,8 +1322,8 @@ app.post('/api/instances/:id/type', async (req, reply) => {
   if (!userCanAccess(u, id)) return reply.code(403).send({ error: '无权访问该实例' });
   const { text } = (req.body as any) ?? {};
   if (!text || typeof text !== 'string' || text.length > 500) return reply.code(400).send({ error: '文字为空或过长' });
-  const holder = claimControl(u, id);
-  if (holder) return reply.code(409).send(controlBusy(holder));
+  const busy = claimControl(u, id, req);
+  if (busy) return reply.code(409).send(busy);
   try {
     await typeInInstance(findInstance(id)!, text);
     return { ok: true };
@@ -1214,15 +1342,25 @@ app.post('/api/instances/:id/paste-image', async (req, reply) => {
   if (!userCanAccess(u, id)) return reply.code(403).send({ error: '无权访问该实例' });
   const inst = findInstance(id);
   if (!inst) return reply.code(404).send({ error: '实例不存在' });
-  const holder = claimControl(u, id);
-  if (holder) return reply.code(409).send(controlBusy(holder));
+  const busy = claimControl(u, id, req);
+  if (busy) return reply.code(409).send(busy);
   const mime = String((req.query as any)?.type || '').toLowerCase();
+  // PNG 超过 1MB 会卡死【旧】实例的容器剪贴板（见 docker.ts PASTE_IMAGE_PNG_MAX）。已修复的实例（新镜像）放行原图；
+  // 旧实例照声明长度当场拒收（不必把整张图收进内存），并回 code=png_too_big，前端据此压缩后重试
+  const isPng = mime === 'image/png';
+  const largeOk = isPng && (await instanceAcceptsLargePng(inst));
+  const limit = isPng && !largeOk ? PASTE_IMAGE_PNG_MAX : 64 * MiB;
   try {
-    const body = await readBody(req, 64 * MiB);
+    const body = await readBody(req, limit);
     if (!body.length) return reply.code(400).send({ error: '空图片' });
-    await pasteImageInInstance(inst, mime, body);
+    await pasteImageInInstance(inst, mime, body, largeOk);
     return { ok: true };
   } catch (e: any) {
+    if (isPng && !largeOk && (Number(e?.statusCode) === 413 || e?.message === PASTE_IMAGE_PNG_TOO_BIG)) {
+      return reply.code(413).send({ error: PASTE_IMAGE_PNG_TOO_BIG, code: 'png_too_big' });
+    }
+    // 粘贴前确认剪贴板读不出这张图（仍会卡住）：同样让前端压缩重试
+    if (/容器剪贴板没有响应/.test(e?.message || '')) return reply.code(503).send({ error: e.message, code: 'clipboard_stuck' });
     return sendUploadError(reply, e, '粘贴图片失败');
   }
 });
@@ -1236,8 +1374,8 @@ app.post('/api/instances/:id/paste-text', { bodyLimit: 2 * 1024 * 1024 }, async 
   if (!userCanAccess(u, id)) return reply.code(403).send({ error: '无权访问该实例' });
   const { text } = (req.body as any) ?? {};
   if (!text || typeof text !== 'string' || text.length > 200_000) return reply.code(400).send({ error: '文字为空或过长' });
-  const holder = claimControl(u, id);
-  if (holder) return reply.code(409).send(controlBusy(holder));
+  const busy = claimControl(u, id, req);
+  if (busy) return reply.code(409).send(busy);
   try {
     await pasteTextInInstance(findInstance(id)!, text);
     return { ok: true };
@@ -1253,8 +1391,8 @@ app.post('/api/instances/:id/key', async (req, reply) => {
   if (!userCanAccess(u, id)) return reply.code(403).send({ error: '无权访问该实例' });
   const { key } = (req.body as any) ?? {};
   if (!key || typeof key !== 'string') return reply.code(400).send({ error: '按键名为空' });
-  const holder = claimControl(u, id);
-  if (holder) return reply.code(409).send(controlBusy(holder));
+  const busy = claimControl(u, id, req);
+  if (busy) return reply.code(409).send(busy);
   try {
     await keyInInstance(findInstance(id)!, key);
     return { ok: true };
@@ -1819,9 +1957,13 @@ proxy.on('proxyReqWs', (proxyReq, req, socket) => {
   // 卡死时这条不会出现（接收器停止 accept），即可定位"卡在面板→实例之间还是实例内部"。
   const instId = (req as any)._wocInstId;
   if (instId) {
-    proxyReq.on('upgrade', () => {
+    proxyReq.on('upgrade', (_res, proxySocket: Socket) => {
       trackActiveVncSocket(instId, req.socket as Socket);
       appendInstanceLog(instId, '[vnc] 上游已接受(101) · 桌面连接建立');
+      // 客户端这侧一断，上游这侧跟着断。http-proxy 只在客户端「正常结束 / 出错」时才关上游，客户端套接字被
+      // destroy（keepalive 判死、单连接接管时面板主动断开）时上游原样留着——实例里的 Xvnc 照旧当它在线：
+      // 旧镜像（-AlwaysShared）上就是两条连接并存，正是要避免的泄漏 / 卡死条件
+      (req.socket as Socket).once('close', () => proxySocket.destroy());
     });
     // 只盯 VNC 连接本身（/websockify）；音频桥等其它 ws 不计
     if ((req.url || '').startsWith('/websockify')) {
@@ -2013,6 +2155,24 @@ app.server.on('upgrade', (req: IncomingMessage, socket: Socket, head: Buffer) =>
     return;
   }
   const inst = findInstance(parsed.id)!;
+  // 桌面连接（/websockify）带着页面的查看者标识（woc_viewer，见「单连接」）：取出来、从转发地址里去掉。
+  // 已被别处接管的页面（它的 noVNC 在自动重连）直接拒绝，免得把正在用的那一处踢掉；音频桥等其它 ws 不参与。
+  let viewer: string | null = null;
+  const isVnc = parsed.rest.startsWith('/websockify');
+  if (isVnc) {
+    const q = new URL(parsed.rest, 'http://x');
+    const v = q.searchParams.get('woc_viewer');
+    q.searchParams.delete('woc_viewer');
+    parsed.rest = q.pathname + q.search;
+    viewer = v && VIEWER_ID_RE.test(v) ? v : null;
+    if (supersededBy(inst.id, viewer)) {
+      if (!wsRejectThrottled(inst.id, 'superseded')) {
+        appendInstanceLog(inst.id, '[vnc] 已被别处接管的页面在自动重连，已拒绝（该页面会提示「在这里继续使用」）');
+      }
+      socket.end('HTTP/1.1 409 Conflict\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+      return;
+    }
+  }
   req.url = parsed.rest;
   (req as any)._wocAuth = basicAuth(inst);
   (req as any)._wocInstId = inst.id;
@@ -2020,6 +2180,8 @@ app.server.on('upgrade', (req: IncomingMessage, socket: Socket, head: Buffer) =>
   // 与实例容器内 KasmVNC 的 "got client connection" 按时间对齐，即可看出卡在哪一段。
   const ip = (req.socket && req.socket.remoteAddress) || '?';
   const uname = (u as any).username || '?';
+  // 没带标识的（面板升级前打开、还没刷新的旧页面）每条连接当一个新页面：能接管，但挡不住它重连
+  if (isVnc) attachViewer(inst.id, viewer || `anon-${randomUUID()}`, u, deviceLabel(req.headers['user-agent']), socket);
   appendInstanceLog(inst.id, `[vnc] 连接尝试 user=${uname} ip=${ip}`);
   // 客户端侧 TCP keepalive（与上游侧成对，见 proxy.on('open')）：及时回收断网客户端留下的半开死连接
   try {
@@ -2048,8 +2210,19 @@ await resolveInstanceImage().catch(() => {});
 // 探测面板网络 + 重启后把已登记实例的容器拉起来
 await ensureNetwork().catch(() => {});
 for (const pub of listInstances()) {
+  const inst = findInstance(pub.id)!;
+  // 上次创建没成功的实例不在这里自动重试：重试多半又要拉镜像，会把面板开始监听拖上好几分钟（期间整个面板打不开）。
+  // 卡片会显示「创建失败」，等管理员点重试；容器其实已经建好了（创建途中面板重启）就清掉标记照常拉起。
+  if (inst.createError) {
+    if ((await instanceRuntime(inst)) === 'missing') {
+      appendPanelLog('WARN', `实例「${inst.name}」(id=${inst.id}) 上次创建没成功（${inst.createError}），启动时不自动重试，等管理员在卡片上点「重试创建」`);
+      if (inst.createError === PENDING_CREATE.summary) appendInstanceLog(inst.id, `${PENDING_CREATE.summary}，等管理员点「重试创建」`);
+      continue;
+    }
+    setInstanceCreateError(inst.id, null);
+  }
   try {
-    await ensureRunning(findInstance(pub.id)!);
+    await ensureRunning(inst);
   } catch (e: any) {
     app.log.warn(`[instance] 启动实例 ${pub.id} 失败: ${e?.message || e}`);
   }

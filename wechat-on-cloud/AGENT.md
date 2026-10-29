@@ -3,7 +3,7 @@
 > 项目说明见 [README.md](./README.md)。本文件只讲 agent 该做什么 / 红线 / 坑。
 
 ## 定位
-上游 [Gloridust/WechatOnCloud](https://github.com/Gloridust/WechatOnCloud) 的 fnOS 原生发行 fork：NAS 上跑微信的 Web 面板（Node.js + dockerode 管理微信实例容器）。当前发布 **1.5.2-2**（面板自报 `WOC_VERSION` 跟上游语义化版本，与飞牛包版本解耦），面板端口 8080。
+上游 [Gloridust/WechatOnCloud](https://github.com/Gloridust/WechatOnCloud) 的 fnOS 原生发行 fork：NAS 上跑微信的 Web 面板（Node.js + dockerode 管理微信实例容器）。当前发布 **1.6.0-2**（面板自报 `WOC_VERSION` 强制跟 fnOS 包版本，去 `-N` 本地后缀 → 1.6.0；1.6.0-2 起不再接受 wizard 旧 env 覆盖），面板端口 8080。
 
 ## 数据边界（改脚本前必读，2026-10-15 share 合规修复后）
 两类数据，**别混**：

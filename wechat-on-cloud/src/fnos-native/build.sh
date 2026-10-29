@@ -53,7 +53,10 @@ if [ "$FROM_SOURCE" = 1 ]; then
   APP_MD5="$(md5sum "$APP_SRC" | awk '{print $1}')"
   # manifest 工作副本: checksum 改写为 app.new.tgz 的 md5（定档 manifest 不动）
   MAN_TMP="$(mktemp)"
-  sed "s/^checksum[[:space:]]*=.*/checksum                    = $APP_MD5/" \
+  # ⚠️ 用 \1 回captured 前缀，保留 manifest 原有「checksum<空格>= 」列对齐：旧写法硬编码 20 个空格，
+  #    而定档 manifest 这行是 19 个空格（与上面 version 行的等号列对齐），导致 --from-source 与默认
+  #    路径产出的 fpk 差 1 字节、sha 不同（1.6.0-1 实测）。改后两条路径逐字节一致。
+  sed -E "s/^(checksum[[:space:]]*=).*/\1 $APP_MD5/" \
       "$NATIVE_DIR/manifest" > "$MAN_TMP"
   MANIFEST_SRC="$MAN_TMP"
   echo "from-source 模式: app.new.tgz md5=$APP_MD5 (checksum 已同步, 定档未动)"
@@ -92,7 +95,11 @@ fi
 # $WORK/app 是定档 app.tgz 解出的字节原样载荷，不归源码管：1.5.2-1 就已内含
 # server/src/docker.ts.bak_20261012_0657 —— 清它要改定档字节并重算 manifest checksum
 # （属需装机验证的变更），留到下次重建 app.tgz 一并做。故这里只 WARN，不阻断构建。
-APPBAK="$(tar tzf "$APP_SRC" 2>/dev/null | grep -E '\.bak(\.|_|$)|\.orig|~$' | head -5)"
+# ⚠️ 末尾 `|| true` 必需：本脚本开了 set -o pipefail，而 --from-source 用的是全量重建的
+#    app.new.tgz（build-app.sh 已跳过 *.bak_*/.pyc），里面【没有】备份文件 → grep 无匹配退 1
+#    → 命令替换返回 1 → set -e 静默中止（1.6.0-1 首建时就是这样一声不响 exit 1）。
+#    没有备份文件是本链路期望的正常状态，不是错误。
+APPBAK="$( { tar tzf "$APP_SRC" 2>/dev/null | grep -E '\.bak(\.|_|$)|\.orig|~$' | head -5; } || true)"
 if [ -n "$APPBAK" ]; then
   echo "WARN: 定档 app.tgz 内有历史备份文件（本轮不阻断，下次重建 app.tgz 时清理）:" >&2
   echo "$APPBAK" >&2
