@@ -1,6 +1,0 @@
-app/config/
-app/emby-in-one
-app/gateway/__pycache__/
-app/ui/
-*.fpk
-*.fpk
