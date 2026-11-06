@@ -8,14 +8,15 @@
 | 目录 | 应用 | 当前版本 | 上游 | 子 AGENT.md |
 |---|---|---|---|---|
 | `wechat-on-cloud/` | 云微(飞牛云微信) | 1.5.1-1 | Gloridust/WechatOnCloud | [AGENT.md](./wechat-on-cloud/AGENT.md) |
-| `hyatlas/` | HyAtlas(混元记忆) | 4.1.1-8 | tuancookiez-hub/HyAtlas-Memory | [AGENT.md](./hyatlas/AGENT.md) |
-| `octopus/` | Octopus(LLM 网关) | 0.13.8-1 | bestruirui/octopus | [AGENT.md](./octopus/AGENT.md) |
-| `ezbookkeeping/` | EZ记账 | 2.0.1-1 | mayswind/ezbookkeeping | [AGENT.md](./ezbookkeeping/AGENT.md) |
+| `hyatlas/` | HyAtlas(混元记忆) | 5.0.0-1 | tuancookiez-hub/HyAtlas-Memory | [AGENT.md](./hyatlas/AGENT.md) |
 | `vikunja/` | 待办(Vikunja) | 2.7.0-1 | go-vikunja/vikunja | [AGENT.md](./vikunja/AGENT.md) |
 | `emby-in-one/` | Emby | 1.4.4-4 | ArizeSky/Emby-In-One (GPL-3.0) | [AGENT.md](./emby-in-one/AGENT.md) |
 | `app-template/` | 打包模板（非应用） | — | — | [AGENT.md](./app-template/AGENT.md) |
 
 > **fluxor 已 2026-09-22 全量下线**（目录/commit/fnpack.json 记录均已清空），后续统一用官方版，勿在此仓库 fork。
+> **octopus 已 2026-11-05 退役**（LLM 网关由 Agent2API 接管，目录/fnpack.json 条目已删；hyatlas 的 master_key 兜底逻辑保留——找不到 octopus 会自动跳过，不影响运行）。
+> **ezbookkeeping 已 2026-11-06 退役**（记账转 MMH，目录/fnpack.json 条目已删；EZ 已停用）。
+> **emby-in-one 已 2026-11-05 彻底下架**（由 OpenList 替代，commit 6ed0ae0）。
 
 ## 目录约定
 

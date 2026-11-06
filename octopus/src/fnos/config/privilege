@@ -1,8 +1,0 @@
-{
-    "defaults":
-    {
-        "run-as": "root"
-    },
-    "username": "octopus",
-    "groupname": "octopus"
-}

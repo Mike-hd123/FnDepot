@@ -1,7 +1,7 @@
 # app-template — fnOS 原生应用打包标准模板
 
 > **归属**：本模板住在 FnDepot 仓库根（与全部应用源码同家），**不在 fnpack.json 商店索引、不打包**；用法知识索引在 Hermes 技能 `fnos-app-package/SKILL.md`。
-> 从 hyatlas / octopus / wechat-on-cloud 现役结构提炼的开箱即用模板。
+> 从 hyatlas / wechat-on-cloud / vikunja 现役结构提炼的开箱即用模板。
 > 复制本目录 → 全局替换占位符 `<appname>` / `<share名>`（= `config/resource` 里 `data-share.shares[].name`，四个脚本与 resource 必须一致）/ `<上游版本>-<本地版本号>` / `<PORT>` / `<显示名>` / `<上游org>/<上游repo>` → 按 build.sh 注释填应用内容 → 打包。
 
 ## 目录结构

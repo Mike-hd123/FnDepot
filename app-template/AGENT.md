@@ -3,7 +3,7 @@
 > 项目说明见 [README.md](./README.md)。本文件只讲 agent 该做什么 / 红线 / 坑。
 
 ## 定位
-fnOS 原生应用打包**标准模板**（非应用）：从 hyatlas / octopus / wechat-on-cloud 现役结构提炼。住 FnDepot 仓库根，**不进 fnpack.json 索引、不打 fpk**。
+fnOS 原生应用打包**标准模板**（非应用）：从 hyatlas / wechat-on-cloud / vikunja 现役结构提炼。住 FnDepot 仓库根，**不进 fnpack.json 索引、不打 fpk**。
 
 ## 用法
 新应用上架 = 复制本目录 → 全局替换占位符 `<appname>` / `<上游版本>-<本地版本号>` / `<PORT>` / `<显示名>` / `<上游org>/<上游repo>` → 按 build.sh 注释填内容 → `fnpack build`。
