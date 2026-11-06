@@ -1,7 +1,7 @@
 appname                    = vikunja
-version                    = 2.7.1-2
+version                    = 2.8.0-1
 display_name               = 待办
-desc                       = 自托管待办管理面板 —— Vikunja v2.7.1，Go 单二进制静态链接，SQLite 存储，原生宿主机运行。桌面/手机统一走 /app/vikunja 网关 socket（剥前缀反代 + 前端 router base 注入）。Hermes 全自动读写（API token）。
+desc                       = 自托管待办管理面板 —— Vikunja v2.8.0，Go 单二进制静态链接，SQLite 存储，原生宿主机运行。桌面/手机统一走 /app/vikunja 网关 socket（剥前缀反代 + 前端 router base 注入）。Hermes 全自动读写（API token）。
 platform                   = x86
 source                     = thirdparty
 maintainer                 = kolaente
@@ -16,7 +16,9 @@ service_port               = 3456
 desktop_uidir              = ui
 desktop_applaunchname      = vikunja.panel
 disable_authorization_path = false
-changelog                  = """2.7.1-2（2026-10-29）：迁移脚本数据安全修复——WAL 模式下 db-wal/db-shm 必须与主库一起搬（2026-10-28 实测：只拷主库丢未 checkpoint 写入 22→10，本次经源保留+手工 wal/shm 合并恢复）。成品 2.7.1-1 未含此修复；2.7.1-2 起 install/upgrade_callback 均带 wal/shm 拷贝。本机现役 2.7.1-1 数据已合并完好，无需重装。
+changelog                  = """2.8.0-1（2026-11-06）：同步上游 v2.8.0（340 commits：75 features / 140 fixes / 33 依赖升级，go 1.27.3）。19 个安全修复（3 高 11 中 5 低）全部随升级落地——任意文件读取+admin bot（GHSA-fppf-ghrf-8wp7）、逾期 webhook 泄露他人私有项目（GHSA-pp3p-qw5m-rgm2）、SSO 邮箱兜底接管账号（GHSA-8pm4-w983-mx58）、CalDAV/导入导出 DoS 一批、2FA 重放等。新功能：任务/项目回收站（删除可撤销，30 天后彻底删，本地实测 /api/v2/health 200）；OIDC 账号显式绑定替代 email/username fallback（两者已 deprecated，本机 config.yml 未使用零影响）；teams 改从 providers 标准 groups claim（本机无 SSO 不涉及）；失败 10 次账号锁定；Quick Add Magic 解析 in two weeks；提醒改跟随任务订阅状态。⚠️ service.JWTSecret 本版起 deprecated（warn 提示改用 service.secret）——本包生成的 config.yml 用 JWTSecret，功能不受影响，下个大版本前迁移；非结构性改动，打包层暂不动。本地打包层零变更：sidecar v9/v10 四个改写锚点在 2.8.0 前端产物逐字节实测全部命中（router base history:X(`/`) x1、vite preload return`/`+e x1、CSS url(/assets/ x9、HTML window.API_URL 注入 x1 + 56 处绝对引用加前缀），前端 base 推导正则 /\/api\/v[12]$/ 原样存在（注入 /app/vikunja/api/v1 仍解析为 /app/vikunja/api/v2）；净室实测官方 2.8.0 二进制空库起服务零迁移报错。二进制=上游官方 linux-amd64-full 原样（zip sha256 0b6ba293…、ELF sha256 e445714c…，静态链接未重编译）。
+
+2.7.1-2（2026-10-29）：迁移脚本数据安全修复——WAL 模式下 db-wal/db-shm 必须与主库一起搬（2026-10-28 实测：只拷主库丢未 checkpoint 写入 22→10，本次经源保留+手工 wal/shm 合并恢复）。成品 2.7.1-1 未含此修复；2.7.1-2 起 install/upgrade_callback 均带 wal/shm 拷贝。本机现役 2.7.1-1 数据已合并完好，无需重装。
 
 2.7.1-1（2026-10-28）：同步上游 v2.7.1（200 commits）。①头像/背景图管线重构：头像统一存为居中正方形（breaking）、登录后台同步 OIDC/LDAP 头像、解码内存上限、坏图拒绝 400、忙解码 4037、替换头像旧文件删除时机修复、文件存储失败即删行；②安全加固一批：TOTP 启用/关闭需当前密码或通行码、webhook 按 route 判权（task 事件按存储 task 路由、payload 以 webhook 创建者身份加载）、已吊销会话的 JWT 在 HTTP 路径拒绝、kanban 只能移入本项目视图的桶、团队自移除需成员身份、bot 凭据随属主失活、账号令牌放 email 链接 fragment、敏感操作按用户节流密码复检、本地文件 0600/0700、dump 归档 0600、导出残档清理、上游 systemd unit UMask=0077（本包 unit 由 cmd/main 自管，不受影响）；③MCP：新增 filter_syntax 工具与资源、read 工具只返回请求字段；④任务：月重复任务跨月日期钳制 #4107、批量更新不误清负责人/提醒/收藏、无字段批量更新拒绝；⑤筛选：值含 and/or 提示改用 && ||；⑥配置：database/log/plugin 路径锚定最终 rootpath（本包 config.yml 全绝对路径不受影响）；⑦go 1.27.2。本仓库 2.7.0-2（share 合规）未装机，本次升级一并落地：数据真身 @appdata→data-share「vikunja」幂等迁移（源不删）。本地打包层零变更。
 

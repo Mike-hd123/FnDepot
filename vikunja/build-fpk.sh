@@ -2,18 +2,18 @@
 # build-fpk.sh — Vikunja fnOS fpk 构建（下载上游官方 release + fnpack 打包）
 #
 # 参考结构：emby-in-one/build.sh + octopus/src/build-fpk.sh 的骨架拼装套路
-# 上游：https://github.com/go-vikunja/vikunja  版本：v2.7.1
+# 上游：https://github.com/go-vikunja/vikunja  版本：v2.8.0
 # 产物：vikunja-<VERSION>-x86.fpk
 #
 # 用法：bash build-fpk.sh [VERSION] [输出路径]
-#   VERSION 默认 2.7.1-1（对应上游 v2.7.1；跨上游版本修订号归 1）
+#   VERSION 默认 2.8.0-1（对应上游 v2.8.0；跨上游版本修订号归 1）
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-VERSION="${1:-2.7.1-1}"
+VERSION="${1:-2.8.0-1}"
 OUT="${2:-/vol2/1000/download/vikunja-${VERSION}-x86.fpk}"
 ARCH="x86"
-UPSTREAM="v2.7.1"   # 上游 tag（与本地 VERSION 解耦，方便测试）
+UPSTREAM="v2.8.0"   # 上游 tag（与本地 VERSION 解耦，方便测试）
 
 # sha256 断言（v2.7.1 起上游 zip 自带 .sha256 做强校验，此处不再硬编期望值）
 EXPECTED_ELF_SHA=""
