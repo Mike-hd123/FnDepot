@@ -11,3 +11,7 @@ vikunja/vikunja-v*-linux-amd64-full.zip
 build-fnos-*/
 hyatlas/scripts/reembed/reembed
 hyatlas/dist/
+# agent2api 闭源发行包：二进制与上游 beta tarball 不入库（fpk 已被上面 *.fpk 覆盖）
+agent2api/server/
+agent2api/*.tar.gz
+agent2api/app/server/

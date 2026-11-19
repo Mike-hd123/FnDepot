@@ -281,6 +281,39 @@
           }
         }
       }
+    },
+    "agent2api": {
+      "display_name": "Agent2API",
+      "desc": "把多家 AI 桌面客户端的登录态包装成本地 OpenAI 兼容 API 网关，自带多语言管理面板。逐把 Key 可绑定模型/提供商白名单。上游项目：aimod-cc/agent2api（v3.5.0-beta.3）。",
+      "platform": [
+        "x86"
+      ],
+      "categories": [
+        "AI赋能",
+        "系统工具"
+      ],
+      "icon_url": "./agent2api/ICON.PNG",
+      "maintainer": "aimod-cc",
+      "maintainer_url": "https://github.com/aimod-cc/agent2api",
+      "distributor": "Mike",
+      "distributor_url": "https://github.com/Mike-hd123",
+      "run_as": "package",
+      "install_type": "root",
+      "is_docker": false,
+      "service_port": "3065",
+      "releases": {
+        "3.5.0-3": {
+          "changelog": "3.5.0-3：上游 v3.5.0-beta.2 → beta.3——修复局域网 HTTP 添加例外无反应、修复 SOLO 并发数误显示为积分、WorkBuddy 凭据区分国内外版、插件目录增量扫描、请求体过大返回可读尺寸说明；分发者由 shuangji66 改为 Mike-hd123（本源接管分发）。闭源发行包，仓库只维护 fnOS 打包层（cmd/config/wizard/ui-config），二进制与 fpk 走 GitHub Release。",
+          "updated_at": "2026-11-19T11:30:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/agent2api-v3.5.0-3/Agent2API-3.5.0-3-x86.fpk",
+              "sha256": "81bccf81d7902e582317edb34d370749df387c65e03dc5128bbc22ccc98d7d29",
+              "size": 23927388
+            }
+          }
+        }
+      }
     }
   }
 }

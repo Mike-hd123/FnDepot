@@ -10,13 +10,14 @@
 | `wechat-on-cloud/` | 云微(飞牛云微信) | 1.6.0-2 | Gloridust/WechatOnCloud | [AGENT.md](./wechat-on-cloud/AGENT.md) |
 | `hyatlas/` | HyAtlas(混元记忆) | 5.0.0-1 | tuancookiez-hub/HyAtlas-Memory | [AGENT.md](./hyatlas/AGENT.md) |
 | `vikunja/` | 待办(Vikunja) | 2.8.0-1 | go-vikunja/vikunja | [AGENT.md](./vikunja/AGENT.md) |
-| `emby-in-one/` | Emby | 1.4.4-4 | ArizeSky/Emby-In-One (GPL-3.0) | [AGENT.md](./emby-in-one/AGENT.md) |
+| `agent2api/` | Agent2API(LLM 网关) | 3.5.0-3 | aimod-cc/agent2api | [AGENT.md](./agent2api/AGENT.md) |
 | `app-template/` | 打包模板（非应用） | — | — | [AGENT.md](./app-template/AGENT.md) |
 
 > **fluxor 已 2026-09-22 全量下线**（目录/commit/fnpack.json 记录均已清空），后续统一用官方版，勿在此仓库 fork。
 > **octopus 已 2026-11-05 退役**（LLM 网关由 Agent2API 接管，目录/fnpack.json 条目已删；hyatlas 的 master_key 兜底逻辑保留——找不到 octopus 会自动跳过，不影响运行）。
 > **ezbookkeeping 已 2026-11-06 退役**（记账转 MMH，目录/fnpack.json 条目已删；EZ 已停用）。
-> **emby-in-one 已 2026-11-05 彻底下架**（由 OpenList 替代，commit 6ed0ae0）。
+> **emby-in-one 已 2026-11-05 彻底下架**（由 OpenList 替代，commit 6ed0ae0；目录/表格条目已删）。
+> **agent2api 是闭源发行包**（上游 aimod-cc/agent2api）——只维护 fnOS 打包层，**不 fork 源码**；二进制 `server/` 与 fpk 走 GitHub Release，不入库。本机 DSH 的 LLM 路由（chat/default/compression 别名）走此网关 3065。
 
 ## 目录约定
 
