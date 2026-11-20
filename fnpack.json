@@ -284,7 +284,7 @@
     },
     "agent2api": {
       "display_name": "Agent2API",
-      "desc": "把多家 AI 桌面客户端的登录态包装成本地 OpenAI 兼容 API 网关，自带多语言管理面板。逐把 Key 可绑定模型/提供商白名单。上游项目：aimod-cc/agent2api（v3.5.0-beta.3）。",
+      "desc": "把多家 AI 桌面客户端的登录态包装成本地 OpenAI 兼容 API 网关，自带多语言管理面板。逐把 Key 可绑定模型/提供商白名单。上游项目：aimod-cc/agent2api（v3.5.0-beta.4）。",
       "platform": [
         "x86"
       ],
@@ -302,6 +302,17 @@
       "is_docker": false,
       "service_port": "3065",
       "releases": {
+        "3.5.0-4": {
+          "changelog": "3.5.0-4：上游 v3.5.0-beta.3 → beta.4——移除 Cline Free 功能、网关错误响应新增 reason 字段与 HTTP 499（排队取消）、自定义提供商模型名大小写改写规则调整、更新检查间隔 20→240 分钟、社区插件目录改官网聚合清单；分发者 Mike-hd123。闭源发行包，仓库只维护 fnOS 打包层（cmd/config/wizard/ui-config），二进制与 fpk 走 GitHub Release。",
+          "updated_at": "2026-11-20T20:05:00+08:00",
+          "packages": {
+            "x86": {
+              "download_url": "https://github.com/Mike-hd123/FnDepot/releases/download/agent2api-v3.5.0-4/Agent2API-3.5.0-4-x86.fpk",
+              "sha256": "9b15d5bd5a67233beede297c3c46cdde83252c2a3ab65be304c07f715610eb03",
+              "size": 23803979
+            }
+          }
+        },
         "3.5.0-3": {
           "changelog": "3.5.0-3：上游 v3.5.0-beta.2 → beta.3——修复局域网 HTTP 添加例外无反应、修复 SOLO 并发数误显示为积分、WorkBuddy 凭据区分国内外版、插件目录增量扫描、请求体过大返回可读尺寸说明；分发者由 shuangji66 改为 Mike-hd123（本源接管分发）。闭源发行包，仓库只维护 fnOS 打包层（cmd/config/wizard/ui-config），二进制与 fpk 走 GitHub Release。",
           "updated_at": "2026-11-19T11:30:00+08:00",

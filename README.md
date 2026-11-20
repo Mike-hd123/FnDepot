@@ -18,7 +18,7 @@ https://github.com/Mike-hd123/FnDepot
 |---|---|---|---|
 | 云微(飞牛云微信) `wechat-on-cloud` | 1.6.0-2 | 飞牛原生运行微信 | [Gloridust/WechatOnCloud](https://github.com/Gloridust/WechatOnCloud) |
 | HyAtlas(混元记忆) `hyatlas` | 5.0.0-1 | AI 长期记忆系统 | [tuancookiez-hub/HyAtlas-Memory](https://github.com/tuancookiez-hub/HyAtlas-Memory) |
-| Agent2API `agent2api` | 3.5.0-3 | 本地 OpenAI 兼容 LLM 网关 | [aimod-cc/agent2api](https://github.com/aimod-cc/agent2api) |
+| Agent2API `agent2api` | 3.5.0-4 | 本地 OpenAI 兼容 LLM 网关 | [aimod-cc/agent2api](https://github.com/aimod-cc/agent2api) |
 | 待办(Vikunja) `vikunja` | 2.8.0-1 | 自托管待办面板 | [go-vikunja/vikunja](https://github.com/go-vikunja/vikunja) |
 | `app-template` | — | 打包模板（非应用） | — |
 

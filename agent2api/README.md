@@ -1,10 +1,10 @@
-# agent2api — 本地 OpenAI 兼容 API 网关（v3.5.0-3 · x86）
+# agent2api — 本地 OpenAI 兼容 API 网关（v3.5.0-4 · x86）
 
 飞牛 fnOS 原生应用封装：把多家 AI 桌面客户端的登录态包装成本地 OpenAI 兼容 API 网关，自带管理面板。
 
 ## 上级项目
 
-- **上游**: [aimod-cc/agent2api](https://github.com/aimod-cc/agent2api) v3.5.0-beta.3
+- **上游**: [aimod-cc/agent2api](https://github.com/aimod-cc/agent2api) v3.5.0-beta.4
 - **发布者**: Mike（fnOS 打包发行，非上游开发者）
 - **形态**: 上游官方服务端二进制 `agent2api-server`（Rust，单文件）+ 内嵌管理面板 `ui/`，**不 fork 源码**（闭源发行包，仓库只维护 fnOS 打包层）
 
@@ -20,7 +20,7 @@
 
 ```ini
 appname               = Agent2API
-version               = 3.5.0-3
+version               = 3.5.0-4
 install_type          = root          # run-as package，服务以包身份运行
 service_port          = 3065
 maintainer            = aimod-cc      # 上游 owner
@@ -49,11 +49,11 @@ agent2api/
 └── README.md                 # 本文件
 ```
 
-> **二进制与 fpk 不入库**：`server/agent2api-server`（36MB）与 `Agent2API.fpk`（23.9MB）走 GitHub Release 分发，沿用本仓库「fpk 不进 git 跟踪」规矩（见根 [AGENT.md](../AGENT.md)）。构建时把上游发行包的 `server/` 落到打包目录 `server/` 再 `fnpack build`。
+> **二进制与 fpk 不入库**：`server/agent2api-server`（36MB）与 `Agent2API.fpk`（23.8MB）走 GitHub Release 分发，沿用本仓库「fpk 不进 git 跟踪」规矩（见根 [AGENT.md](../AGENT.md)）。构建时把上游发行包的程序**落到打包目录 `app/server/`**（fnpack 只收 `app/` 下的程序/资源，根级 `server/` 不入包）后 `fnpack build`。
 
 ## 版本口径
 
-上游版本 → `<上游版本>-N`（本地修订从 1 起，禁止改上游版本号）。当前 **3.5.0-3** 对应上游 v3.5.0-beta.3：
+上游版本 → `<上游版本>-N`（本地修订从 1 起，禁止改上游版本号）。当前 **3.5.0-4** 对应上游 v3.5.0-beta.4：
 
 - beta.2 → beta.3：修复局域网 HTTP 添加例外无反应、修复 SOLO 并发数误显示为积分、WorkBuddy 凭据区分国内外版、插件目录增量扫描、请求体过大返回可读尺寸说明
 - 分发者由 shuangji66 改为 Mike-hd123（本源接管分发）

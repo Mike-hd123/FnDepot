@@ -20,8 +20,8 @@
 
 ## 二进制与 fpk（不入库）
 
-- `server/agent2api-server`（~36MB Rust 单文件）+ `server/ui/`（管理面板）+ `server/install.sh`、`agent2api.service`、`agent2api.env.example` —— 由上游发行包 `beta.tar.gz` 解包得到，**落打包目录 `server/` 后 `fnpack build`**，均不进 git。
-- `Agent2API.fpk`（~23.9MB）走 GitHub Release 分发，`.gitignore` 的 `*.fpk` 已覆盖。
+- `app/server/agent2api-server`（~36MB Rust 单文件）+ `app/server/ui/`（管理面板）+ `app/server/install.sh`、`agent2api.service`、`agent2api.env.example` —— 由上游发行包 `beta.tar.gz` 解包得到，**落打包目录 `app/server/` 后 `fnpack build`**⚠️ fnpack 只收 `app/` 下的程序与资源，根级 `server/` 不入包（曾踩坑：根级 server/ 打出的 fpk 只有 43KB）。均不进 git。
+- `Agent2API.fpk`（~23.8MB）走 GitHub Release 分发，`.gitignore` 的 `*.fpk` 已覆盖。
 - ⚠️ 别把 `server.bak_beta*` 之类留底目录复制进仓库（上游 beta 迭代快，留底留在 `/vol2/1000/workspace/a2a-beta-build/`）。
 
 ## cmd/main 要点
@@ -38,7 +38,7 @@
 
 ## 版本口径
 
-上游 beta 版 → `<上游版本>-N`。当前 **3.5.0-3** = 上游 v3.5.0-beta.3。上游迭代快（beta.1→beta.2→beta.3 同日内），每次换包只动 `server/` + `manifest`（version / changelog / checksum），打包层脚本一般零改动。
+上游 beta 版 → `<上游版本>-N`。当前 **3.5.0-4** = 上游 v3.5.0-beta.4。上游迭代快（beta.1→beta.2→beta.3 同日内），每次换包只动 `app/server/`（二进制、面板、install.sh 等）+ `manifest`（version / changelog / checksum），打包层脚本一般零改动。构建在 git 仓库外（如 `/vol2/1000/workspace/a2a-beta-build/FPK/`）执行更稳。
 
 ## 凭证红线
 

@@ -1,5 +1,5 @@
 appname                    = Agent2API
-version                    = 3.5.0-3
+version                    = 3.5.0-4
 display_name               = Agent2API
 desc                       = <p>🤖把多家 AI 桌面客户端的登录态包装成本地 OpenAI 兼容 API 网关。</p>
 platform                   = x86
@@ -13,5 +13,5 @@ desktop_uidir              = ui
 desktop_applaunchname      = Agent2API.Application
 checkport                  = false
 disable_authorization_path = true
-changelog                  = 上游 v3.5.0-beta.2 → beta.3：修复局域网HTTP添加例外无反应、修复SOLO并发数误显示为积分、WorkBuddy凭据区分国内外版、插件目录增量扫描、请求体过大返回可读尺寸说明；分发者 Mike-hd123
-checksum                   = ce675ecb02338591d6f7e2e50dd573be
+changelog                  = 上游 v3.5.0-beta.3 → beta.4：移除 Cline Free 功能、网关错误响应新增 reason 字段与 HTTP 499（排队取消）、自定义提供商模型名大小写改写规则调整、更新检查间隔 20→240 分钟、社区插件目录改官网聚合清单；分发者 Mike-hd123
+checksum                   = 3940835e2b8808e72d4bfc70d3d1f1cb
